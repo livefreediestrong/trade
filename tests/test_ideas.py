@@ -235,6 +235,10 @@ def test_walk_forward_reports_out_of_sample_folds():
     assert all("rule" in fold and "baseline" in fold for fold in res["folds"])
     assert "buy_and_hold" in res["folds"][0]["benchmarks"]
     assert res["benchmark_totals"]["no_trade_usd"] == 0.0
+    assert res["embargo_days"] == 1
+    first = res["folds"][0]
+    assert first["train"]["end"] < first["test"]["start"]
+    assert first["embargo"]["days"] == 1
 
 
 def test_horizon_outcome_reports_costs_and_optional_path_metrics():

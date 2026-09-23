@@ -176,10 +176,12 @@ def evaluate_walk_forward(all_trades: list[dict[str, Any]], params: dict[str, An
     train_days = max(20, int(p.get("walk_train_days", 60)))
     test_days = max(5, int(p.get("walk_test_days", 20)))
     step_days = max(1, int(p.get("walk_step_days", test_days)))
+    embargo_days = max(0, int(p.get("walk_embargo_days", 1)))
     folds: list[dict[str, Any]] = []
-    start = train_days
+    start = train_days + embargo_days
     while start + test_days <= len(days):
-        train_set = set(days[start - train_days:start])
+        train_end = start - embargo_days
+        train_set = set(days[train_end - train_days:train_end])
         test_set = set(days[start:start + test_days])
         train = [t for t in all_trades if t["day"] in train_set]
         test = [t for t in all_trades if t["day"] in test_set]
@@ -187,7 +189,12 @@ def evaluate_walk_forward(all_trades: list[dict[str, Any]], params: dict[str, An
         baseline = _stats(test, p["position_usd"])
         buy_hold = _buy_hold_stats(test, p["position_usd"])
         folds.append({
-            "train": {"start": days[start - train_days], "end": days[start - 1], "trades": len(train)},
+            "train": {"start": days[train_end - train_days], "end": days[train_end - 1], "trades": len(train)},
+            "embargo": {
+                "days": embargo_days,
+                "start": days[train_end] if embargo_days else None,
+                "end": days[start - 1] if embargo_days else None,
+            },
             "test": {"start": days[start], "end": days[min(start + test_days - 1, len(days) - 1)]},
             "rule": rule,
             "baseline": baseline,
@@ -217,6 +224,7 @@ def evaluate_walk_forward(all_trades: list[dict[str, Any]], params: dict[str, An
             ),
         },
         "minimum_folds_for_confidence": 5,
+        "embargo_days": embargo_days,
         "conclusion": (
             "insufficient_folds" if len(tested) < 5 else
             "consistent_out_of_sample" if len(positive) >= 0.6 * len(tested) and len(edge_wins) >= 0.6 * len(tested)
