@@ -52,6 +52,13 @@
     <span data-stale-text>Numbers haven't updated recently. They may be out of date.</span>
     <button type="button" class="btn sm" id="btn-stale-retry">Try again</button>
   </div>
+  <div class="execution-summary" id="execution-summary" role="status" aria-live="polite">
+    <span class="execution-summary-label">Execution</span>
+    <strong id="execution-summary-mode">Checking mode…</strong>
+    <span id="execution-summary-broker">Broker status checking…</span>
+    <span id="execution-summary-session">Session not started</span>
+    <span id="execution-summary-pending">No pending ideas</span>
+  </div>
 
   <nav class="desk-guide" id="desk-guide" aria-label="Desk steps" hidden>
     <ol class="desk-guide-steps">

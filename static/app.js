@@ -1173,6 +1173,14 @@
     const cfg = data.config || {};
     const ledger = data.ledger || {};
     const daily = data.daily || {};
+    const pendingSummary = document.getElementById("execution-summary-pending");
+    const pendingCount = Array.isArray(data.signals?.pending) ? data.signals.pending.length : 0;
+    if (pendingSummary) {
+      pendingSummary.textContent = pendingCount
+        ? `${pendingCount} idea${pendingCount === 1 ? "" : "s"} need review`
+        : "No pending ideas";
+      pendingSummary.classList.toggle("attention", pendingCount > 0);
+    }
     const modeLabel = {
       manual: "Ask before every trade",
       auto_paper: "Automatic paper simulation",
@@ -1687,6 +1695,9 @@
     const chrome = document.getElementById("chrome-broker");
     const line = document.getElementById("broker-status-line");
     const paperBadge = document.getElementById("chrome-paper");
+    const summaryBroker = document.getElementById("execution-summary-broker");
+    const summaryMode = document.getElementById("execution-summary-mode");
+    const summarySession = document.getElementById("execution-summary-session");
     const pm = b.paper_mode !== false; // default true when unknown
     const provider = String(b.broker || "broker").toUpperCase();
     const label = b.connected_label || (
@@ -1694,6 +1705,19 @@
         ? (pm ? `${provider} paper` : `${provider} LIVE endpoint (real money)`)
         : "Broker not configured"
     );
+    const currentMode = state?.config?.mode || "manual";
+    if (summaryMode) {
+      summaryMode.textContent = modeLabel(currentMode);
+      summaryMode.classList.toggle("live", !!b.configured && !pm && ["auto_live", "live_manual"].includes(currentMode));
+    }
+    if (summaryBroker) {
+      summaryBroker.textContent = label;
+      summaryBroker.classList.toggle("live", !!b.configured && !pm);
+      summaryBroker.classList.toggle("warn", !b.configured);
+    }
+    if (summarySession) {
+      summarySession.textContent = state?.config?.session_active ? "Session active" : "Session not started";
+    }
     if (chip) {
       chip.textContent = "Broker: " + label;
       chip.title = b.configured
