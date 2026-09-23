@@ -38,12 +38,12 @@
   <div class="paper-chrome masthead" id="paper-chrome" aria-live="polite">
     <div class="chrome-badges">
       <span class="chrome-badge paper" id="chrome-paper" title="Fake money — local sim / Alpaca paper API">PAPER ONLY</span>
-      <span class="chrome-badge broker hidden adv-only" id="chrome-broker" title="Alpaca connection status (paper or live API)">Broker</span>
+      <span class="chrome-badge broker hidden" id="chrome-broker" title="Broker connection and execution venue">Broker</span>
       <span class="chrome-badge rth" id="chrome-rth" title="US regular trading session — open or closed">Market hours</span>
       <span class="chrome-badge buzz-pill hidden adv-only" id="buzz-simple-pill" title="A watchlist ticker is being mentioned in Reddit buzz (research only)">Buzz</span>
       <span class="chrome-badge live-ind polling" id="live-ind" data-health="connecting" title="How fresh the numbers are — seconds since the last update">Connecting…</span>
     </div>
-    <span class="chrome-note simple-only" id="chrome-note">Paper only</span>
+    <span class="chrome-note" id="chrome-note">Paper only</span>
     <span class="chrome-note banner-line adv-only" id="banner">{{ banner }}</span>
   </div>
   <div class="chrome-wave simple-only" aria-hidden="true"></div>
@@ -139,8 +139,8 @@
       <div class="session-actions">
         <div class="fill-mode-wrap simple-only session-fill-mode" id="session-fill-mode">
           <div class="fill-mode-toggle" id="fill-mode-toggle" role="group" aria-label="How fills run">
-            <button type="button" class="fill-mode-btn" data-fill-mode="auto_paper" id="btn-fill-auto" title="The desk places paper trades for you — no Approve needed (still fake money)">Auto fill</button>
-            <button type="button" class="fill-mode-btn" data-fill-mode="manual" id="btn-fill-ask" title="Ideas wait until you Approve or Skip">Ask me first</button>
+            <button type="button" class="fill-mode-btn" data-fill-mode="auto_paper" id="btn-fill-auto" title="The desk places local paper trades for you — no approval needed">Automatic paper simulation</button>
+            <button type="button" class="fill-mode-btn" data-fill-mode="manual" id="btn-fill-ask" title="Ideas wait until you approve or skip">Ask before every trade</button>
           </div>
           <p class="fill-mode-gloss muted" id="fill-mode-gloss">Ask me first: ideas wait in Waiting for Approve or Skip. Auto fill: paper fills can happen without Approve.</p>
         </div>
@@ -172,8 +172,8 @@
   <p class="hint-line quiet-hint adv-only adv-intro" id="adv-intro">Advanced shows research detail. Nothing here is a live brokerage recommendation. Open <strong>How to</strong> anytime for a short walkthrough.</p>
 
   <div class="field live-box hidden adv-only" id="live-box">
-    <p class="warn" id="broker-status-line">Alpaca is optional (paper API by default). When connected, Auto+Alpaca sends to the broker only — the desk does not keep a second local paper book.</p>
-    <p class="hint-line" id="broker-chip-line"><span class="broker-chip" id="broker-chip" title="Alpaca connection status">Broker: …</span></p>
+    <p class="warn" id="broker-status-line">Broker connection is optional. Live mode stays disabled until the connected account is verified and you explicitly confirm the order.</p>
+    <p class="hint-line" id="broker-chip-line"><span class="broker-chip" id="broker-chip" title="Broker connection status">Broker: …</span></p>
     <input type="text" id="live-confirm" placeholder="optional note (not an unlock phrase)" autocomplete="off" title="Optional note only — does not unlock live trading" />
     <div class="kill-grid">
       <label title="Pause Auto paper if paper loss reaches this amount">Max loss $<input type="number" id="ks-loss" min="1" step="1" /></label>
@@ -641,10 +641,10 @@
         <h2>Signal queue <span class="title-ctx">(pending paper ideas by status)</span></h2>
       </div>
       <div class="tabs" id="tabs" role="tablist" aria-label="Signal queue">
-        <button type="button" class="tab active" data-tab="pending" title="Ideas waiting for Approve or Skip">Pending</button>
-        <button type="button" class="tab" data-tab="approved" title="Ideas you approved (paper fills)">Done</button>
-        <button type="button" class="tab" data-tab="rejected" title="Ideas you skipped">Skipped</button>
-        <button type="button" class="tab adv-only" data-tab="expired" title="Ideas that timed out">Expired</button>
+        <button type="button" class="tab active" role="tab" aria-selected="true" aria-controls="signal-panel-pending" data-tab="pending" title="Ideas waiting for approval or skip">Waiting</button>
+        <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="signal-panel-approved" data-tab="approved" title="Ideas that were filled or approved">Filled</button>
+        <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="signal-panel-rejected" data-tab="rejected" title="Ideas you skipped">Skipped</button>
+        <button type="button" class="tab adv-only" role="tab" aria-selected="false" aria-controls="signal-panel-expired" data-tab="expired" title="Ideas that timed out">Expired</button>
       </div>
       <p class="hint-line quiet-hint">Paper ideas grouped by status. Approve or Skip here when something is pending — not a live brokerage ticket.</p>
       <div class="signal-list" id="signal-list"></div>
@@ -653,10 +653,10 @@
     <aside class="side">
       <section class="panel broker-book hidden" id="broker-book" aria-labelledby="broker-book-title">
         <div class="panel-head">
-          <h2 id="broker-book-title">At your broker <span class="title-ctx" id="broker-book-kind">(Alpaca)</span></h2>
+          <h2 id="broker-book-title">At your broker <span class="title-ctx" id="broker-book-kind">(not connected)</span></h2>
           <span class="muted" id="broker-book-day"></span>
         </div>
-        <p class="muted broker-book-note">Orders sent to Alpaca live here — they are not part of this desk's paper book above.</p>
+        <p class="muted broker-book-note">Broker orders live here — they are separate from this desk's local paper book.</p>
         <div id="broker-book-list" class="broker-book-list"></div>
       </section>
       <section class="panel pos-row" id="positions-panel">
@@ -713,8 +713,8 @@
               <select id="mode-select" title="Ask-me-first, auto paper fills, or Alpaca when configured">
                 <option value="manual">I approve each</option>
                 <option value="auto_paper">Auto on paper</option>
-                <option value="live_manual">I approve each (LIVE Alpaca)</option>
-                <option value="auto_live">Auto + Alpaca (paper-api default; LIVE if ALPACA_PAPER=false)</option>
+                <option value="live_manual">Approve each — live broker</option>
+                <option value="auto_live">Automatic broker orders — live risk</option>
               </select>
               <button type="button" class="btn" id="btn-apply-mode" title="Apply how trades run">Apply</button>
             </div>

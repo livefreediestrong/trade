@@ -161,6 +161,46 @@ body.vibe-chill {
   white-space: nowrap;
 }
 .hidden { display: none !important; }
+.chrome-note.is-live {
+  color: #fff;
+  background: #7e2727;
+  border: 1px solid #d66;
+  border-radius: 6px;
+  padding: 0.18rem 0.5rem;
+  font-weight: 800;
+}
+:focus-visible {
+  outline: 3px solid #f2c14e;
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+.chrome-note.is-live {
+  color: #fff;
+  background: #7e2727;
+  border: 1px solid #d66;
+  border-radius: 6px;
+  padding: 0.18rem 0.5rem;
+  font-weight: 800;
+}
+:focus-visible {
+  outline: 3px solid #f2c14e;
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+}
 .session-chip.hidden,
 #btn-stop-session.hidden { display: none; }
 .sr-only {
@@ -211,7 +251,6 @@ body.vibe-chill {
   font-size: 0.8rem;
 }
 .wl-find-input:focus {
-  outline: none;
   border-color: var(--accent);
 }
 .wl-find-hint { margin-top: 0.3rem; }

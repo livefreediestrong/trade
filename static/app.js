@@ -421,7 +421,7 @@
   // ---- Money / mode truth helpers (one place decides what the screen may claim)
   function brokerMode(cfg) {
     const b = window.__brokerStatus || {};
-    return (cfg || state?.config || {}).mode === "auto_live" && !!b.configured;
+    return ["auto_live", "live_manual"].includes((cfg || state?.config || {}).mode) && !!b.configured;
   }
   function realMoney(cfg) {
     const b = window.__brokerStatus || {};
@@ -429,8 +429,17 @@
   }
   function moneyNoun(cfg) {
     if (realMoney(cfg)) return "REAL money";
-    if (brokerMode(cfg)) return "Alpaca paper money";
+    if (brokerMode(cfg)) return `${String((window.__brokerStatus || {}).broker || "broker").toUpperCase()} paper money`;
     return "paper money";
+  }
+
+  function modeLabel(mode) {
+    return ({
+      manual: "Ask before every trade",
+      auto_paper: "Automatic paper simulation",
+      live_manual: "Approve each live broker order",
+      auto_live: "Automatic live broker orders",
+    })[mode] || mode || "Not set";
   }
 
   // ---- Freshness: never show old numbers as if they were current
@@ -611,7 +620,7 @@
     // Short chill status — never long pipe strings that ellipsis mid-token
     const mode = cfg.mode || "manual";
     const parts = ["Checking"];
-    parts.push(mode === "auto_paper" ? "Auto fill" : mode === "auto_live" ? "Auto + Alpaca" : "Ask me first");
+    parts.push(modeLabel(mode));
     if (goal != null && Number(goal) > 0) {
       const g = Number(goal);
       const goalTxt = Number.isInteger(g) ? `$${g}` : fmtMoney(g);
@@ -731,7 +740,8 @@
     if (!book) { panel.classList.add("hidden"); return; }
     panel.classList.remove("hidden");
     const kind = $("#broker-book-kind");
-    if (kind) kind.textContent = book.paper_mode === false ? "(Alpaca — REAL money)" : "(Alpaca paper)";
+    const provider = String((window.__brokerStatus || {}).broker || "broker").toUpperCase();
+    if (kind) kind.textContent = book.paper_mode === false ? `(${provider} — REAL money)` : `(${provider} paper)`;
     panel.classList.toggle("is-live", book.paper_mode === false);
     const day = $("#broker-book-day");
     if (day) {
@@ -743,7 +753,7 @@
     const list = $("#broker-book-list");
     if (!list) return;
     if (!book.ok) {
-      list.innerHTML = `<div class="empty">${escapeHtml(book.error || "Couldn't reach Alpaca")} — the numbers here may be missing.</div>`;
+      list.innerHTML = `<div class="empty">${escapeHtml(book.error || "Couldn't reach broker")} — the numbers here may be missing. Check the connection before retrying.</div>`;
       return;
     }
     const rows = book.positions || [];
@@ -1163,7 +1173,12 @@
     const cfg = data.config || {};
     const ledger = data.ledger || {};
     const daily = data.daily || {};
-    const modeLabel = { manual: "I approve", auto_paper: "auto paper", auto_live: "auto + Alpaca" };
+    const modeLabel = {
+      manual: "Ask before every trade",
+      auto_paper: "Automatic paper simulation",
+      live_manual: "Approve each live broker order",
+      auto_live: "Automatic live broker orders",
+    };
     const setText = (sel, text) => {
       const el = $(sel);
       if (el) el.textContent = text;
@@ -1269,9 +1284,9 @@
     if (liveBox) {
       liveBox.classList.toggle(
         "hidden",
-        cfg.mode !== "auto_live" && (!modeSelect || modeSelect.value !== "auto_live")
+        !["auto_live", "live_manual"].includes(cfg.mode) && (!modeSelect || !["auto_live", "live_manual"].includes(modeSelect.value))
       );
-      if (modeSelect && modeSelect.value === "auto_live") {
+      if (modeSelect && ["auto_live", "live_manual"].includes(modeSelect.value)) {
         liveBox.classList.remove("hidden");
       }
     }
@@ -1673,18 +1688,19 @@
     const line = document.getElementById("broker-status-line");
     const paperBadge = document.getElementById("chrome-paper");
     const pm = b.paper_mode !== false; // default true when unknown
+    const provider = String(b.broker || "broker").toUpperCase();
     const label = b.connected_label || (
       b.configured
-        ? (pm ? "Alpaca paper" : "Alpaca LIVE endpoint (real money)")
+        ? (pm ? `${provider} paper` : `${provider} LIVE endpoint (real money)`)
         : "Broker not configured"
     );
     if (chip) {
       chip.textContent = "Broker: " + label;
       chip.title = b.configured
         ? (pm
-            ? "Alpaca paper API connected — fake money"
-            : "Alpaca LIVE endpoint — real money; use with care")
-        : "No Alpaca keys — local paper sim only";
+            ? `${provider} paper account connected — fake money`
+            : `${provider} LIVE endpoint — real money; use with care`)
+        : "No broker connected — local paper simulation only";
       chip.dataset.status = b.status || (b.configured ? (pm ? "paper" : "live") : "not_configured");
       chip.dataset.paperMode = pm ? "1" : "0";
       chip.classList.toggle("ok", !!b.configured && pm);
@@ -1704,22 +1720,22 @@
     if (line) {
       if (b.configured && pm) {
         line.textContent =
-          "Alpaca paper-api connected (ALPACA_PAPER=true). Auto+Alpaca submits to broker only on success — no dual local paper book.";
+          `${provider} paper account connected. Broker orders stay separate from the local paper book.`;
       } else if (b.configured && !pm) {
         line.textContent =
-          "LIVE ENDPOINT active (ALPACA_PAPER=false → api.alpaca.markets). Real money. Orders journaled as live_submitted.";
+          `${provider} LIVE ENDPOINT active. Real money. Check the account and risk limits before every order.`;
       } else {
         line.textContent =
-          "No Alpaca keys — desk stays on local paper sim. Set ALPACA_API_KEY / ALPACA_API_SECRET in .env (ALPACA_PAPER defaults true).";
+          "No broker connected — desk stays on local paper simulation.";
       }
     }
     const note = document.getElementById("chrome-note");
     if (note) {
-      const live = !!b.configured && !pm && (state?.config?.mode === "auto_live");
-      note.textContent = live ? "REAL MONEY — orders go to your Alpaca account" : "Practice mode — fake money";
+      const live = !!b.configured && !pm && ["auto_live", "live_manual"].includes(state?.config?.mode);
+      note.textContent = live ? `REAL MONEY — orders go to your ${provider} account` : `Practice mode — ${pm && b.configured ? provider + " paper" : "local paper"} `;
       note.classList.toggle("is-live", live);
     }
-    document.body.classList.toggle("money-live", !!b.configured && !pm && (state?.config?.mode === "auto_live"));
+    document.body.classList.toggle("money-live", !!b.configured && !pm && ["auto_live", "live_manual"].includes(state?.config?.mode));
     // Masthead: PAPER ONLY unless live endpoint is active
     if (paperBadge) {
       if (b.configured && !pm) {
@@ -1819,7 +1835,7 @@
 
   // Events
   $("#mode-select")?.addEventListener("change", () => {
-    const _lb = $("#live-box"); const _ms = $("#mode-select"); if (_lb && _ms) _lb.classList.toggle("hidden", _ms.value !== "auto_live");
+    const _lb = $("#live-box"); const _ms = $("#mode-select"); if (_lb && _ms) _lb.classList.toggle("hidden", !["auto_live", "live_manual"].includes(_ms.value));
   });
 
   $("#btn-apply-mode")?.addEventListener("click", async () => {
@@ -1960,7 +1976,7 @@
       if (window.EquityScoreboard && typeof window.EquityScoreboard.reset === "function") {
         window.EquityScoreboard.reset();
       }
-      const how = m === "auto_paper" ? "Auto fill" : m === "auto_live" ? "Auto + Alpaca" : "Ask me first";
+      const how = modeLabel(m);
       let msg = `Checking started (${how}) — goal ${fmtMoney(make)}, starting with ${fmtMoney(bank)} of ${moneyNoun(data?.config)}`;
       if (data.signal?.ticker) {
         msg += ` · first look: ${data.signal.ticker}`;
@@ -2313,8 +2329,22 @@
   $$(".tab").forEach((tab) => {
     tab.addEventListener("click", () => {
       activeTab = tab.dataset.tab;
-      $$(".tab").forEach((t) => t.classList.toggle("active", t === tab));
+      $$(".tab").forEach((t) => {
+        const selected = t === tab;
+        t.classList.toggle("active", selected);
+        t.setAttribute("aria-selected", selected ? "true" : "false");
+      });
       if (state) renderSignals(state);
+    });
+    tab.addEventListener("keydown", (ev) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(ev.key)) return;
+      const tabs = $$(".tab").filter((t) => !t.classList.contains("hidden"));
+      const index = tabs.indexOf(tab);
+      const next = ev.key === "Home" ? 0 : ev.key === "End" ? tabs.length - 1 :
+        ev.key === "ArrowRight" ? (index + 1) % tabs.length : (index - 1 + tabs.length) % tabs.length;
+      ev.preventDefault();
+      tabs[next]?.focus();
+      tabs[next]?.click();
     });
   });
 
@@ -2355,10 +2385,11 @@
       const left = !broker && verb === "Buy" && total != null && Number.isFinite(cash)
         ? `<div class="row"><span class="k">After</span><span>Leaves about ${fmtMoney(Math.max(0, cash - total))} of your ${fmtMoney(cash)} paper cash</span></div>`
         : "";
+      const brokerName = String(window.__brokerStatus?.broker || "broker").toUpperCase();
       const warn = live
-        ? `<div class="approve-live-warn" role="alert"><strong>REAL MONEY.</strong> This sends a real market order to your Alpaca account. The fill price can differ from ${fmtMoney(px)}.</div>`
+        ? `<div class="approve-live-warn" role="alert"><strong>REAL MONEY.</strong> This sends a real market order to your ${brokerName} account. The fill price can differ from ${fmtMoney(px)}. Verify the account, quantity, and risk limits before placing it.</div>`
         : broker
-          ? `<div class="approve-broker-note">Sends an order to your <strong>Alpaca paper</strong> account (fake money at the broker, not this desk's paper book).</div>`
+          ? `<div class="approve-broker-note">Sends an order to your <strong>${brokerName} paper</strong> account (separate from this desk's local paper book).</div>`
           : "";
       el.innerHTML = `
         ${warn}
@@ -2370,12 +2401,12 @@
     }
     const titleEl = $("#approve-modal-title");
     if (titleEl) {
-      titleEl.textContent = live ? "Send a REAL order?" : broker ? "Send order to Alpaca paper?" : "Place this paper trade?";
+      titleEl.textContent = live ? "Review live order" : broker ? `Send order to ${brokerName} paper` : "Confirm paper trade";
     }
     const cbtn = $("#btn-approve-confirm");
     if (cbtn) {
       const verb = String(s.side || "").toLowerCase() === "sell" ? "Sell" : "Buy";
-      cbtn.textContent = live ? `${verb} with real money` : broker ? `${verb} on Alpaca paper` : `${verb} on paper`;
+      cbtn.textContent = live ? `${verb} real order` : broker ? `${verb} on broker paper` : `${verb} on local paper`;
       cbtn.classList.toggle("danger", live);
       cbtn.title = live ? "Sends a real-money market order" : "Fake money — practice trade";
       cbtn.disabled = false;
@@ -4136,9 +4167,9 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
         });
         toast(mode === "auto_paper"
           ? "Auto fill On — paper fills on their own"
-          : mode === "auto_live"
-            ? "Auto + Alpaca — broker path (check Advanced)"
-            : "Ask me first — ideas wait for Approve");
+          : ["auto_live", "live_manual"].includes(mode)
+            ? modeLabel(mode) + " — broker path (check Advanced)"
+            : "Ask before every trade — ideas wait for approval");
         if (data?.config && state) state.config = { ...state.config, ...data.config };
         syncFillModeToggle(data?.config || { mode });
         await refresh();
