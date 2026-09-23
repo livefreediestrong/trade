@@ -394,10 +394,35 @@ def resolve_exit_prices(
             )
             tp_price = None
 
+    # Trailing stop: "3" or "3%" = keep the stop 3% below the best price seen (long).
+    trail_pct = None
+    raw_trail = body.get("trail_pct", signal.get("trail_pct"))
+    if raw_trail not in (None, "", False):
+        try:
+            tv = float(str(raw_trail).strip().rstrip("%"))
+        except (TypeError, ValueError):
+            tv = None
+        if tv is not None and _math.isfinite(tv) and 0.1 <= tv <= 50:
+            trail_pct = round(tv, 3)
+            trail_stop = round(entry_px * (1 - tv / 100.0), 4) if is_buy else round(entry_px * (1 + tv / 100.0), 4)
+            # The trailing stop replaces the preset default stop. A stop the user typed
+            # themselves still wins if it is tighter.
+            user_stop = any(k in src for k in ("stop_loss", "stop", "stop_loss_pct", "stop_pct"))
+            if (
+                stop_price is None
+                or not user_stop
+                or (is_buy and trail_stop > stop_price)
+                or (not is_buy and trail_stop < stop_price)
+            ):
+                stop_price = trail_stop
+        else:
+            rejected.append(f"trailing stop {raw_trail} ignored — use a percent between 0.1 and 50")
+
     bracket_on = stop_price is not None or tp_price is not None
     return {
         "stop_price": stop_price,
         "take_profit_price": tp_price,
+        "trail_pct": trail_pct,
         "bracket": bracket_on,
         "rejected": rejected,
         "stop_pct_default": default_stop_pct,
@@ -430,9 +455,53 @@ def attach_exit_intents(
             p["take_profit_price"] = exits["take_profit_price"]
         else:
             p.pop("take_profit_price", None)
+        if exits.get("trail_pct"):
+            p["trail_pct"] = exits["trail_pct"]
+            try:
+                p["trail_high"] = max(float(p.get("trail_high") or 0), float(p.get("avg_price") or 0))
+            except (TypeError, ValueError):
+                p["trail_high"] = p.get("avg_price")
+        else:
+            p.pop("trail_pct", None)
+            p.pop("trail_high", None)
         p["exit_bracket"] = True
         p["exit_intents_ts"] = now_iso
         break
+
+
+def ratchet_trailing_stop(pos: dict[str, Any], mark: float) -> float | None:
+    """Move a trailing stop in the trade's favour only. Returns the new stop (or None).
+
+    Long: remember the highest price seen; stop = high × (1 − trail%). Never lowers.
+    """
+    try:
+        pct = float(pos.get("trail_pct") or 0)
+        mark = float(mark)
+    except (TypeError, ValueError):
+        return None
+    if pct <= 0 or mark <= 0:
+        return None
+    side = (pos.get("side") or "long").lower()
+    cur = pos.get("stop_price")
+    try:
+        cur_f = float(cur) if cur is not None else None
+    except (TypeError, ValueError):
+        cur_f = None
+    if side in ("long", "buy"):
+        high = max(float(pos.get("trail_high") or 0), mark)
+        pos["trail_high"] = high
+        new = round(high * (1 - pct / 100.0), 4)
+        if cur_f is None or new > cur_f:
+            pos["stop_price"] = new
+            return new
+    else:
+        low = min(float(pos.get("trail_high") or mark), mark)
+        pos["trail_high"] = low
+        new = round(low * (1 + pct / 100.0), 4)
+        if cur_f is None or new < cur_f:
+            pos["stop_price"] = new
+            return new
+    return None
 
 
 def classify_horizon_outcome(

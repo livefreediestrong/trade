@@ -89,6 +89,7 @@
         <button type="button" class="mode-btn" data-ui-mode="advanced" id="btn-ui-advanced" title="Research desk — more detail">Advanced</button>
       </div>
       <button type="button" class="btn ghost sm howto-btn" id="btn-howto" title="Open a short tutorial">How to</button>
+      <button type="button" class="btn ghost sm" id="btn-report" title="How the last 7 days went — with a grade">Report card</button>
       <button type="button" class="btn ghost sm simple-only" id="btn-feeling-lucky" title="Pick a random watchlist ticker and focus the desk (no fill)">I&rsquo;m Feeling Lucky</button>
       <button type="button" class="btn icon ghost theme-btn" id="btn-theme" title="Switch light / dark" aria-label="Switch to light mode">☀</button>
       <button type="button" class="btn icon ghost simple-only" id="btn-simple-settings" title="Settings — friction &amp; alerts" aria-label="Open settings">⚙</button>
@@ -581,6 +582,9 @@
             <input type="text" id="approve-tp" inputmode="decimal" placeholder="e.g. 2.5% or 185" autocomplete="off" />
           </label>
         </div>
+        <label class="approve-trail" for="approve-trail" title="The stop follows the price up and never moves down. Example: 3 means the stop stays 3% below the highest price since you bought.">Trailing stop % <span class="title-ctx">(optional — locks in gains as the price rises)</span>
+          <input type="text" id="approve-trail" inputmode="decimal" placeholder="e.g. 3" autocomplete="off" />
+        </label>
         <label class="chk approve-bracket-off">
           <input type="checkbox" id="approve-no-bracket" />
           No stop / take-profit on this fill
@@ -730,12 +734,23 @@
     <button type="button" class="btn sm" data-undo-btn>Undo</button>
   </div>
 
+  <div id="report-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="report-title">
+    <div class="modal-card report-card">
+      <h3 id="report-title">This week's report card</h3>
+      <div id="report-body" class="report-body"><p class="muted">Loading…</p></div>
+      <div class="modal-actions">
+        <button type="button" class="btn good" id="btn-report-close">Close</button>
+      </div>
+    </div>
+  </div>
+
   <div id="recap-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="recap-title">
     <div class="modal-card recap-card">
       <h3 id="recap-title">How today went</h3>
       <div id="recap-body" class="recap-body"></div>
       <div class="modal-actions">
         <button type="button" class="btn danger hidden" id="btn-recap-flatten">Close all paper positions</button>
+        <button type="button" class="btn ghost" id="btn-recap-report">Week's report card</button>
         <button type="button" class="btn good" id="btn-recap-ok">Keep them &amp; close</button>
       </div>
     </div>

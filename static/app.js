@@ -947,6 +947,52 @@
     }
   });
 
+  // ---- Weekly report card
+  async function openReport() {
+    const modal = $("#report-modal");
+    const body = $("#report-body");
+    if (!modal || !body) return;
+    body.innerHTML = '<p class="muted">Loading…</p>';
+    modal.classList.remove("hidden");
+    $("#btn-report-close")?.focus();
+    let r;
+    try {
+      r = await api("/api/report/weekly?days=7", { timeoutMs: 20000 });
+    } catch (e) {
+      body.innerHTML = `<p>Couldn't load the report: ${escapeHtml(e.message)}</p>`;
+      return;
+    }
+    const hit = r.hit_rate != null ? `${Math.round(r.hit_rate * 100)}%` : "—";
+    const setups = (r.worst_setups || []).map((s) => {
+      const [v, lt] = String(s.setup || "?|?").split("|");
+      const call = { buy: "Buy", sell: "Sell", flat: "Hold" }[s.side] || s.side;
+      return `<li>${escapeHtml(call)} calls on <strong>${escapeHtml(verdictGloss(v) || v)}</strong> setups with ${escapeHtml(timingGloss(lt) || lt)} timing — ${s.hurt} hurt, ${s.helped} helped</li>`;
+    }).join("");
+    body.innerHTML = `
+      <div class="report-grade grade-${escapeHtml(String(r.grade).replace("—", "none"))}">${escapeHtml(r.grade)}</div>
+      <p class="report-why">${escapeHtml(r.grade_reason)}</p>
+      <ul class="report-list">
+        <li>Profit after costs: <strong class="money ${r.net_usd > 0 ? "pos" : r.net_usd < 0 ? "neg" : ""}">${fmtSigned(r.net_usd)}</strong>
+          <span class="muted">(trades ${fmtSigned(r.realized_usd)}, costs −${fmtMoney(r.fees_usd)})</span></li>
+        <li><strong>${r.closed_trades}</strong> closed trade${r.closed_trades === 1 ? "" : "s"}, <strong>${r.wins}</strong> winner${r.wins === 1 ? "" : "s"}</li>
+        <li>AI calls right: <strong>${hit}</strong> <span class="muted">(${r.calls_helped} helped, ${r.calls_hurt} hurt)</span></li>
+        ${r.best ? `<li>Best trade: ${escapeHtml(r.best.ticker || "")} ${fmtSigned(r.best.pnl)}</li>` : ""}
+        ${r.worst ? `<li>Worst trade: ${escapeHtml(r.worst.ticker || "")} ${fmtSigned(r.worst.pnl)}</li>` : ""}
+        ${r.benchmark && r.benchmark.ok ? `<li>${escapeHtml(benchSentence(r.benchmark))}</li>` : ""}
+      </ul>
+      ${setups ? `<p class="report-sub">Setups that kept losing — the AI now sees this history before deciding:</p><ul class="report-list">${setups}</ul>` : ""}
+      <p class="muted report-foot">Practice money only. A good grade over a few weeks matters more than one good week.</p>`;
+  }
+  $("#btn-report")?.addEventListener("click", openReport);
+  $("#btn-recap-report")?.addEventListener("click", () => {
+    $("#recap-modal")?.classList.add("hidden");
+    openReport();
+  });
+  $("#btn-report-close")?.addEventListener("click", () => $("#report-modal")?.classList.add("hidden"));
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") $("#report-modal")?.classList.add("hidden");
+  });
+
   // ---- End-of-day recap (shown after Stop)
   function showRecap(before, after) {
     const modal = $("#recap-modal");
@@ -2242,6 +2288,8 @@
     const gloss = $("#approve-bracket-gloss");
     if (stopIn) stopIn.value = "";
     if (tpIn) tpIn.value = "";
+    const trIn = $("#approve-trail");
+    if (trIn) trIn.value = "";
     if (noBr) noBr.checked = false;
     const preset = (state && state.preset) || {};
     const stopR = preset.stop_r != null ? Number(preset.stop_r) : 1;
@@ -2291,6 +2339,8 @@
     } else {
       if (stopVal) body.stop_loss = stopVal;
       if (tpVal) body.take_profit = tpVal;
+      const trVal = ($("#approve-trail") && $("#approve-trail").value || "").trim();
+      if (trVal) body.trail_pct = trVal;
       // blank both → server uses risk-preset defaults
     }
     try {

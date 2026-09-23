@@ -28,6 +28,7 @@ from typing import Any
 from flask import Flask, jsonify, render_template, request
 
 import llm_trader
+import lessons
 import paper_loop as paper_loop_mod
 import session_track
 import buzz_sources
@@ -49,6 +50,7 @@ SIGNALS_PATH = DATA_DIR / "signals.json"
 LEDGER_PATH = DATA_DIR / "ledger.json"
 JOURNAL_PATH = DATA_DIR / "journal.json"
 DECISIONS_PATH = DATA_DIR / "decisions.json"
+LESSONS_PATH = DATA_DIR / "lessons.json"
 
 BANNER = (
     "Tomahawk — Gemini research desk. Local paper by default; Alpaca optional "
@@ -1703,7 +1705,7 @@ def _enrich_signal_with_llm(sig: dict[str, Any], analysis: dict, cfg: dict) -> d
     desk["brain_mode"] = llm_trader.resolve_brain_mode(cfg)
     if desk["brain_mode"] == "gemini":
         desk["model"] = llm_cfg.get("model")
-    thesis = llm_trader.decide_trade_thesis(analysis, desk, timeout_sec=12)
+    thesis = llm_trader.decide_trade_thesis(_with_lessons(analysis), desk, timeout_sec=12)
 
     playbook_conf = float(sig.get("confidence") or 0)
     llm_side = thesis.get("side") or "flat"
@@ -2156,6 +2158,19 @@ def check_paper_exit_intents(cfg: dict[str, Any] | None = None) -> list[dict[str
         mark = fetch_last_price(ticker)
         if mark is None or mark <= 0:
             continue
+        # Trailing stop: ratchet toward the price (never away), persist, then check.
+        if pos.get("trail_pct"):
+            new_stop = session_track.ratchet_trailing_stop(pos, mark)
+            if new_stop is not None:
+                with _lock:
+                    led = load_ledger()
+                    for p in led.get("positions") or []:
+                        if str(p.get("ticker") or "").upper() == ticker and (p.get("side") or "long") == (pos.get("side") or "long"):
+                            p["stop_price"] = pos["stop_price"]
+                            p["trail_high"] = pos.get("trail_high")
+                            break
+                    save_ledger(led)
+                stop = pos.get("stop_price")
         side = (pos.get("side") or "long").lower()
         is_long = side in ("long", "buy")
         try:
@@ -2288,6 +2303,10 @@ def check_decision_outcomes(limit: int = 40) -> list[dict[str, Any]]:
         if not patched:
             continue
         stamped.append(patched)
+        try:
+            lessons.record_outcome(LESSONS_PATH, patched)
+        except Exception:
+            pass
         try:
             _decision_ring.append(
                 {
@@ -2722,6 +2741,7 @@ def paper_fill(
                             "bracket_off",
                             "no_bracket",
                             "use_bracket_defaults",
+                            "trail_pct",
                         )
                         if k in signal
                     }
@@ -2747,6 +2767,8 @@ def paper_fill(
                     )
                     if exits.get("rejected"):
                         fill["exit_warnings"] = exits["rejected"]
+                    if exits.get("trail_pct"):
+                        fill["trail_pct"] = exits["trail_pct"]
                     if exits.get("bracket"):
                         fill["stop_price"] = exits.get("stop_price")
                         fill["take_profit_price"] = exits.get("take_profit_price")
@@ -3257,6 +3279,213 @@ def execute_loop_decision(
 
 
 
+# ---------------------------------------------------------------------------
+# Midday risk check (once per trading day, after 12:00 ET, market open):
+#  - cut positions down more than MIDDAY_CUT_PCT
+#  - protect winners up MIDDAY_BREAKEVEN_PCT or more by raising the stop to the
+#    price paid (a winner can no longer turn into a loss)
+# ---------------------------------------------------------------------------
+MIDDAY_CUT_PCT = 7.0
+MIDDAY_BREAKEVEN_PCT = 3.0
+
+
+def midday_risk_check(cfg: dict[str, Any] | None = None, *, force: bool = False, now: datetime | None = None) -> dict[str, Any] | None:
+    cfg = cfg or load_config()
+    if cfg.get("midday_check_enabled", True) is False:
+        return None
+    tz = paper_loop_mod.NY_TZ
+    now = now or (datetime.now(tz) if tz else datetime.now())
+    day = now.strftime("%Y-%m-%d")
+    if not force:
+        if now.hour < 12 or not paper_loop_mod.is_rth(now):
+            return None
+    with _lock:
+        ledger = load_ledger()
+        if ledger.get("midday_done_day") == day and not force:
+            return None
+        positions = [dict(p) for p in (ledger.get("positions") or []) if float(p.get("shares") or 0) > 0]
+        ledger["midday_done_day"] = day
+        save_ledger(ledger)
+    cut, protected = [], []
+    for pos in positions:
+        t = str(pos.get("ticker") or "").upper()
+        if (pos.get("side") or "long").lower() not in ("long", "buy"):
+            continue
+        try:
+            avg = float(pos.get("avg_price") or 0)
+        except (TypeError, ValueError):
+            continue
+        mark = fetch_last_price(t)
+        if not mark or avg <= 0:
+            continue
+        chg = (mark / avg - 1) * 100
+        if chg <= -MIDDAY_CUT_PCT:
+            sig = {
+                "id": str(uuid.uuid4()), "ticker": t, "side": "sell",
+                "suggested_shares": int(float(pos.get("shares") or 0)),
+                "signal_price": mark, "mid": mark, "analysis_price": mark,
+                "status": "pending", "reason": "midday_cut", "bracket_off": True, "no_bracket": True,
+            }
+            res = paper_fill(sig, cfg, source="midday_cut")
+            if res.get("ok"):
+                cut.append({"ticker": t, "change_pct": round(chg, 2)})
+        elif chg >= MIDDAY_BREAKEVEN_PCT:
+            with _lock:
+                led = load_ledger()
+                for p in led.get("positions") or []:
+                    if str(p.get("ticker") or "").upper() == t and (p.get("side") or "long") == (pos.get("side") or "long"):
+                        cur = p.get("stop_price")
+                        try:
+                            cur_f = float(cur) if cur is not None else None
+                        except (TypeError, ValueError):
+                            cur_f = None
+                        if cur_f is None or cur_f < avg:
+                            p["stop_price"] = round(avg, 4)
+                            protected.append({"ticker": t, "change_pct": round(chg, 2), "new_stop": round(avg, 4)})
+                        break
+                save_ledger(led)
+    summary = {"day": day, "cut": cut, "protected": protected, "checked": len(positions)}
+    append_journal("midday_check", summary)
+    if cut or protected:
+        bits = []
+        if cut:
+            bits.append("closed " + ", ".join(f"{c['ticker']} ({c['change_pct']:+.1f}%)" for c in cut))
+        if protected:
+            bits.append("protected " + ", ".join(f"{p['ticker']} (stop raised to what you paid)" for p in protected))
+        try:
+            desk_alerts.emit("midday", "Midday check: " + "; ".join(bits), detail=summary, level="info",
+                             dedupe_key=f"midday|{day}")
+        except Exception:
+            pass
+    return summary
+
+
+# ---------------------------------------------------------------------------
+# Weekly report card
+# ---------------------------------------------------------------------------
+def weekly_report(days: int = 7) -> dict[str, Any]:
+    from datetime import timedelta as _td
+
+    cutoff = (datetime.now(timezone.utc) - _td(days=days)).isoformat()
+    with _lock:
+        ledger = load_ledger()
+        cfg = load_config()
+    fills = {}
+    for f in list(ledger.get("fills") or []) + list(ledger.get("fills_archive") or []):
+        if isinstance(f, dict) and str(f.get("ts") or "") >= cutoff and not f.get("broker"):
+            fills[str(f.get("id") or id(f))] = f
+    fills_l = list(fills.values())
+    closed = [f for f in fills_l if str(f.get("side") or "").lower() == "sell" or "realized_pnl" in f]
+    realized = round(sum(float(f.get("realized_pnl") or 0) for f in closed), 2)
+    fees = round(sum(float(f.get("fee_usd") or 0) for f in fills_l), 2)
+    net = round(realized - fees, 2)
+    wins = [f for f in closed if float(f.get("realized_pnl") or 0) > 0]
+    best = max(closed, key=lambda f: float(f.get("realized_pnl") or 0), default=None)
+    worst = min(closed, key=lambda f: float(f.get("realized_pnl") or 0), default=None)
+    ls = [r for r in lessons.recent(LESSONS_PATH, 500) if str(r.get("ts") or "") >= cutoff]
+    helped = sum(1 for r in ls if r.get("outcome") == "helped")
+    hurt = sum(1 for r in ls if r.get("outcome") == "hurt")
+    hit = helped / (helped + hurt) if (helped + hurt) else None
+    # Setups that hurt most this week
+    by_setup: dict[str, list[int]] = {}
+    for r in ls:
+        k = f"{r.get('side')}|{r.get('setup')}"
+        h = by_setup.setdefault(k, [0, 0])
+        if r.get("outcome") == "helped":
+            h[0] += 1
+        elif r.get("outcome") == "hurt":
+            h[1] += 1
+    worst_setups = sorted(
+        ([k, v[0], v[1]] for k, v in by_setup.items() if v[1] >= 2 and v[1] > v[0]),
+        key=lambda x: -x[2],
+    )[:3]
+    enough = len(closed) >= 5 or (helped + hurt) >= 10
+    if not enough:
+        grade, why = "—", "Not enough trades or scored calls yet to grade fairly."
+    elif net > 0 and (hit is None or hit >= 0.6):
+        grade, why = "A", "Made money after costs and most calls were right."
+    elif net > 0:
+        grade, why = "B", "Made money after costs, but the calls were hit-and-miss."
+    elif hit is not None and hit >= 0.5:
+        grade, why = "C", "Calls were right about half the time, but costs or sizing ate the gains."
+    elif hit is not None and hit >= 0.4:
+        grade, why = "D", "Lost money after costs and fewer than half the calls were right."
+    else:
+        grade, why = "F", "Lost money after costs and most calls were wrong. Stay on paper and review the setups below."
+    bench = None
+    try:
+        bench = benchmark_status(ledger, cfg)
+    except Exception:
+        pass
+
+    def _brief(f):
+        if not f:
+            return None
+        return {"ticker": f.get("ticker"), "pnl": round(float(f.get("realized_pnl") or 0), 2), "ts": f.get("ts")}
+
+    return {
+        "ok": True,
+        "days": days,
+        "grade": grade,
+        "grade_reason": why,
+        "closed_trades": len(closed),
+        "wins": len(wins),
+        "realized_usd": realized,
+        "fees_usd": fees,
+        "net_usd": net,
+        "calls_helped": helped,
+        "calls_hurt": hurt,
+        "hit_rate": round(hit, 3) if hit is not None else None,
+        "best": _brief(best),
+        "worst": _brief(worst),
+        "worst_setups": [
+            {"setup": s.split("|", 1)[1], "side": s.split("|", 1)[0], "helped": h, "hurt": u}
+            for s, h, u in worst_setups
+        ],
+        "benchmark": bench,
+    }
+
+
+@app.route("/api/report/weekly")
+def api_report_weekly():
+    try:
+        days = max(1, min(90, int(request.args.get("days") or 7)))
+    except ValueError:
+        days = 7
+    return jsonify(weekly_report(days))
+
+
+def _with_lessons(analysis: dict) -> dict:
+    """Attach this desk's own track record for the setup (numbers only)."""
+    if not isinstance(analysis, dict):
+        return analysis
+    try:
+        eq = analysis.get("entry_quality") or {}
+        rec = lessons.track_record(
+            LESSONS_PATH,
+            ticker=str(analysis.get("ticker") or ""),
+            verdict=analysis.get("verdict"),
+            lateness=(eq.get("label") if isinstance(eq, dict) else None) or analysis.get("lateness_label"),
+        )
+        note = lessons.prompt_note(rec)
+    except Exception:
+        note = None
+    if not note:
+        return analysis
+    out = dict(analysis)
+    out["past_results_for_similar_setups"] = note
+    return out
+
+
+@app.route("/api/lessons")
+def api_lessons():
+    try:
+        limit = int(request.args.get("limit") or 50)
+    except ValueError:
+        limit = 50
+    return jsonify({"ok": True, "lessons": lessons.recent(LESSONS_PATH, limit)})
+
+
 def _loop_trade_thesis(analysis: dict, cfg: dict) -> dict[str, Any]:
     """Single-brain thesis for loop (gemini|mock|jev). Timeout/error → hold/abstain or mock fallback."""
     brain = llm_trader.resolve_brain_mode(cfg)
@@ -3273,6 +3502,7 @@ def _loop_trade_thesis(analysis: dict, cfg: dict) -> dict[str, Any]:
             "brain_mode": brain,
         }
     llm_cfg = _llm_cfg_for_calls(cfg)
+    analysis = _with_lessons(analysis)
     desk = dict(cfg)
     desk["api_key"] = llm_cfg.get("api_key")
     # Keep Gemini model name off resolve_brain_mode fallback (brain_mode is authoritative)
@@ -3285,7 +3515,7 @@ def _loop_trade_thesis(analysis: dict, cfg: dict) -> dict[str, Any]:
     else:
         desk.pop("model", None)
     try:
-        return llm_trader.decide_trade_thesis(analysis, desk, timeout_sec=12)
+        return llm_trader.decide_trade_thesis(_with_lessons(analysis), desk, timeout_sec=12)
     except Exception as exc:  # noqa: BLE001
         return {
             "side": "flat",
@@ -3401,6 +3631,7 @@ def _paper_loop_deps() -> dict[str, Any]:
         "reverse_paper_fill": reverse_paper_fill,
         "session_pnl_with_mtm": _session_pnl_with_mtm,
         "bleed_status": bleed_status,
+        "midday_risk_check": midday_risk_check,
         "shadow_audit": _shadow_audit_wrap,
         "shadow_gate_enabled": llm_trader.shadow_gate_enabled,
         "cancel_pending_signals": _cancel_pending_signals_for_ticker,
@@ -4895,7 +5126,7 @@ def _evaluate_watchlist_ticker(ticker: str, cfg: dict[str, Any], *, llm: bool = 
     desk["brain_mode"] = llm_trader.resolve_brain_mode(cfg)
     if desk["brain_mode"] == "gemini":
         desk["model"] = llm_cfg.get("model")
-    thesis = llm_trader.decide_trade_thesis(analysis, desk, timeout_sec=12)
+    thesis = llm_trader.decide_trade_thesis(_with_lessons(analysis), desk, timeout_sec=12)
     out.update({
         "llm_side": thesis.get("side"),
         "llm_confidence": thesis.get("confidence"),
@@ -5134,6 +5365,7 @@ def api_approve(sig_id: str):
         "bracket_off",
         "no_bracket",
         "use_bracket_defaults",
+        "trail_pct",
     ):
         if k in body:
             sig[k] = body[k]
@@ -5697,7 +5929,7 @@ def api_llm_thesis():
     desk["brain_mode"] = llm_trader.resolve_brain_mode(cfg)
     if desk["brain_mode"] == "gemini":
         desk["model"] = llm_cfg.get("model")
-    thesis = llm_trader.decide_trade_thesis(analysis, desk, timeout_sec=12)
+    thesis = llm_trader.decide_trade_thesis(_with_lessons(analysis), desk, timeout_sec=12)
     with _lock:
         append_journal(
             "llm_thesis_api",

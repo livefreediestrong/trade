@@ -5448,3 +5448,22 @@ body[data-phase="decide"] #session-toolbar .start-tool { display: none; }
 .bench-line[hidden] { display: none; }
 .bench-line.pos { color: var(--gain); }
 .bench-line.neg { color: var(--loss); }
+
+.approve-trail { display: block; margin: 0.5rem 0 0.25rem; }
+.approve-trail input { display: block; width: 8rem; margin-top: 0.2rem; }
+
+/* ---- Weekly report card */
+.report-card { max-width: 30rem; }
+.report-grade {
+  font-size: 3rem; font-weight: 800; line-height: 1; width: 4.5rem; height: 4.5rem;
+  display: grid; place-items: center; border-radius: 16px; margin: 0.25rem 0 0.5rem;
+  background: var(--panel2); border: 2px solid var(--border);
+}
+.report-grade.grade-A, .report-grade.grade-B { color: var(--gain); border-color: var(--gain); }
+.report-grade.grade-C { color: var(--warn); border-color: var(--warn); }
+.report-grade.grade-D, .report-grade.grade-F { color: var(--loss); border-color: var(--loss); }
+.report-why { margin: 0 0 0.6rem; }
+.report-list { margin: 0 0 0.6rem; padding-left: 1.1rem; }
+.report-list li { margin: 0.2rem 0; }
+.report-sub { margin: 0.4rem 0 0.2rem; font-weight: 600; }
+.report-foot { font-size: 0.8rem; }

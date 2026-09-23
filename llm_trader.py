@@ -345,6 +345,8 @@ def _analysis_context_blob(analysis: dict) -> str:
         "checks",
         "earnings",
         "sources",
+        # Desk's own track record for this kind of setup (built from numbers by lessons.py)
+        "past_results_for_similar_setups",
     ]
     slim = {k: analysis.get(k) for k in keep_keys if k in analysis}
     try:

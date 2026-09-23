@@ -635,6 +635,13 @@ class PaperLoop:
                 check_exits(cfg)
         except Exception:
             pass
+        # Once-a-day midday risk check (cuts big losers, protects winners).
+        try:
+            midday = deps.get("midday_risk_check")
+            if midday:
+                midday(cfg)
+        except Exception:
+            pass
         # Housekeeping whenever session is active (equity curve / pending outcomes),
         # including Ask me first (manual) — not gated on auto_paper.
         if cfg.get("session_active"):
