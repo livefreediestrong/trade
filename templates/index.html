@@ -605,6 +605,10 @@
     <div class="modal-card">
       <h3 id="approve-modal-title">Confirm paper fill</h3>
       <div id="approve-preview" class="approve-preview"></div>
+      <label class="live-ack hidden" id="live-ack-wrap" for="live-ack-input">
+        Type <strong id="live-ack-ticker">the ticker</strong> to confirm this live order
+        <input type="text" id="live-ack-input" autocomplete="off" autocapitalize="characters" spellcheck="false" />
+      </label>
       <div class="approve-bracket simple-quiet" id="approve-bracket">
         <p class="approve-bracket-gloss muted" id="approve-bracket-gloss">Optional paper stop &amp; take-profit — blank uses your risk preset.</p>
         <div class="approve-bracket-row">

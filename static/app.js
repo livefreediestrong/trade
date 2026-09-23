@@ -2440,6 +2440,16 @@
       titleEl.textContent = live ? "Review live order" : broker ? `Send order to ${brokerName} paper` : "Confirm paper trade";
     }
     const cbtn = $("#btn-approve-confirm");
+    const ackWrap = $("#live-ack-wrap");
+    const ackInput = $("#live-ack-input");
+    const ackTicker = $("#live-ack-ticker");
+    if (ackWrap) ackWrap.classList.toggle("hidden", !live);
+    if (ackInput) {
+      ackInput.value = "";
+      ackInput.dataset.ticker = String(s.ticker || "").toUpperCase();
+      ackInput.setAttribute("aria-required", live ? "true" : "false");
+    }
+    if (ackTicker) ackTicker.textContent = String(s.ticker || "").toUpperCase();
     if (cbtn) {
       const verb = String(s.side || "").toLowerCase() === "sell" ? "Sell" : "Buy";
       cbtn.textContent = live ? `${verb} real order` : broker ? `${verb} on broker paper` : `${verb} on local paper`;
@@ -2450,6 +2460,7 @@
         cbtn.disabled = true;
         cbtn.title = "Refresh the desk before placing a live order";
       }
+      if (live && ackInput) cbtn.disabled = true;
     }
     $("#approve-modal")?.classList.toggle("is-live", live);
     // P0.4 quiet stop / TP — blank → fill_px + 0.8%×stop_r geometry
@@ -2526,6 +2537,25 @@
     const tpVal = ($("#approve-tp") && $("#approve-tp").value || "").trim();
     const noBracket = !!( $("#approve-no-bracket") && $("#approve-no-bracket").checked );
     const cbtn = $("#btn-approve-confirm");
+    const ackInput = $("#live-ack-input");
+    if (realMoney(state?.config || {}) && ackInput &&
+        String(ackInput.value || "").trim().toUpperCase() !== String(ackInput.dataset.ticker || "").toUpperCase()) {
+      toast("Type the ticker exactly to confirm the live order.", true);
+      pendingApproveId = id;
+      if (cbtn) cbtn.disabled = false;
+      ackInput.focus();
+      return;
+    }
+
+    $("#live-ack-input")?.addEventListener("input", (ev) => {
+      const input = ev.currentTarget;
+      const live = realMoney(state?.config || {});
+      const button = $("#btn-approve-confirm");
+      if (button && live) {
+        button.disabled = String(input.value || "").trim().toUpperCase() !==
+          String(input.dataset.ticker || "").toUpperCase();
+      }
+    });
     if (cbtn) cbtn.disabled = true; // no double submit
     closeApproveModal();
     const body = {};
