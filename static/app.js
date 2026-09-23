@@ -1715,13 +1715,15 @@
         ? (pm ? `${provider} paper` : `${provider} LIVE endpoint (real money)`)
         : "Broker not configured"
     );
+    const diagnostic = Array.isArray(b.diagnostics) && b.diagnostics.length
+      ? ` ${b.diagnostics[0].message || ""}` : "";
     const currentMode = state?.config?.mode || "manual";
     if (summaryMode) {
       summaryMode.textContent = modeLabel(currentMode);
       summaryMode.classList.toggle("live", !!b.configured && !pm && ["auto_live", "live_manual"].includes(currentMode));
     }
     if (summaryBroker) {
-      summaryBroker.textContent = label;
+      summaryBroker.textContent = label + diagnostic;
       summaryBroker.classList.toggle("live", !!b.configured && !pm);
       summaryBroker.classList.toggle("warn", !b.configured);
     }
@@ -1729,7 +1731,7 @@
       summarySession.textContent = state?.config?.session_active ? "Session active" : "Session not started";
     }
     if (chip) {
-      chip.textContent = "Broker: " + label;
+      chip.textContent = "Broker: " + label + (b.capability_state ? ` (${b.capability_state.replaceAll("_", " ")})` : "");
       chip.title = b.configured
         ? (pm
             ? `${provider} paper account connected — fake money`
