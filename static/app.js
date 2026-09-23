@@ -1178,6 +1178,7 @@
     const cfg = data.config || {};
     const ledger = data.ledger || {};
     const daily = data.daily || {};
+    const recap = data.daily_recap || {};
     const pendingSummary = document.getElementById("execution-summary-pending");
     const pendingCount = Array.isArray(data.signals?.pending) ? data.signals.pending.length : 0;
     if (pendingSummary) {
@@ -1201,6 +1202,10 @@
     setText("#stat-equity", fmtMoney(ledger.equity));
     setText("#stat-cash", fmtMoney(ledger.cash));
     setText("#stat-trades", String(daily.trades ?? 0));
+    setText("#daily-recap-headline", recap.market_closed ? (recap.headline || "No activity recorded today.") : "Market is still open — recap will finalize after the close.");
+    setText("#daily-recap-detail", recap.market_closed
+      ? `${recap.fills || 0} fills · ${recap.wins || 0} wins / ${recap.losses || 0} losses · ${recap.blocked_decisions || 0} blocked or abstained · ${recap.open_positions || 0} open position${recap.open_positions === 1 ? "" : "s"}`
+      : `${recap.decisions || 0} decisions so far · descriptive summary only`);
     const pnl = Number(daily.pnl || 0);
     const pnlEl = $("#stat-pnl");
     if (pnlEl) {

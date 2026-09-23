@@ -197,6 +197,7 @@ Light mode: the ☀ / ☾ button in the header (defaults to your computer's sett
 ## Slow-bleed guard & SPY benchmark
 - **Slow-bleed guard:** if your last 20 closed paper trades (at least 10) are net negative **after fees**, the desk stops opening new trades and shows "Paused to protect your money" with the numbers. Exits keep working. **Resume anyway** restarts the count (`POST /api/bleed/resume`). Tuning: `BLEED_WINDOW` / `BLEED_MIN_TRADES` in app.py; turn off with `bleed_guard_enabled: false` in config.
 - **You vs. SPY:** at Start checking the desk records SPY's price; the stage and the end-of-day recap show your return next to simply holding SPY with the same cash.
+- **Daily after-hours recap:** `/api/state` includes `daily_recap`, and `/api/report/daily` returns a descriptive close-of-day summary with net P&L after fees, fills, wins/losses, decisions, blocked calls, open positions, and tickers observed. It never authorizes overnight or live orders.
 
 ## Trading-bot ideas (from YouTube review, 2026-09-22)
 - **Trailing stop:** "Trailing stop %" in the Approve window — the stop follows the price up (never down).

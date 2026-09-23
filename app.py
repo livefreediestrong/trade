@@ -2299,6 +2299,65 @@ def daily_stats(ledger: dict[str, Any]) -> dict[str, Any]:
     return {"date": day, **d}
 
 
+def daily_recap(cfg: dict[str, Any], ledger: dict[str, Any], *, day: str | None = None) -> dict[str, Any]:
+    """Auditable after-hours summary; never presents a closed market as actionable."""
+    day = day or _today_str()
+    stats = dict(ledger.get("daily", {}).get(day) or {})
+    fills = []
+    for fill in list(ledger.get("fills") or []) + list(ledger.get("fills_archive") or []):
+        if str(fill.get("ts") or "").startswith(day):
+            fills.append(fill)
+    realized = sum(_finite_float(f.get("realized_pnl"), 0.0) or 0.0 for f in fills)
+    fees = sum(_finite_float(f.get("fee_usd"), 0.0) or 0.0 for f in fills)
+    wins = sum(1 for f in fills if (_finite_float(f.get("realized_pnl"), 0.0) or 0.0) > 0)
+    losses = sum(1 for f in fills if (_finite_float(f.get("realized_pnl"), 0.0) or 0.0) < 0)
+    decisions = [
+        d for d in _decision_ring.latest(500)
+        if str(d.get("ts") or d.get("timestamp") or "").startswith(day)
+    ]
+    actionable = [
+        d for d in decisions
+        if str(d.get("side") or d.get("decision") or "").lower() not in ("", "hold", "flat")
+    ]
+    blocked = sum(
+        1 for d in decisions
+        if d.get("abstain") or d.get("gated") or d.get("reject_reason")
+        or "block" in str(d.get("reason") or "").lower()
+    )
+    close = paper_loop_mod.session_close_time(
+        datetime.now(getattr(paper_loop_mod, "NY_TZ", timezone.utc)).date()
+    )
+    now_et = datetime.now(getattr(paper_loop_mod, "NY_TZ", timezone.utc))
+    closed = close is None or now_et.time() >= close.time()
+    net = round(realized - fees, 2)
+    return {
+        "date": day,
+        "market_closed": closed,
+        "status": "after_hours" if closed else "intraday",
+        "headline": (
+            f"{day}: {('up' if net > 0 else 'down' if net < 0 else 'flat')} "
+            f"${abs(net):,.2f} net after fees"
+        ),
+        "pnl_usd": round(float(stats.get("pnl") or net), 2),
+        "realized_usd": round(realized, 2),
+        "fees_usd": round(fees, 2),
+        "fills": len(fills),
+        "wins": wins,
+        "losses": losses,
+        "decisions": len(decisions),
+        "actionable_decisions": len(actionable),
+        "blocked_decisions": blocked,
+        "open_positions": len([
+            p for p in ledger.get("positions") or []
+            if (_finite_float(p.get("shares"), 0.0) or 0.0) > 0
+        ]),
+        "top_tickers": sorted({
+            str(x.get("ticker") or "").upper() for x in fills + decisions if x.get("ticker")
+        })[:12],
+        "note": "After-hours recap only. It is descriptive and does not authorize overnight or live orders.",
+    }
+
+
 def rth_pace_progress(
     pnl: float,
     target_usd: float | None,
@@ -3905,6 +3964,14 @@ def api_report_weekly():
     return jsonify(weekly_report(days))
 
 
+@app.route("/api/report/daily")
+def api_report_daily():
+    cfg = load_config()
+    ledger = load_ledger()
+    day = (request.args.get("date") or "").strip() or None
+    return jsonify({"ok": True, "recap": daily_recap(cfg, ledger, day=day)})
+
+
 def _with_lessons(analysis: dict) -> dict:
     """Attach this desk's own track record for the setup (numbers only)."""
     if not isinstance(analysis, dict):
@@ -4832,6 +4899,7 @@ def _build_state_lite() -> dict[str, Any]:
         "loop": loop_st,
         "session_active": session_active,
         "daily": daily,
+        "daily_recap": daily_recap(cfg, ledger),
         "pace": daily.get("pace") or {},
         "open_position": open_pos,
         "buzz": _buzz_lite(buzz_sum, heat_enabled=heat_on),
