@@ -221,6 +221,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "scan_interval_sec": 120,  # volume-screener watchlist scan interval
     "alert_cooldown_sec": 300,
     "promotion_min_samples": 30,
+    "promotion_min_independent_tickers": 3,
     "promotion_min_win_rate": 0.52,
     "promotion_min_expectancy_usd": 0.0,
     "promotion_min_profit_factor": 1.05,
@@ -549,6 +550,7 @@ _NUMERIC_CFG_LIMITS: dict[str, tuple[float, float]] = {
     "scan_interval_sec": (15.0, 86400.0),
     "alert_cooldown_sec": (0.0, 86400.0),
     "promotion_min_samples": (1.0, 100000.0),
+    "promotion_min_independent_tickers": (1.0, 1000.0),
     "promotion_min_win_rate": (0.0, 1.0),
     "promotion_min_expectancy_usd": (-1e6, 1e6),
     "promotion_min_profit_factor": (0.0, 100.0),
@@ -4540,6 +4542,11 @@ def _promotion_gate(cfg: dict[str, Any], ledger: dict[str, Any]) -> dict[str, An
                 fee_value = _finite_float(fill.get("fee_usd"), 0.0) or 0.0
                 grouped[key] = grouped.get(key, 0.0) + pnl_value - fee_value
         pnl = list(grouped.values())
+        independent_tickers = {
+            str(fill.get("ticker") or "").upper()
+            for fill in fills
+            if str(fill.get("ticker") or "").strip()
+        }
         closed = [{"realized_pnl": value} for value in pnl]
         wins = [f for f in closed if (_finite_float(f.get("realized_pnl"), 0) or 0) > 0]
         running = peak = drawdown = 0.0
@@ -4557,6 +4564,9 @@ def _promotion_gate(cfg: dict[str, Any], ledger: dict[str, Any]) -> dict[str, An
         pf_threshold = float(cfg.get("promotion_min_profit_factor") or 1.05)
         checks = {
             "minimum_samples": n >= int(cfg.get("promotion_min_samples") or 30),
+            "minimum_independent_tickers": len(independent_tickers) >= int(
+                cfg.get("promotion_min_independent_tickers") or 3
+            ),
             "minimum_win_rate": win_rate is not None and win_rate >= float(cfg.get("promotion_min_win_rate") or 0.52),
             "positive_expectancy": expectancy is not None and expectancy > float(cfg.get("promotion_min_expectancy_usd") or 0.0),
             "profit_factor": (
@@ -4570,6 +4580,7 @@ def _promotion_gate(cfg: dict[str, Any], ledger: dict[str, Any]) -> dict[str, An
             "eligible": all(checks.values()),
             "checks": checks,
             "samples": n,
+            "independent_tickers": len(independent_tickers),
             "win_rate": round(win_rate, 4) if win_rate is not None else None,
             "expectancy_usd": round(expectancy, 4) if expectancy is not None else None,
             "profit_factor": round(profit_factor, 4) if profit_factor is not None else ("infinite" if gross_wins > 0 else None),
@@ -5364,7 +5375,8 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
         for key in (
             "paper_equity", "signal_ttl_sec", "demo_signal_interval_sec",
             "scan_interval_sec", "slip_bps", "alert_cooldown_sec",
-            "promotion_min_samples", "promotion_min_win_rate",
+            "promotion_min_samples", "promotion_min_independent_tickers",
+            "promotion_min_win_rate",
             "promotion_min_expectancy_usd", "promotion_min_profit_factor",
             "promotion_max_drawdown_pct",
             "promotion_window_days",

@@ -129,6 +129,8 @@ def test_promotion_requires_net_expectancy_and_profit_factor():
     assert evidence["checks"]["positive_expectancy"] is False
     assert evidence["checks"]["profit_factor"] is False
     assert evidence["eligible"] is False
+    assert evidence["checks"]["minimum_independent_tickers"] is False
+    assert evidence["independent_tickers"] == 0
 import llm_trader  # noqa: E402
 import paper_loop  # noqa: E402
 import session_track  # noqa: E402
