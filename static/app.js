@@ -5492,6 +5492,61 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
   }
 
   let lastNewsSig = "";
+  let intelligenceTicker = "";
+  let intelligenceAt = 0;
+  let intelligenceInflight = false;
+
+  function renderIntelligence(payload) {
+    const panel = $("#news-intel");
+    const summary = $("#news-intel-summary");
+    const timeline = $("#news-intel-timeline");
+    const meta = $("#news-intel-meta");
+    if (!panel || !summary || !timeline) return;
+    const analysis = (payload && payload.analysis) || {};
+    const freshness = analysis.freshness || {};
+    const alerts = Array.isArray(payload && payload.alerts) ? payload.alerts.length : 0;
+    const contradictions = Array.isArray(analysis.contradictions) ? analysis.contradictions.length : 0;
+    const reliability = payload && payload.provider_reliability || {};
+    const providers = Object.keys(reliability).length;
+    summary.innerHTML =
+      '<span class="intel-chip">Sources ' + escapeHtml(String(providers)) + "</span>" +
+      '<span class="intel-chip">Stale ' + escapeHtml(String(freshness.stale_count || 0)) + "</span>" +
+      '<span class="intel-chip">' + escapeHtml(String(alerts)) + " multi-source alert" + (alerts === 1 ? "" : "s") + "</span>" +
+      '<span class="intel-chip">' + escapeHtml(String(contradictions)) + " contradiction" + (contradictions === 1 ? "" : "s") + "</span>";
+    const rows = Array.isArray(payload && payload.timeline) ? payload.timeline.slice(0, 8) : [];
+    timeline.innerHTML = rows.length ? rows.map((row) => {
+      const title = escapeHtml(String(row.title || row.description || row.form || "Research event").slice(0, 150));
+      const source = escapeHtml(String(row.source || row.publisher || row.event_type || "event"));
+      const ticker = escapeHtml(String(row.ticker || payload.ticker || "").toUpperCase());
+      const href = safeUrl(row.link || row.url);
+      const titleHtml = href
+        ? '<a href="' + escapeHtml(href) + '" target="_blank" rel="noopener noreferrer">' + title + "</a>"
+        : title;
+      return '<div class="intel-row"><span class="intel-ticker">' + ticker + "</span>" +
+        '<span class="intel-title">' + titleHtml + "</span>" +
+        '<span class="intel-meta">' + source + "</span></div>";
+    }).join("") : '<span class="muted">No additional timeline events.</span>';
+    if (meta) meta.textContent = payload && payload.display_only ? "Display only — never a trade instruction" : "Research-only";
+    panel.hidden = !rows.length && !alerts && !contradictions;
+  }
+
+  async function loadIntelligence(ticker, force) {
+    const sym = String(ticker || focusTicker || "").toUpperCase();
+    if (!sym || intelligenceInflight || (!force && sym === intelligenceTicker && Date.now() - intelligenceAt < 120000)) return;
+    intelligenceInflight = true;
+    try {
+      const payload = await api("/api/research/intelligence?symbols=" + encodeURIComponent(sym) + (force ? "&force=1" : ""), { timeoutMs: 20000 });
+      intelligenceTicker = sym;
+      intelligenceAt = Date.now();
+      renderIntelligence(payload);
+    } catch (_) {
+      const panel = $("#news-intel");
+      if (panel) panel.hidden = true;
+    } finally {
+      intelligenceInflight = false;
+    }
+  }
+
   function renderNews(data) {
     const feed = $("#news-feed");
     const empty = $("#news-empty");
@@ -5504,6 +5559,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
     let items = Array.isArray(wn.items) ? wn.items.slice() : [];
     const providers = wn.providers || {};
     const focus = String((data && data.focus_ticker) || focusTicker || "").toUpperCase();
+    loadIntelligence(focus || focusTicker, false);
     const positions = ((data && data.ledger) || {}).positions || [];
     const posSet = new Set(positions.map((p) => String(p.ticker || "").toUpperCase()).filter(Boolean));
     const radar = ((data && data.radar) || {}).movers || [];
@@ -5670,6 +5726,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
         state.watchlist_news = res;
         lastNewsSig = "";
         renderNews(state);
+        loadIntelligence(focusTicker, true);
       }
     } catch (err) {
       console.warn("news refresh soft-fail", err);

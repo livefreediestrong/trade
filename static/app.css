@@ -5154,6 +5154,15 @@ body.ui-simple .news-panel.is-empty-quiet .news-empty {
   border: 1px solid rgba(201,168,108,0.28); color: #c8d0b8; background: rgba(14,20,28,0.4);
 }
 .news-feed { display: flex; flex-direction: column; gap: 0.35rem; }
+.news-intel { margin-top: 0.7rem; padding-top: 0.65rem; border-top: 1px solid rgba(106,173,200,0.14); }
+.news-intel-head { display: flex; justify-content: space-between; gap: 0.6rem; font-size: 0.78rem; }
+.news-intel-summary { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.45rem 0; }
+.intel-chip { border: 1px solid rgba(106,173,200,0.2); border-radius: 999px; padding: 0.15rem 0.4rem; color: var(--motion-teal); font-size: 0.7rem; }
+.news-intel-timeline { display: flex; flex-direction: column; gap: 0.25rem; }
+.intel-row { display: grid; grid-template-columns: auto 1fr auto; gap: 0.45rem; align-items: baseline; font-size: 0.76rem; }
+.intel-ticker { color: var(--motion-teal); font-family: ui-monospace, Consolas, monospace; font-weight: 700; }
+.intel-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.intel-meta { color: var(--text-muted); font-size: 0.68rem; }
 .news-row {
   display: grid;
   grid-template-columns: auto 1fr auto;
