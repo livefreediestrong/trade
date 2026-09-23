@@ -947,6 +947,18 @@
     }
   });
 
+  // ---- Claude head-to-head toggle
+  $("#claude-shadow")?.addEventListener("change", async (ev) => {
+    const on = !!ev.target.checked;
+    try {
+      await api("/api/config", { method: "POST", body: JSON.stringify({ claude_shadow: on }) });
+      toast(on ? "Claude now answers silently next to your main AI (costs a little per check)" : "Claude head-to-head off");
+    } catch (e) {
+      ev.target.checked = !on;
+      toast(e.message, true);
+    }
+  });
+
   // ---- Weekly report card
   async function openReport() {
     const modal = $("#report-modal");
@@ -982,7 +994,88 @@
       </ul>
       ${setups ? `<p class="report-sub">Setups that kept losing — the AI now sees this history before deciding:</p><ul class="report-list">${setups}</ul>` : ""}
       <p class="muted report-foot">Practice money only. A good grade over a few weeks matters more than one good week.</p>`;
+    appendBrainScoreboard(body);
   }
+  async function appendBrainScoreboard(body) {
+    try {
+      const s = await api("/api/brains/scoreboard", { timeoutMs: 15000 });
+      if (!s || !s.compared_calls) {
+        if (s && s.claude_configured) {
+          body.insertAdjacentHTML("beforeend", '<p class="muted">Claude head-to-head: no scored calls yet.</p>');
+        }
+        return;
+      }
+      const pct = (d) => (d.hit_rate != null ? Math.round(d.hit_rate * 100) + "%" : "—");
+      const main = escapeHtml(String(s.main_brain || "Main AI"));
+      body.insertAdjacentHTML("beforeend", `
+        <p class="report-sub">Who called it better? (same ${s.compared_calls} decisions, last ${s.days} days)</p>
+        <table class="brain-table">
+          <tr><th></th><th>Right</th><th>Wrong</th><th>Hit rate</th></tr>
+          <tr><td>${main}</td><td>${s.main.helped}</td><td>${s.main.hurt}</td><td>${pct(s.main)}</td></tr>
+          <tr><td>Claude</td><td>${s.claude.helped}</td><td>${s.claude.hurt}</td><td>${pct(s.claude)}</td></tr>
+        </table>`);
+    } catch (_) { /* optional section */ }
+  }
+  // ---- Backtest: does the screener rule have an edge on past data?
+  function btBlock(title, s) {
+    if (!s || !s.trades) return `<li>${escapeHtml(title)}: no trades</li>`;
+    return `<li>${escapeHtml(title)}: <strong>${s.trades}</strong> trades, won ${Math.round(s.win_rate * 100)}%,
+      average ${fmtSigned(s.avg_per_trade_usd)} per trade after costs (total ${fmtSigned(s.total_usd)}; worst dip −${fmtMoney(s.max_drawdown_usd)})</li>`;
+  }
+  function renderBacktest(res, box) {
+    if (!res || !res.ok) {
+      box.innerHTML = `<p>${escapeHtml((res && res.error) || "No result yet.")}</p>`;
+      return;
+    }
+    const label = { edge: "Promising", overfit: "Probably luck", weak: "Better than random, still losing", no_edge: "No proven edge", not_enough: "Not enough data" }[res.verdict] || res.verdict;
+    box.innerHTML = `
+      <p class="report-sub">Past-data test: <span class="bt-verdict bt-${escapeHtml(res.verdict)}">${escapeHtml(label)}</span></p>
+      <p>${escapeHtml(res.explanation)}</p>
+      ${(res.warnings || []).map((w) => `<p class="approve-live-warn">${escapeHtml(w)}</p>`).join("")}
+      <p class="muted">Learning period ${escapeHtml(res.period.start)} → ${escapeHtml(res.period.split)}:</p>
+      <ul class="report-list">${btBlock("Screener's buy rule", res.learn.rule)}${btBlock("Buying with no filter", res.learn.baseline)}</ul>
+      <p class="muted">Check period ${escapeHtml(res.period.split)} → ${escapeHtml(res.period.end)} (never used to tune):</p>
+      <ul class="report-list">${btBlock("Screener's buy rule", res.check.rule)}${btBlock("Buying with no filter", res.check.baseline)}</ul>
+      <p class="muted report-foot">${(res.tickers || []).length} stocks tested, ${fmtMoney(res.params.position_usd)} per trade, buy at 10:30 am, exit at stop / target / close.
+        Not included: ${escapeHtml((res.not_included || []).join(", "))}.</p>`;
+  }
+  async function runBacktest() {
+    const body = $("#report-body");
+    if (!body) return;
+    let box = $("#bt-box");
+    if (!box) {
+      body.insertAdjacentHTML("beforeend", '<div id="bt-box" class="bt-box"></div>');
+      box = $("#bt-box");
+    }
+    try {
+      const cur = await api("/api/backtest");
+      if (!cur.status.running) {
+        if (cur.result && !confirm("Run a new test? (Downloads about 2 years of hourly prices — takes a minute or two.)\n\nCancel shows the last result.")) {
+          renderBacktest(cur.result, box);
+          return;
+        }
+        await api("/api/backtest", { method: "POST", body: "{}" });
+      }
+    } catch (e) {
+      box.innerHTML = `<p>${escapeHtml(e.message)}</p>`;
+      return;
+    }
+    const poll = async () => {
+      try {
+        const s = await api("/api/backtest");
+        if (s.status.running) {
+          box.innerHTML = `<p class="muted">${escapeHtml(s.status.message || "Working…")}</p>`;
+          setTimeout(poll, 1500);
+        } else {
+          renderBacktest(s.result, box);
+        }
+      } catch (e) {
+        box.innerHTML = `<p>${escapeHtml(e.message)}</p>`;
+      }
+    };
+    poll();
+  }
+  $("#btn-backtest")?.addEventListener("click", runBacktest);
   $("#btn-report")?.addEventListener("click", openReport);
   $("#btn-recap-report")?.addEventListener("click", () => {
     $("#recap-modal")?.classList.add("hidden");
@@ -1049,6 +1142,8 @@
     renderBrokerBook(data);
     renderBleed(data);
     renderBenchmark(data);
+    const cs = $("#claude-shadow");
+    if (cs && data.config && document.activeElement !== cs) cs.checked = !!data.config.claude_shadow;
     renderLoopPanel(data);
     try { renderNews(data); } catch (_) {}
     renderLoopFeed();

@@ -1274,6 +1274,8 @@ class PaperLoop:
                 "size_at_price": None,
                 "verdict": verdict,
                 "lateness_label": lateness_label,
+                "brain_mode": brain_mode,
+                "shadow_claude": thesis.get("shadow_claude"),
                 "thesis": (thesis_text or "")[:300] if thesis_text else None,
                 "horizon": thesis.get("horizon"),
                 "horizon_min": thesis.get("horizon_min"),

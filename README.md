@@ -179,3 +179,12 @@ Light mode: the ☀ / ☾ button in the header (defaults to your computer's sett
 ## Slow-bleed guard & SPY benchmark
 - **Slow-bleed guard:** if your last 20 closed paper trades (at least 10) are net negative **after fees**, the desk stops opening new trades and shows "Paused to protect your money" with the numbers. Exits keep working. **Resume anyway** restarts the count (`POST /api/bleed/resume`). Tuning: `BLEED_WINDOW` / `BLEED_MIN_TRADES` in app.py; turn off with `bleed_guard_enabled: false` in config.
 - **You vs. SPY:** at Start checking the desk records SPY's price; the stage and the end-of-day recap show your return next to simply holding SPY with the same cash.
+
+## Trading-bot ideas (from YouTube review, 2026-09-22)
+- **Trailing stop:** "Trailing stop %" in the Approve window — the stop follows the price up (never down).
+- **Lessons memory (`lessons.py`, `data/lessons.json`):** every scored call becomes a one-line lesson; before deciding, the AI sees this desk's own record for the same kind of setup and ticker. `GET /api/lessons`.
+- **Midday check:** once a day after 12:00 ET, positions down 7%+ are closed and positions up 3%+ get their stop raised to the price paid (`MIDDAY_CUT_PCT`, `MIDDAY_BREAKEVEN_PCT`; off with `midday_check_enabled: false`).
+- **Report card:** header button — last 7 days, grade A–F, profit after costs, % of AI calls right, worst setups. `GET /api/report/weekly`.
+- **Scanner signals:** 5-minute relative volume (vs. the same time on prior days), VWAP and its slope, distance from VWAP / day's high in ATRs, bid-ask spread vs. ATR (market hours only). They can downgrade PASS → WATCH and are shown to the AI.
+- **Claude (`claude_brain.py`):** choose "Claude" as the brain, or tick "Claude head-to-head" to have Claude answer silently next to your main AI; the report card shows who was right more often on the same decisions. Needs `ANTHROPIC_API_KEY` in `.env`. Model `CLAUDE_MODEL` (default `claude-opus-5`, ~$5/$25 per million tokens), `CLAUDE_EFFORT` (default `low`). Uses server-side refusal fallbacks (`fallbacks: "default"`).
+- **Past-data test (`backtest.py`):** "Test the rules on past data" in the report card replays the screener's PASS rule on ~2 years of hourly prices with a learning/check split and a no-filter baseline. `GET/POST /api/backtest`.

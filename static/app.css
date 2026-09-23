@@ -5467,3 +5467,13 @@ body[data-phase="decide"] #session-toolbar .start-tool { display: none; }
 .report-list li { margin: 0.2rem 0; }
 .report-sub { margin: 0.4rem 0 0.2rem; font-weight: 600; }
 .report-foot { font-size: 0.8rem; }
+
+.brain-table { border-collapse: collapse; margin: 0.25rem 0 0.6rem; font-variant-numeric: tabular-nums; }
+.brain-table th, .brain-table td { padding: 0.2rem 0.75rem 0.2rem 0; text-align: left; }
+.brain-table th { color: var(--text-3); font-weight: 600; }
+
+.bt-box { margin-top: 0.6rem; border-top: 1px solid var(--border); padding-top: 0.5rem; }
+.bt-verdict { padding: 0.1rem 0.5rem; border-radius: 999px; border: 1px solid var(--border); }
+.bt-edge { color: var(--gain); border-color: var(--gain); }
+.bt-overfit, .bt-weak, .bt-not_enough { color: var(--warn); border-color: var(--warn); }
+.bt-no_edge { color: var(--loss); border-color: var(--loss); }

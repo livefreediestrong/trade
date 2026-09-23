@@ -494,6 +494,16 @@
 :root[data-theme="light"] .bench-line { color: var(--text-3); }
 :root[data-theme="light"] .bench-line.pos { color: var(--gain); }
 :root[data-theme="light"] .bench-line.neg { color: var(--loss); }
+:root[data-theme="light"] .report-grade { background: var(--panel2); border: 2px solid var(--border); }
+:root[data-theme="light"] .report-grade.grade-A, :root[data-theme="light"] .report-grade.grade-B { color: var(--gain); border-color: var(--gain); }
+:root[data-theme="light"] .report-grade.grade-C { color: var(--warn); border-color: var(--warn); }
+:root[data-theme="light"] .report-grade.grade-D, :root[data-theme="light"] .report-grade.grade-F { color: var(--loss); border-color: var(--loss); }
+:root[data-theme="light"] .brain-table th { color: var(--text-3); }
+:root[data-theme="light"] .bt-box { border-top: 1px solid var(--border); }
+:root[data-theme="light"] .bt-verdict { border: 1px solid var(--border); }
+:root[data-theme="light"] .bt-edge { color: var(--gain); border-color: var(--gain); }
+:root[data-theme="light"] .bt-overfit, :root[data-theme="light"] .bt-weak, :root[data-theme="light"] .bt-not_enough { color: var(--warn); border-color: var(--warn); }
+:root[data-theme="light"] .bt-no_edge { color: var(--loss); border-color: var(--loss); }
 
 /* ---- hand-tuned (generator output above is automatic) ---- */
 :root[data-theme="light"] {

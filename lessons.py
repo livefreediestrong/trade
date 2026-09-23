@@ -76,6 +76,8 @@ def record_outcome(path: Path, ev: dict[str, Any]) -> dict[str, Any] | None:
         "side": _side(ev),
         "setup": setup_key(ev.get("verdict"), ev.get("lateness_label")),
         "outcome": ev.get("outcome"),
+        "brain": ev.get("brain_mode"),
+        "claude_outcome": ev.get("shadow_claude_outcome"),
         "move_bps": ev.get("outcome_move_bps"),
         "text": lesson_text(ev),
     }

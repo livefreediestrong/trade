@@ -29,6 +29,8 @@ from flask import Flask, jsonify, render_template, request
 
 import llm_trader
 import lessons
+import claude_brain
+import backtest
 import paper_loop as paper_loop_mod
 import session_track
 import buzz_sources
@@ -51,6 +53,7 @@ LEDGER_PATH = DATA_DIR / "ledger.json"
 JOURNAL_PATH = DATA_DIR / "journal.json"
 DECISIONS_PATH = DATA_DIR / "decisions.json"
 LESSONS_PATH = DATA_DIR / "lessons.json"
+BACKTEST_PATH = DATA_DIR / "backtest.json"
 
 BANNER = (
     "Tomahawk — Gemini research desk. Local paper by default; Alpaca optional "
@@ -2290,9 +2293,20 @@ def check_decision_outcomes(limit: int = 40) -> list[dict[str, Any]]:
         label = result.get("outcome")
         if not label:
             continue
+        sh = ev.get("shadow_claude") or {}
+        if isinstance(sh, dict) and sh.get("side") and not sh.get("error"):
+            try:
+                r2 = session_track.classify_horizon_outcome(
+                    intended_side=str(sh.get("side")), mid_at=mid_at, mid_now=float(mid_now)
+                )
+                if r2.get("outcome"):
+                    ev = dict(ev, shadow_claude_outcome=r2["outcome"])
+            except Exception:
+                pass
         updates = {
             "outcome": label,
             "outcome_pending": False,
+            "shadow_claude_outcome": ev.get("shadow_claude_outcome"),
             "outcome_mid": result.get("mid_now"),
             "outcome_move_bps": result.get("move_bps"),
             "outcome_ts": _now_iso(),
@@ -3486,6 +3500,99 @@ def api_lessons():
     return jsonify({"ok": True, "lessons": lessons.recent(LESSONS_PATH, limit)})
 
 
+class _ClaudeShadow:
+    """Run Claude on the same facts in a background thread (head-to-head, no trading)."""
+
+    def __init__(self, analysis: dict, horizon_min: int):
+        self._out: dict[str, Any] | None = None
+        self._t = threading.Thread(target=self._run, args=(analysis, horizon_min), daemon=True, name="claude-shadow")
+        self._t.start()
+
+    def _run(self, analysis: dict, horizon_min: int) -> None:
+        try:
+            self._out = claude_brain.decide(analysis, horizon_min=horizon_min)
+        except Exception as exc:  # noqa: BLE001
+            self._out = {"side": "flat", "error": f"claude_shadow:{type(exc).__name__}"}
+
+    def result(self, timeout: float) -> dict[str, Any] | None:
+        self._t.join(timeout)
+        return self._out
+
+
+def brain_scoreboard(days: int = 30) -> dict[str, Any]:
+    """Head-to-head on the SAME decisions: main brain vs. Claude shadow."""
+    from datetime import timedelta as _td
+
+    cutoff = (datetime.now(timezone.utc) - _td(days=days)).isoformat()
+    rows = [r for r in lessons.recent(LESSONS_PATH, 1000)
+            if r.get("claude_outcome") and str(r.get("ts") or "") >= cutoff]
+    def tally(key):
+        d = {"helped": 0, "hurt": 0, "flat": 0}
+        for r in rows:
+            o = r.get(key)
+            if o in d:
+                d[o] += 1
+        dec = d["helped"] + d["hurt"]
+        d["hit_rate"] = round(d["helped"] / dec, 3) if dec else None
+        return d
+    main_names = sorted({str(r.get("brain") or "main") for r in rows})
+    return {
+        "ok": True,
+        "days": days,
+        "compared_calls": len(rows),
+        "main_brain": ", ".join(main_names) or None,
+        "main": tally("outcome"),
+        "claude": tally("claude_outcome"),
+        "claude_configured": claude_brain.is_configured(),
+        "claude_model": claude_brain.model_name(),
+    }
+
+
+@app.route("/api/backtest", methods=["GET", "POST"])
+def api_backtest():
+    """GET: progress + last result. POST: start a test on the watchlist (background)."""
+    if request.method == "GET":
+        return jsonify({"ok": True, "status": backtest.status(), "result": backtest.last_result(BACKTEST_PATH)})
+    if backtest.status().get("running"):
+        return jsonify({"ok": False, "error": "A test is already running."}), 409
+    body = request.get_json(force=True, silent=True) or {}
+    cfg = load_config()
+    tickers = body.get("tickers") if isinstance(body.get("tickers"), list) else None
+    if not tickers:
+        tickers = prune_watchlist_for_trading_safe(cfg)[:20]
+    tickers = [str(t).upper().strip() for t in tickers if re.fullmatch(r"[A-Za-z][A-Za-z0-9.\-]{0,9}", str(t).strip())][:40]
+    if not tickers:
+        return jsonify({"ok": False, "error": "No stocks to test — add some to your watchlist."}), 400
+    preset = get_preset(cfg.get("risk_preset"))
+    equity = float(cfg.get("paper_equity") or 10_000)
+    params = {
+        "stop_pct": 0.8 * float(preset.get("stop_r") or 1.0),
+        "target_r": float(preset.get("target_r") or 2.5),
+        "slip_bps": float(cfg.get("slip_bps", 5) or 0),
+        "fee_bps": _cfg_fee_bps(cfg),
+        "position_usd": round(equity * float(preset.get("max_position_pct") or 2) / 100.0, 2),
+    }
+    threading.Thread(
+        target=backtest.run, args=(tickers, BACKTEST_PATH, params), daemon=True, name="backtest"
+    ).start()
+    append_journal("backtest_started", {"tickers": tickers, "params": params})
+    return jsonify({"ok": True, "started": True, "tickers": tickers})
+
+
+def prune_watchlist_for_trading_safe(cfg: dict[str, Any]) -> list[str]:
+    try:
+        return paper_loop_mod.prune_watchlist_for_trading(
+            list(cfg.get("watchlist") or []), focus=str(cfg.get("watchlist_focus") or "liquid")
+        )
+    except Exception:
+        return list(cfg.get("watchlist") or [])
+
+
+@app.route("/api/brains/scoreboard")
+def api_brains_scoreboard():
+    return jsonify(brain_scoreboard())
+
+
 def _loop_trade_thesis(analysis: dict, cfg: dict) -> dict[str, Any]:
     """Single-brain thesis for loop (gemini|mock|jev). Timeout/error → hold/abstain or mock fallback."""
     brain = llm_trader.resolve_brain_mode(cfg)
@@ -3515,7 +3622,27 @@ def _loop_trade_thesis(analysis: dict, cfg: dict) -> dict[str, Any]:
     else:
         desk.pop("model", None)
     try:
-        return llm_trader.decide_trade_thesis(_with_lessons(analysis), desk, timeout_sec=12)
+        a2 = _with_lessons(analysis)
+        hz = int(cfg.get("decision_horizon_min") or 20)
+        shadow = None
+        if cfg.get("claude_shadow") and brain != "claude" and claude_brain.is_configured():
+            shadow = _ClaudeShadow(a2, hz)  # runs in parallel with the main brain
+        if brain == "claude":
+            main = claude_brain.decide(a2, horizon_min=hz)
+        else:
+            main = llm_trader.decide_trade_thesis(a2, desk, timeout_sec=12)
+        if shadow is not None:
+            res = shadow.result(timeout=10)
+            if res:
+                main = dict(main)
+                main["shadow_claude"] = {
+                    "side": res.get("side"),
+                    "confidence": res.get("confidence"),
+                    "error": res.get("error"),
+                    "model": res.get("llm_model"),
+                    "cost_usd": res.get("model_cost_usd"),
+                }
+        return main
     except Exception as exc:  # noqa: BLE001
         return {
             "side": "flat",
@@ -4530,6 +4657,12 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
             cfg["radar_refresh_sec"] = market_radar.clamp_refresh_sec(body.get("radar_refresh_sec"))
             append_journal("radar_refresh_sec_set", {"radar_refresh_sec": cfg["radar_refresh_sec"]})
 
+        if "claude_shadow" in body:
+            want = bool(body["claude_shadow"])
+            if want and not claude_brain.is_configured():
+                return jsonify({"ok": False, "error": "Add ANTHROPIC_API_KEY to .env (and restart) to run the Claude head-to-head"}), 400
+            cfg["claude_shadow"] = want
+            append_journal("claude_shadow_set", {"claude_shadow": want})
         if "llm_enabled" in body:
             cfg["llm_enabled"] = bool(body["llm_enabled"])
         if "llm_on_scan" in body:
@@ -4540,8 +4673,10 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
         if "brain_mode" in body or "model" in body:
             raw_b = body.get("brain_mode", body.get("model"))
             mode = str(raw_b or "gemini").strip().lower()
-            if mode not in ("gemini", "mock", "jev"):
-                return jsonify({"ok": False, "error": "brain_mode must be gemini|mock|jev"}), 400
+            if mode not in ("gemini", "mock", "jev", "claude"):
+                return jsonify({"ok": False, "error": "brain_mode must be gemini|mock|jev|claude"}), 400
+            if mode == "claude" and not claude_brain.is_configured():
+                return jsonify({"ok": False, "error": "Add ANTHROPIC_API_KEY to .env (and restart) to use Claude"}), 400
             if mode == "jev" and not llm_trader.typesafe_api_key():
                 # Allow selecting jev; runtime falls back to mock if key missing
                 pass

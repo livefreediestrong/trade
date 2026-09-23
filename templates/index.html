@@ -212,7 +212,11 @@
           <option value="gemini">Gemini</option>
           <option value="mock">Mock</option>
           <option value="jev">Jev</option>
+          <option value="claude">Claude</option>
         </select>
+      </label>
+      <label class="brain-toggle chk" for="claude-shadow" title="Claude answers the same question silently next to your main AI. It never trades — the report card shows who called it better.">
+        <input type="checkbox" id="claude-shadow" /> Claude head-to-head
       </label>
     </div>
     <!-- One Job sticky stage (Simple); Advanced still sees big-action + probs inside -->
@@ -739,6 +743,7 @@
       <h3 id="report-title">This week's report card</h3>
       <div id="report-body" class="report-body"><p class="muted">Loading…</p></div>
       <div class="modal-actions">
+        <button type="button" class="btn ghost" id="btn-backtest" title="Replay the screener's buy rule on ~2 years of past prices for your watchlist">Test the rules on past data</button>
         <button type="button" class="btn good" id="btn-report-close">Close</button>
       </div>
     </div>

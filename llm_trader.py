@@ -345,6 +345,7 @@ def _analysis_context_blob(analysis: dict) -> str:
         "checks",
         "earnings",
         "sources",
+        "intraday",
         # Desk's own track record for this kind of setup (built from numbers by lessons.py)
         "past_results_for_similar_setups",
     ]
@@ -611,7 +612,7 @@ def status_public() -> dict[str, Any]:
 
 TYPESAFE_API_URL = "https://api.typesafe.ai/v1/systemone"
 DEFAULT_HORIZON_MIN = 20
-VALID_BRAIN_MODES = ("gemini", "mock", "jev")
+VALID_BRAIN_MODES = ("gemini", "mock", "jev", "claude")
 
 # Process-wide model-cost ledger (paper research estimate)
 _COST_LOCK = _threading.Lock()

@@ -157,3 +157,129 @@ def test_weekly_report_grades(client):
 def test_weekly_report_needs_data(client):
     r = client.get("/api/report/weekly", base_url=BASE).get_json()
     assert r["grade"] == "—"
+
+
+# ------------------------------------------------------------- backtest
+
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+
+import backtest  # noqa: E402
+import screener_logic  # noqa: E402
+
+
+def _hourly(days=90, spike_every=7, drift=0.002, start=100.0):
+    """Synthetic 7-bar sessions; every Nth day has a 3x first-hour volume spike and
+    rallies after 10:30 (so a correct rule should find profit)."""
+    rows, idx = [], []
+    px = start
+    d0 = pd.Timestamp("2025-01-06", tz="America/New_York")
+    day = 0
+    k = 0
+    while day < days:
+        ts = d0 + pd.Timedelta(days=k)
+        k += 1
+        if ts.weekday() >= 5:
+            continue
+        spike = day % spike_every == 0 and day >= 55
+        for h in range(7):
+            t = ts + pd.Timedelta(hours=9, minutes=30) + pd.Timedelta(hours=h)
+            o = px
+            px = px * (1 + drift / 7 + (0.004 if (spike and h >= 1) else 0))
+            vol = 3_000_000 if (spike and h == 0) else 1_000_000
+            rows.append({"Open": o, "High": max(o, px) * 1.0005, "Low": min(o, px) * 0.9995, "Close": px, "Volume": vol})
+            idx.append(t)
+        day += 1
+    return pd.DataFrame(rows, index=pd.DatetimeIndex(idx))
+
+
+def test_backtest_finds_planted_edge_and_uses_no_future():
+    df = _hourly()
+    trades = backtest.simulate_ticker(df, {})
+    rule = [t for t in trades if t["rule"]]
+    assert rule and all(t["ret"] > 0 for t in rule)  # spikes rally → rule trades win
+    # No look-ahead: truncating the future must not change past decisions
+    cut = trades[len(trades) // 2]["day"]
+    df_cut = df[[ts.strftime("%Y-%m-%d") <= cut for ts in df.index]]
+    t2 = backtest.simulate_ticker(df_cut, {})
+    assert [(t["day"], t["rule"]) for t in t2] == [(t["day"], t["rule"]) for t in trades if t["day"] <= cut]
+
+
+def test_backtest_verdict_not_enough_with_little_data():
+    res = backtest.evaluate(backtest.simulate_ticker(_hourly(days=70), {}), {})
+    assert res["ok"] and res["verdict"] == "not_enough"
+
+
+def test_backtest_run_with_fake_fetch(tmp_path):
+    res = backtest.run(["AAA", "BBB"], tmp_path / "bt.json", {}, fetch=lambda t: _hourly(days=120))
+    assert res["ok"] and res["tickers"] == ["AAA", "BBB"]
+    assert backtest.last_result(tmp_path / "bt.json")["period"]["start"]
+
+
+# ------------------------------------------------------------- scanner signals
+
+def test_intraday_signals_vwap_and_relvol():
+    idx = pd.date_range("2026-09-18 09:30", periods=12, freq="5min", tz="America/New_York").append(
+        pd.date_range("2026-09-21 09:30", periods=12, freq="5min", tz="America/New_York")).append(
+        pd.date_range("2026-09-22 09:30", periods=12, freq="5min", tz="America/New_York"))
+    vol = [1000] * 24 + [1000] * 10 + [5000, 100]
+    close = list(np.linspace(100, 101, 12)) * 2 + list(np.linspace(101, 99, 12))
+    df = pd.DataFrame({"Open": close, "High": [c + 0.1 for c in close], "Low": [c - 0.1 for c in close],
+                       "Close": close, "Volume": vol}, index=idx)
+    sig = screener_logic.intraday_signals(df, atr_usd=2.0, price=99.0)
+    assert sig["rel_vol_5m"] == 5.0
+    assert sig["vwap_slope_pct"] < 0 and sig["vwap_dist_atr"] < 0
+    v, flags, notes = screener_logic.intraday_adjust("PASS", sig)
+    assert v == "WATCH" and "below_falling_vwap" in flags and "volume_surge_5m" in flags
+
+
+# ------------------------------------------------------------- Claude brain
+
+class _FakeResp:
+    def __init__(self, text, stop="end_turn"):
+        self.content = [type("B", (), {"type": "text", "text": text})()]
+        self.stop_reason = stop
+        self.model = "claude-opus-5"
+        self.usage = type("U", (), {"input_tokens": 1000, "output_tokens": 200, "cache_creation_input_tokens": 0})()
+
+
+def _fake_client(resp):
+    msgs = type("M", (), {"create": lambda self, **kw: resp})()
+    beta = type("Bt", (), {"messages": msgs})()
+    return type("C", (), {"beta": beta})()
+
+
+def test_claude_brain_parses_and_costs(monkeypatch):
+    import claude_brain
+    monkeypatch.setattr(claude_brain, "is_configured", lambda: True)
+    monkeypatch.setattr(claude_brain, "_get_client", lambda: _fake_client(_FakeResp(
+        '{"horizon":"higher","side":"buy","confidence":0.72,"thesis":"x","risks":[]}')))
+    out = claude_brain.decide({"ticker": "AAPL"})
+    assert out["side"] == "buy" and out["confidence"] == 0.72 and out["brain_mode"] == "claude"
+    assert out["model_cost_usd"] == pytest.approx(1000 / 1e6 * 5 + 200 / 1e6 * 25)
+
+
+def test_claude_refusal_and_unconfigured_hold(monkeypatch):
+    import claude_brain
+    monkeypatch.setattr(claude_brain, "is_configured", lambda: True)
+    monkeypatch.setattr(claude_brain, "_get_client", lambda: _fake_client(_FakeResp("", stop="refusal")))
+    assert claude_brain.decide({"ticker": "AAPL"})["error"] == "claude_refusal"
+    monkeypatch.setattr(claude_brain, "is_configured", lambda: False)
+    assert claude_brain.decide({"ticker": "AAPL"})["side"] == "flat"
+
+
+def test_claude_shadow_needs_key(client, monkeypatch):
+    import claude_brain
+    monkeypatch.setattr(claude_brain, "is_configured", lambda: False)
+    r = client.post("/api/config", base_url=BASE, json={"claude_shadow": True})
+    assert r.status_code == 400
+
+
+def test_brain_scoreboard_counts_same_decisions():
+    for i, (m, c) in enumerate([("helped", "hurt"), ("hurt", "helped"), ("helped", "helped")]):
+        ev = _ev(i, m)
+        ev.update(brain_mode="gemini", shadow_claude_outcome=c)
+        lessons.record_outcome(desk.LESSONS_PATH, ev)
+    lessons.record_outcome(desk.LESSONS_PATH, _ev(9, "helped"))  # no claude → excluded
+    s = desk.brain_scoreboard(days=100000)
+    assert s["compared_calls"] == 3 and s["main"]["helped"] == 2 and s["claude"]["helped"] == 2

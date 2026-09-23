@@ -216,6 +216,119 @@ def _sector_daily(etf: str):
     return df
 
 
+def _rth_now() -> bool:
+    try:
+        import paper_loop as _pl
+
+        return bool(_pl.is_rth())
+    except Exception:
+        return False
+
+
+def atr(daily: "pd.DataFrame", period: int = 14) -> Optional[float]:
+    """Average True Range — a stock's typical daily move in dollars."""
+    try:
+        h, l, c = daily["High"], daily["Low"], daily["Close"]
+        prev = c.shift(1)
+        tr = pd.concat([(h - l), (h - prev).abs(), (l - prev).abs()], axis=1).max(axis=1)
+        v = float(tr.rolling(period).mean().iloc[-1])
+        return v if np.isfinite(v) and v > 0 else None
+    except Exception:
+        return None
+
+
+def intraday_signals(
+    bars5: "pd.DataFrame",
+    *,
+    atr_usd: Optional[float],
+    price: Optional[float] = None,
+    bid: Optional[float] = None,
+    ask: Optional[float] = None,
+) -> dict[str, Any]:
+    """Short-term signals from 5-minute bars (today + prior days).
+
+    - rel_vol_5m: last completed 5-min bar vs. the median of the SAME time slot
+      on prior days (fair at any time of day, including 9:30-10:30).
+    - vwap / vwap_slope_pct: today's volume-weighted average price and how it
+      moved over the last 30 minutes.
+    - vwap_dist_atr / hod_dist_atr: distance from VWAP / from the day's high,
+      measured in typical daily moves (ATR).
+    - spread_atr: bid-ask spread as a fraction of ATR (too wide = costly to trade).
+    """
+    out: dict[str, Any] = {}
+    if bars5 is None or len(bars5) == 0:
+        return out
+    try:
+        df = bars5.dropna(subset=["Close", "Volume"]).copy()
+        idx = df.index
+        try:
+            idx = idx.tz_convert("America/New_York")
+        except Exception:
+            pass
+        df["day"] = [ts.strftime("%Y-%m-%d") for ts in idx]
+        df["slot"] = [ts.strftime("%H:%M") for ts in idx]
+        days = sorted(df["day"].unique())
+        today = days[-1]
+        tdf = df[df["day"] == today]
+        if len(tdf) >= 2:
+            last = tdf.iloc[-2]  # last COMPLETED bar
+            prior = df[(df["day"] != today) & (df["slot"] == last["slot"])]["Volume"]
+            if len(prior) >= 2 and float(prior.median()) > 0:
+                out["rel_vol_5m"] = round(float(last["Volume"]) / float(prior.median()), 2)
+        if len(tdf) >= 1:
+            typical = (tdf["High"] + tdf["Low"] + tdf["Close"]) / 3
+            cumv = tdf["Volume"].cumsum()
+            vwap_series = (typical * tdf["Volume"]).cumsum() / cumv.replace(0, np.nan)
+            vwap = float(vwap_series.iloc[-1])
+            if np.isfinite(vwap):
+                out["vwap"] = round(vwap, 4)
+                if len(vwap_series) > 6 and np.isfinite(vwap_series.iloc[-7]):
+                    out["vwap_slope_pct"] = round((vwap / float(vwap_series.iloc[-7]) - 1) * 100, 3)
+                px = float(price) if price else float(tdf["Close"].iloc[-1])
+                hod = float(tdf["High"].max())
+                if atr_usd:
+                    out["vwap_dist_atr"] = round((px - vwap) / atr_usd, 2)
+                    out["hod_dist_atr"] = round((hod - px) / atr_usd, 2)
+        # Quotes outside market hours are stale; a "spread" over 2% of price is bad data.
+        if atr_usd and bid and ask and ask > bid > 0 and (ask - bid) / ask < 0.02:
+            out["spread_atr"] = round((ask - bid) / atr_usd, 3)
+    except Exception as exc:  # noqa: BLE001
+        out["error"] = str(exc)[:120]
+    return out
+
+
+def intraday_adjust(verdict: str, sig: dict[str, Any]) -> tuple[str, list[str], list[str]]:
+    """Downgrade (never upgrade) a verdict using the intraday signals.
+
+    Returns (verdict, research_flags, plain_notes)."""
+    flags: list[str] = []
+    notes: list[str] = []
+    v = verdict
+    spread = sig.get("spread_atr")
+    if spread is not None and spread > 0.08:
+        flags.append("wide_spread")
+        notes.append("The gap between buy and sell prices is wide for this stock — costly to trade.")
+        if v == "PASS":
+            v = "WATCH"
+    dist = sig.get("vwap_dist_atr")
+    slope = sig.get("vwap_slope_pct")
+    if dist is not None and slope is not None and dist < 0 and slope < 0:
+        flags.append("below_falling_vwap")
+        notes.append("Price is below the day's average trade price, and that average is falling.")
+        if v == "PASS":
+            v = "WATCH"
+    if dist is not None and dist > 1.5:
+        flags.append("stretched_above_vwap")
+        notes.append("Price is far above the day's average — buying now risks chasing.")
+        if v == "PASS":
+            v = "WATCH"
+    rv5 = sig.get("rel_vol_5m")
+    if rv5 is not None and rv5 >= 3:
+        flags.append("volume_surge_5m")
+        notes.append(f"Trading in the last 5 minutes was {rv5:.1f}× normal for this time of day.")
+    return v, flags, notes
+
+
 def analyze_ticker(ticker: str) -> dict[str, Any]:
     """Lean screener analysis for one symbol. Never raises."""
     ticker = (ticker or "").strip().upper()
@@ -481,6 +594,32 @@ def analyze_ticker(ticker: str) -> dict[str, Any]:
         else None
     )
 
+    # Short-term (5-minute) signals: time-of-day relative volume, VWAP, ATR distances.
+    intraday_sig: dict[str, Any] = {}
+    try:
+        bars5 = t.history(period="5d", interval="5m")
+        atr_usd = atr(daily)
+        intraday_sig = intraday_signals(
+            bars5,
+            atr_usd=atr_usd,
+            price=live_price or last_close,
+            bid=info.get("bid") if _rth_now() else None,
+            ask=info.get("ask") if _rth_now() else None,
+        )
+        if atr_usd:
+            intraday_sig["atr_usd"] = round(atr_usd, 4)
+        if not halt_or_gap:
+            new_v, iflags, inotes = intraday_adjust(verdict, intraday_sig)
+            if new_v != verdict:
+                verdict_text = f"{verdict_text} Downgraded to WATCH: {' '.join(inotes)}"
+                verdict = new_v
+            for f in iflags:
+                if f not in research_flags:
+                    research_flags.append(f)
+            intraday_sig["notes"] = inotes
+    except Exception:
+        pass
+
     earnings, earn_src = _fetch_earnings(ticker, t)
     if earn_src and earn_src not in sources_used:
         sources_used.append(earn_src)
@@ -527,5 +666,6 @@ def analyze_ticker(ticker: str) -> dict[str, Any]:
         "gap_pct": round(gap_pct, 2),
         "prev_close": round(float(prev_close), 2),
         "research_flags": research_flags,
+        "intraday": intraday_sig,
         "research_flag": research_flags[0] if research_flags else None,
     }
