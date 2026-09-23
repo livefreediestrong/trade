@@ -14,15 +14,18 @@ IBKR not wired. No ENABLE LIVE AUTO unlock ceremony.
 from __future__ import annotations
 
 import csv
+import atexit
 import hashlib
 import hmac
 import io
 import ipaddress
 import json
+import logging
 import os
 import random
 import re
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -281,6 +284,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 _lock = threading.RLock()
 app = Flask(__name__)
+try:
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    _proxy_hops = int(os.environ.get("TOMAHAWK_TRUSTED_PROXY_HOPS", "0") or 0)
+    if _proxy_hops > 0:
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=_proxy_hops, x_host=_proxy_hops, x_proto=_proxy_hops)
+except (ImportError, ValueError):
+    pass
+logging.basicConfig(level=os.environ.get("TOMAHAWK_LOG_LEVEL", "INFO").upper())
+logger = logging.getLogger("tomahawk")
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024  # 2 MB is plenty for any desk request
 
 try:
@@ -316,6 +328,20 @@ _ALLOWED_HOSTS = {
     if h.strip()
 }
 _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_RATE_LIMITS: dict[str, list[float]] = {}
+_RATE_LIMIT_LOCK = threading.Lock()
+
+
+def _rate_limited(bucket: str, limit: int, window: float = 60.0) -> bool:
+    now = time.monotonic()
+    key = f"{bucket}:{request.remote_addr or 'local'}"
+    with _RATE_LIMIT_LOCK:
+        values = [t for t in _RATE_LIMITS.get(key, []) if now - t < window]
+        limited = len(values) >= limit
+        if not limited:
+            values.append(now)
+        _RATE_LIMITS[key] = values
+        return limited
 
 
 def _is_loopback_request() -> bool:
@@ -669,6 +695,13 @@ def load_ledger() -> dict[str, Any]:
     if not isinstance(data, dict):
         _mark_corrupt(LEDGER_PATH, "top-level JSON value must be an object")
         return default
+    for key, kind in (("positions", list), ("fills", list), ("daily", dict)):
+        if not isinstance(data.get(key, default[key]), kind):
+            _mark_corrupt(LEDGER_PATH, f"ledger.{key} must be {kind.__name__}")
+            return default
+    data.setdefault("positions", [])
+    data.setdefault("fills", [])
+    data.setdefault("daily", {})
     return data
 
 
@@ -1173,6 +1206,21 @@ def _reconcile_pending_broker_orders() -> None:
         if not order_id:
             continue
         processed_ids.add(order_id)
+        try:
+            age = time.time() - datetime.fromisoformat(
+                str(item.get("created_at") or "").replace("Z", "+00:00")
+            ).timestamp()
+        except (TypeError, ValueError, OSError):
+            age = 0
+        if age > 3600 and not item.get("stale_alerted"):
+            desk_alerts.emit(
+                "broker_order_stale",
+                f"Broker order {order_id} remains unresolved after {int(age // 60)} minutes.",
+                detail={"order_id": order_id},
+                level="warning",
+                dedupe_key=f"broker_order_stale:{order_id}",
+            )
+            item["stale_alerted"] = True
         result = alpaca.wait_for_fill(order_id, timeout=0.25, interval=0.1)
         state = result.get("state")
         if state in ("filled", "partially_filled"):
@@ -1182,9 +1230,20 @@ def _reconcile_pending_broker_orders() -> None:
             fill["broker_reconciled"] = True
             with _lock:
                 current = load_ledger()
+                if any(str(existing.get("order_id") or "") == order_id for existing in current.get("broker_fills") or []):
+                    resolved_ids.add(order_id)
+                    continue
                 current.setdefault("broker_fills", []).insert(0, fill)
                 current["broker_fills"] = current["broker_fills"][:200]
                 save_ledger(current)
+                signals = load_signals()
+                for signal in signals:
+                    if str(signal.get("id") or "") == str(sig.get("id") or ""):
+                        signal["status"] = "approved"
+                        signal["fill"] = fill
+                        signal["reject_reason"] = None
+                        break
+                save_signals(signals)
             _record_broker_trade()
             append_journal("broker_fill_reconciled", {"order_id": order_id, "fill": fill})
             changed = True
@@ -4108,6 +4167,36 @@ def _bg_loop() -> None:
 
 _bg_thread: threading.Thread | None = None
 
+_INSTANCE_LOCK_PATH = Path(os.environ.get("TOMAHAWK_INSTANCE_LOCK", str(DATA_DIR / "tomahawk.pid")))
+_INSTANCE_LOCK_FD: int | None = None
+
+
+def acquire_instance_lock() -> None:
+    """Prevent accidental double-starts that would corrupt JSON read-modify-write state."""
+    global _INSTANCE_LOCK_FD
+    if os.environ.get("TOMAHAWK_ALLOW_MULTI_INSTANCE", "").lower() in ("1", "true", "yes"):
+        return
+    _INSTANCE_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _INSTANCE_LOCK_FD = os.open(str(_INSTANCE_LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(_INSTANCE_LOCK_FD, str(os.getpid()).encode("ascii"))
+    except FileExistsError as exc:
+        raise RuntimeError(
+            f"Another Tomahawk instance appears to be running ({_INSTANCE_LOCK_PATH}). "
+            "Remove the lock only after confirming the previous process stopped."
+        ) from exc
+
+
+def release_instance_lock() -> None:
+    global _INSTANCE_LOCK_FD
+    if _INSTANCE_LOCK_FD is not None:
+        os.close(_INSTANCE_LOCK_FD)
+        _INSTANCE_LOCK_FD = None
+        try:
+            _INSTANCE_LOCK_PATH.unlink()
+        except OSError:
+            pass
+
 
 def start_bg() -> None:
     global _bg_thread
@@ -6412,6 +6501,8 @@ def api_llm_status():
 
 @app.route("/api/llm/chat", methods=["POST"])
 def api_llm_chat():
+    if _rate_limited("llm_chat", 12):
+        return jsonify({"ok": False, "error": "rate limit exceeded; try again shortly"}), 429
     body = request.get_json(force=True, silent=True) or {}
     message = (body.get("message") or "").strip()
     ticker = (body.get("ticker") or "").strip().upper() or None
@@ -6472,6 +6563,8 @@ def api_llm_chat():
 
 @app.route("/api/llm/thesis", methods=["POST"])
 def api_llm_thesis():
+    if _rate_limited("llm_thesis", 12):
+        return jsonify({"ok": False, "error": "rate limit exceeded; try again shortly"}), 429
     body = request.get_json(force=True, silent=True) or {}
     ticker = (body.get("ticker") or "").strip().upper()
     if not ticker:
@@ -6760,6 +6853,8 @@ if (os.environ.get("TOMAHAWK_NO_BG") or "").strip().lower() not in ("1", "true",
 
 
 if __name__ == "__main__":
+    acquire_instance_lock()
+    atexit.register(release_instance_lock)
     # Ensure data files exist
     load_config()
     load_ledger()
@@ -6776,4 +6871,11 @@ if __name__ == "__main__":
             save_signals(_sigs)
             append_journal("approving_released", {"signal_ids": [s.get("id") for s in _stuck]})
     append_journal("app_start", {"banner": BANNER, "port": DESK_PORT, "host": DESK_HOST})
-    app.run(host=DESK_HOST, port=DESK_PORT, debug=False, use_reloader=False, threaded=True)
+    if os.environ.get("TOMAHAWK_DEV_SERVER", "").lower() in ("1", "true", "yes"):
+        app.run(host=DESK_HOST, port=DESK_PORT, debug=False, use_reloader=False, threaded=True)
+    else:
+        try:
+            from waitress import serve
+        except ImportError as exc:
+            raise RuntimeError("waitress is required for production startup; install requirements.txt") from exc
+        serve(app, host=DESK_HOST, port=DESK_PORT, threads=8)

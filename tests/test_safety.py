@@ -106,6 +106,13 @@ def test_remote_client_requires_https_even_with_token(client, monkeypatch):
     assert r.get_json()["error"] == "https_required"
 
 
+def test_llm_chat_rate_limit_is_fail_closed(client, monkeypatch):
+    monkeypatch.setattr(desk, "_rate_limited", lambda *args, **kwargs: True)
+    r = client.post("/api/llm/chat", base_url=BASE, json={"message": "hello"})
+    assert r.status_code == 429
+    assert "rate limit" in r.get_json()["error"]
+
+
 def test_live_mode_requires_server_confirmation(client, monkeypatch):
     monkeypatch.setattr(
         desk,
@@ -167,6 +174,13 @@ def test_structurally_invalid_ledger_is_marked_corrupt(isolated_data):
     assert ledger["positions"] == []
     assert str(desk.LEDGER_PATH.resolve()) in desk._CORRUPT_PATHS
     assert list(isolated_data.glob("ledger.json.corrupt.*.bak"))
+
+
+def test_nested_invalid_ledger_is_marked_corrupt(isolated_data):
+    desk.LEDGER_PATH.write_text(json.dumps({"positions": {}, "fills": [], "daily": {}}), encoding="utf-8")
+    ledger = desk.load_ledger()
+    assert ledger["positions"] == []
+    assert str(desk.LEDGER_PATH.resolve()) in desk._CORRUPT_PATHS
 
 
 def test_missing_marks_block_new_risk(monkeypatch):

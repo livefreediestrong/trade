@@ -16,6 +16,9 @@ Companion-style app for a Windows PC beside `holdings-options-monitor`.
 - UI masthead: **PAPER ONLY** unless `ALPACA_PAPER=false` and keys set → **LIVE ENDPOINT**.
 - Enabling `auto_live` requires a matching server-side confirmation; real-money endpoints specifically require typing `REAL` in the UI prompt.
 - The desk is unauthenticated on loopback only. If exposed beyond loopback with `TOMAHAWK_HOST` / `TOMAHAWK_ALLOWED_HOSTS`, set a long random `TOMAHAWK_AUTH_TOKEN` and terminate HTTPS at the deployment boundary; remote requests must send `X-Tomahawk-Token` or `Authorization: Bearer`.
+- Production startup uses Waitress; set `TOMAHAWK_TRUSTED_PROXY_HOPS=1` only when one trusted reverse proxy terminates HTTPS. Use `TOMAHAWK_DEV_SERVER=1` only for local development.
+- Only one server instance is allowed by default. The process lock prevents concurrent JSON read-modify-write corruption.
+- Backtests are screening evidence only; they do not provide statistical proof of edge and should be checked across symbols, periods, and cost assumptions.
 
 Kill-switch / daily profit target remain **optional** research controls; they do not block mode entry by default.
 

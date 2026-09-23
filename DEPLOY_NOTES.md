@@ -1,4 +1,4 @@
-# Tomahawk deploy notes — 10-agent review ship (paper-only)
+# Tomahawk deploy notes — deployment and safety notes
 
 Research desk with local paper default + optional Alpaca (`ALPACA_PAPER` defaults true). No secrets in this file. No git push from this change set.
 Folder name unchanged (`daytrade-signal-desk`). Parent deploys (do not CopyFromBox from this agent).
