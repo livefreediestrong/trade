@@ -649,6 +649,8 @@ def maybe_refresh(cfg: dict[str, Any] | None = None, *, force: bool = False) -> 
             # A failed/empty scan still counts as a scan (short backoff) — before,
             # every /api/state poll re-ran the whole scan after one failure.
             fresh_for = refresh if _cache.get("movers") else min(refresh, EMPTY_SCAN_BACKOFF_SEC)
+            if _cache.get("top_n") != top_n:
+                force = True
             if age < fresh_for and not force:
                 return get_cached()
             if force and age < 10:

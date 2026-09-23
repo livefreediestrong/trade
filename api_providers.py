@@ -58,6 +58,7 @@ def configured_map() -> dict[str, bool]:
         "reddit": _has("REDDIT_CLIENT_ID") and _has("REDDIT_CLIENT_SECRET"),
         "stocktwits": True,  # public trending — no key
         "yahoo": True,
+        "x_api": _has("X_BEARER_TOKEN"),
     }
 
 
@@ -109,6 +110,11 @@ def public_pack_status() -> dict[str, Any]:
         "note": "Public trending symbols JSON — no API key. Best-effort; may 403 from some IPs.",
         "docs": "https://api.stocktwits.com/developers/docs",
     }
+    try:
+        import x_social
+        details["x_api"] = x_social.public_status()
+    except Exception as exc:
+        details["x_api"] = {"configured": cfg["x_api"], "error": str(exc)[:80], "research_only": True}
     return {
         "configured": cfg,
         "details": details,
