@@ -77,6 +77,52 @@ def test_default_bind_is_localhost():
     assert desk.DESK_HOST == "127.0.0.1" or os.environ.get("TOMAHAWK_HOST")
 
 
+def test_remote_client_requires_auth_token(client, monkeypatch):
+    monkeypatch.setenv("TOMAHAWK_AUTH_TOKEN", "test-token")
+    r = client.get(
+        "/api/health",
+        base_url=BASE,
+        environ_base={"REMOTE_ADDR": "192.168.1.20"},
+    )
+    assert r.status_code == 403
+    r = client.get(
+        "/api/health",
+        base_url=BASE,
+        environ_base={"REMOTE_ADDR": "192.168.1.20"},
+        headers={"X-Tomahawk-Token": "test-token"},
+    )
+    assert r.status_code == 200
+
+
+def test_live_mode_requires_server_confirmation(client, monkeypatch):
+    monkeypatch.setattr(
+        desk,
+        "_broker_public_status",
+        lambda: {"configured": True, "paper_mode": False},
+    )
+    r = client.post("/api/config", base_url=BASE, json={"mode": "auto_live"})
+    assert r.status_code == 400
+    assert desk.load_config().get("mode") != "auto_live"
+    r = client.post(
+        "/api/config",
+        base_url=BASE,
+        json={"mode": "auto_live", "live_confirm": "REAL"},
+    )
+    assert r.status_code == 200
+    assert desk.load_config().get("mode") == "auto_live"
+
+
+def test_paper_auto_live_requires_explicit_confirmation(client):
+    r = client.post("/api/config", base_url=BASE, json={"mode": "auto_live"})
+    assert r.status_code == 400
+    r = client.post(
+        "/api/config",
+        base_url=BASE,
+        json={"mode": "auto_live", "live_confirm": "AUTO_LIVE"},
+    )
+    assert r.status_code == 200
+
+
 # ---------------------------------------------------------------- #3 corrupt data
 
 def test_bom_config_loads(isolated_data):
@@ -175,7 +221,7 @@ def test_unconfirmed_fill_is_flagged(monkeypatch, broker_on):
     monkeypatch.setattr(broker_alpaca, "wait_for_fill",
                         lambda oid, timeout=0: {"state": "pending", "alpaca_status": "new", "filled_qty": 0})
     res = desk.execute_gated_broker_or_paper(_sig(), _cfg(), source="t", via="t")
-    assert res["ok"] and res["fill"]["confirmed"] is False and res["fill"]["price_estimated"] is True
+    assert res["ok"] is False and "reconciled fill" in res["error"]
 
 
 def test_broker_trade_cap_counts_broker_orders(monkeypatch, broker_on):
@@ -198,6 +244,34 @@ def test_broker_account_unavailable_fails_closed(monkeypatch, broker_on):
     assert res["ok"] is False and called == []
 
 
+def test_broker_partial_fill_is_reconciled_and_persisted(monkeypatch, broker_on):
+    import broker_alpaca
+
+    monkeypatch.setattr(
+        desk,
+        "live_broker_place_order",
+        lambda order: {"ok": True, "status": "paper_submitted", "order_id": "o1", "qty": "10"},
+    )
+    monkeypatch.setattr(
+        broker_alpaca,
+        "wait_for_fill",
+        lambda oid, timeout=0: {"state": "pending", "alpaca_status": "new", "filled_qty": 0},
+    )
+    monkeypatch.setattr(
+        broker_alpaca,
+        "reconcile_after_timeout",
+        lambda oid, timeout=0: {
+            "state": "partially_filled",
+            "alpaca_status": "canceled",
+            "filled_qty": 4,
+            "filled_avg_price": 101.0,
+        },
+    )
+    res = desk.execute_gated_broker_or_paper(_sig(), _cfg(), source="t", via="t")
+    assert res["ok"] and res["fill"]["confirmed"] and res["fill"]["shares"] == 4
+    assert desk.load_ledger()["broker_fills"][0]["broker_reconciled"] is True
+
+
 # ---------------------------------------------------------------- #6 stuck approving
 
 def test_approve_crash_does_not_leave_signal_stuck(monkeypatch, client):
@@ -213,3 +287,22 @@ def test_approve_crash_does_not_leave_signal_stuck(monkeypatch, client):
     r = client.post("/api/signals/s1/approve", base_url=BASE, json={})
     assert r.status_code == 500
     assert desk.load_signals()[0]["status"] == "rejected"
+
+
+def test_ledger_reset_preserves_broker_counters(client):
+    led = desk.load_ledger()
+    led["broker_daily"] = {desk._today_str(): {"trades": 2}}
+    desk.save_ledger(led)
+    r = client.post("/api/ledger/reset", base_url=BASE, json={})
+    assert r.status_code == 200
+    assert desk.load_ledger()["broker_daily"][desk._today_str()]["trades"] == 2
+
+
+def test_equity_mark_reprices_all_open_positions(monkeypatch):
+    led = desk.load_ledger()
+    led["positions"] = [
+        {"ticker": "AAA", "side": "long", "shares": 10, "avg_price": 100},
+        {"ticker": "BBB", "side": "long", "shares": 10, "avg_price": 100},
+    ]
+    monkeypatch.setattr(desk, "fetch_last_price", lambda ticker: {"AAA": 90, "BBB": 80}[ticker])
+    assert desk._session_pnl_with_mtm(led) == -300

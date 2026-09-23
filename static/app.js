@@ -1424,8 +1424,8 @@
     const actions =
       s.status === "pending"
         ? `<div class="sig-actions">
-            <button type="button" class="btn good sm" data-approve="${s.id}" title="Do this paper trade">Approve</button>
-            <button type="button" class="btn bad sm" data-reject="${s.id}" title="Pass on this idea">Skip</button>
+            <button type="button" class="btn good sm" data-approve="${escapeHtml(s.id)}" title="Do this paper trade">Approve</button>
+            <button type="button" class="btn bad sm" data-reject="${escapeHtml(s.id)}" title="Pass on this idea">Skip</button>
           </div>`
         : s.reject_reason
           ? `<div class="sig-meta">Reason: ${escapeHtml(s.reject_reason)}</div>`
@@ -1433,7 +1433,7 @@
             ? `<div class="sig-meta">Filled ${s.fill.shares}@${s.fill.price} (${escapeHtml(s.fill.source || "")})</div>`
             : "";
 
-    return `<article class="signal-card ${s.side}">
+    return `<article class="signal-card ${escapeHtml(s.side)}">
       <div class="sig-head">
         <span class="sig-ticker">${escapeHtml(s.ticker)}</span>
         <span class="sig-side ${s.side}">${escapeHtml(s.side)}</span>
@@ -1607,6 +1607,7 @@
     renderPace(data);
     renderOpportunities(data);
     renderEdgeSample(data);
+    renderRiskCockpit(data);
     updateDeskGuide(data);
     maybeAlertFromState(data);
     consumeDeskAlerts(data && data.alerts);
@@ -1841,8 +1842,11 @@
           toast("Not switched — still on paper");
           return;
         }
+        body.live_confirm = "REAL";
       } else if (!confirm("Switch to Auto + Alpaca? Trades will be sent to your Alpaca paper account.")) {
         return;
+      } else {
+        body.live_confirm = "AUTO_LIVE";
       }
       // optional note only — no ENABLE LIVE AUTO unlock ceremony
       const note = ($("#live-confirm") && $("#live-confirm").value || "").trim();
@@ -4000,6 +4004,22 @@
     set("#edge-hold", e.abstain_pct != null ? `${e.abstain_pct}%` : (e.hold_rate != null ? `${Math.round(e.hold_rate * 100)}%` : "-"));
     set("#edge-pass", e.pass_rate != null ? `${Math.round(e.pass_rate * 100)}%` : "-");
     set("#edge-win", e.win_rate != null ? `${Math.round(e.win_rate * 100)}%` : "-");
+  }
+
+  function renderRiskCockpit(data) {
+    const r = data.risk_cockpit || {};
+    const x = data.execution_realism || {};
+    const p = data.promotion_gate || {};
+    const set = (id, value) => { const el = $(id); if (el) el.textContent = value; };
+    set("#risk-trade-allowed", r.trade_allowed ? "Allowed" : "Blocked");
+    set("#risk-exposure", fmtMoney(r.exposure_usd || 0));
+    set("#risk-slippage", x.avg_slippage_bps == null ? "-" : `${x.avg_slippage_bps} bps`);
+    set("#risk-promotion", p.eligible ? "Eligible" : "Not yet");
+    const note = [];
+    if (!r.data_files_healthy) note.push("repair corrupt data before trading");
+    if (r.kill_switch_armed) note.push("kill-switch armed");
+    if (p.samples != null) note.push(`${p.samples} closed sample fills`);
+    set("#risk-quality-note", note.join(" · "));
   }
 
   $("#btn-force-flatten")?.addEventListener("click", async () => {

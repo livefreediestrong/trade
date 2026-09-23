@@ -14,7 +14,10 @@ IBKR not wired. No ENABLE LIVE AUTO unlock ceremony.
 from __future__ import annotations
 
 import csv
+import hashlib
+import hmac
 import io
+import ipaddress
 import json
 import os
 import random
@@ -237,6 +240,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "demo_signal_interval_sec": 120,  # legacy key; scan loop prefers scan_interval_sec
     "scan_interval_sec": 120,  # volume-screener watchlist scan interval
+    "alert_cooldown_sec": 300,
+    "promotion_min_samples": 30,
+    "promotion_min_win_rate": 0.52,
+    "promotion_max_drawdown_pct": 5.0,
+    "promotion_window_days": 30,
     # Session goal (USD). Not a guarantee — stops new auto/manual fills when realized day PnL hits it.
     "daily_profit_target_usd": None,
     "session_active": False,
@@ -310,12 +318,34 @@ _ALLOWED_HOSTS = {
 _UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
+def _is_loopback_request() -> bool:
+    try:
+        return ipaddress.ip_address(request.remote_addr or "").is_loopback
+    except ValueError:
+        return False
+
+
+def _remote_request_authorized() -> bool:
+    """Require a shared token for every non-loopback client."""
+    configured = (os.environ.get("TOMAHAWK_AUTH_TOKEN") or "").strip()
+    if not configured:
+        return False
+    supplied = (request.headers.get("X-Tomahawk-Token") or "").strip()
+    if not supplied:
+        auth = (request.headers.get("Authorization") or "").strip()
+        if auth.lower().startswith("bearer "):
+            supplied = auth[7:].strip()
+    return bool(supplied) and hmac.compare_digest(supplied, configured)
+
+
 @app.before_request
 def _local_only_guard():
     host = (request.host or "").strip().lower()
     if host not in _ALLOWED_HOSTS:
         # Blocks DNS-rebinding pages that resolve an attacker hostname to 127.0.0.1
         return jsonify({"ok": False, "error": "forbidden_host"}), 403
+    if not _is_loopback_request() and not _remote_request_authorized():
+        return jsonify({"ok": False, "error": "remote_auth_required"}), 403
     if request.method in _UNSAFE_METHODS:
         origin = (request.headers.get("Origin") or "").strip().lower()
         if origin and origin != "null":
@@ -481,6 +511,14 @@ def _num(
     return v
 
 
+def _finite_float(value: Any, default: float | None = None) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if __import__("math").isfinite(number) else default
+
+
 _NUMERIC_CFG_LIMITS: dict[str, tuple[float, float]] = {
     "paper_equity": (1.0, 1e9),
     "paper_cash": (0.0, 1e9),
@@ -491,6 +529,11 @@ _NUMERIC_CFG_LIMITS: dict[str, tuple[float, float]] = {
     "signal_ttl_sec": (10.0, 86400.0),
     "demo_signal_interval_sec": (5.0, 86400.0),
     "scan_interval_sec": (15.0, 86400.0),
+    "alert_cooldown_sec": (0.0, 86400.0),
+    "promotion_min_samples": (1.0, 100000.0),
+    "promotion_min_win_rate": (0.0, 1.0),
+    "promotion_max_drawdown_pct": (0.0, 100.0),
+    "promotion_window_days": (1.0, 3650.0),
     "macro_size_mult": (0.1, 1.0),
 }
 
@@ -853,6 +896,15 @@ def _broker_fill_record(
         "paper_mode": broker_resp.get("paper_mode"),
         "endpoint": broker_resp.get("endpoint"),
         "price_source": price_source,
+        "slip_bps": (
+            round(abs(px - float(sig.get("signal_price") or px)) / px * 10000, 3)
+            if px and sig.get("signal_price") else None
+        ),
+        "slip_usd": (
+            round(abs(px - float(sig.get("signal_price") or px)) * shares, 4)
+            if px and sig.get("signal_price") else 0.0
+        ),
+        "fee_usd": 0.0,
     }
 
 
@@ -1226,14 +1278,18 @@ def execute_gated_broker_or_paper(
                 import broker_alpaca as alpaca
 
                 confirm = alpaca.wait_for_fill(str(live_note["order_id"]), timeout=BROKER_FILL_WAIT_SEC)
+                if confirm.get("state") in ("pending", "partially_filled"):
+                    confirm = alpaca.reconcile_after_timeout(
+                        str(live_note["order_id"]), timeout=2.0
+                    )
             except Exception as exc:  # noqa: BLE001
                 confirm = {"state": "unknown", "error": str(exc)[:200]}
             live_note["fill_confirm"] = confirm
-            if confirm.get("state") == "failed":
+            if confirm.get("state") not in ("filled", "partially_filled"):
                 submitted = False
                 live_note["ok"] = False
                 status = confirm.get("alpaca_status") or "failed"
-                live_note["error"] = f"Broker order {status} — nothing filled"
+                live_note["error"] = f"Broker order {status} — no reconciled fill"
 
         if not submitted:
             err = live_note.get("error") or live_note.get("message") or live_note.get("status") or "broker_failed"
@@ -1252,6 +1308,12 @@ def execute_gated_broker_or_paper(
         _record_broker_trade()
 
     fill = _broker_fill_record(sig, live_note, source=f"{source}_broker", confirm=confirm)
+    fill["broker_reconciled"] = confirm.get("state") in ("filled", "partially_filled", "failed")
+    with _lock:
+        ledger = load_ledger()
+        ledger.setdefault("broker_fills", []).insert(0, fill)
+        ledger["broker_fills"] = ledger["broker_fills"][:200]
+        save_ledger(ledger)
     sig["status"] = "approved"
     sig["reject_reason"] = None
     sig["fill"] = fill
@@ -2082,7 +2144,7 @@ def _session_pnl_with_mtm(ledger: dict[str, Any], marks: dict[str, float] | None
     caller passed nothing, so "incl. open MTM" loss limits only saw realized P&L.
     """
     if marks is None:
-        marks = recent_marks()
+        marks = _marks_for_ledger(ledger)
     stats = daily_stats(ledger)
     return round(float(stats.get("pnl", 0) or 0) + _unrealized_mtm(ledger, marks), 2)
 
@@ -2396,6 +2458,7 @@ def can_take_trade(
     *,
     bypass_gates: bool = False,
     reducing: bool = False,
+    marks: dict[str, float] | None = None,
 ) -> tuple[bool, str]:
     """Risk gates for new paper fills. Mode alone is insufficient — session_active required.
 
@@ -2419,7 +2482,7 @@ def can_take_trade(
 
     preset = get_preset(cfg.get("risk_preset"))
     stats = daily_stats(ledger)
-    pnl_mtm = _session_pnl_with_mtm(ledger)
+    pnl_mtm = _session_pnl_with_mtm(ledger, marks)
     max_trades = preset["max_trades_per_day"]
     # kill-switch overrides when armed (optional research control; not required)
     ks = cfg.get("kill_switch") or {}
@@ -2506,6 +2569,25 @@ def _ledger_equity_mtm(ledger: dict[str, Any], mark_by_ticker: dict[str, float] 
     return round(cash + long_val - short_liab, 2)
 
 
+def _marks_for_ledger(ledger: dict[str, Any], seed: dict[str, float] | None = None) -> dict[str, float]:
+    """Return all usable recent marks, filling gaps before risk/equity checks."""
+    marks = dict(seed or {})
+    marks.update(recent_marks())
+    tickers = {
+        str(p.get("ticker") or "").upper()
+        for p in (ledger.get("positions") or [])
+        if p.get("ticker")
+    }
+    for ticker in sorted(tickers - set(marks)):
+        try:
+            px = fetch_last_price(ticker)
+        except Exception:
+            px = None
+        if px is not None and float(px) > 0:
+            marks[ticker] = float(px)
+    return marks
+
+
 def paper_fill(
     signal: dict[str, Any],
     cfg: dict[str, Any],
@@ -2554,6 +2636,7 @@ def paper_fill(
     if shares_req <= 0:
         return {"ok": False, "error": "zero_shares", "abstain": True}
     notional = round(shares_req * fill_px, 2)
+    risk_marks = _marks_for_ledger(load_ledger(), {ticker: fill_px})
 
     with _lock:
         ledger = load_ledger()
@@ -2588,7 +2671,7 @@ def paper_fill(
                 if p.get("ticker") == ticker and (p.get("side") or "").lower() == "long"
             )
         ok, reason = can_take_trade(
-            cfg, ledger, exposure, bypass_gates=bypass_gates, reducing=reducing
+            cfg, ledger, exposure, bypass_gates=bypass_gates, reducing=reducing, marks=risk_marks
         )
         if not ok:
             return {"ok": False, "error": reason, "abstain": True}
@@ -2596,6 +2679,7 @@ def paper_fill(
         cash = float(ledger.get("cash", 0))
         positions = ledger.setdefault("positions", [])
         realized_pnl = 0.0
+        position_id: str | None = None
         filled = 0
         day = _today_str()
         daily = ledger.setdefault("daily", {})
@@ -2643,6 +2727,7 @@ def paper_fill(
                     if not found:
                         positions.append(
                             {
+                                "position_id": str(uuid.uuid4()),
                                 "ticker": ticker,
                                 "side": "long",
                                 "shares": long_sh,
@@ -2658,6 +2743,7 @@ def paper_fill(
                 if remaining <= 0:
                     break
                 if p.get("ticker") == ticker and (p.get("side") or "").lower() == "long":
+                    position_id = str(p.get("position_id") or position_id or "")
                     close_sh = min(remaining, int(p["shares"]))
                     pnl = round((fill_px - float(p["avg_price"])) * close_sh, 2)
                     realized_pnl += pnl
@@ -2713,12 +2799,13 @@ def paper_fill(
             "mid": px,
             "price_source": price_source,
             "simulated": True,
+            "position_id": position_id,
         }
         if realized_pnl:
             fill["realized_pnl"] = round(realized_pnl, 2)
 
         d["trades"] = int(d.get("trades", 0)) + 1
-        ledger["equity"] = _ledger_equity_mtm(ledger, {ticker: fill_px})
+        ledger["equity"] = _ledger_equity_mtm(ledger, _marks_for_ledger(ledger, {ticker: fill_px}))
         # P0.4 — stamp stop / take-profit on remaining open position (not on pure closes)
         # Only buys (open/add) set exit levels. Partial sells keep the levels already
         # on the position — they used to be re-derived from the sell price.
@@ -2842,6 +2929,34 @@ def ingest_signal(sig: dict[str, Any], *, research_only: bool = False) -> dict[s
         if sig.get("status") not in ("approved", "rejected", "expired"):
             sig["status"] = "pending"
             sig["reject_reason"] = None
+
+        cooldown = max(0, int(_finite_float(cfg.get("alert_cooldown_sec"), 0) or 0))
+        now = datetime.now(timezone.utc)
+        fingerprint = hashlib.sha256(json.dumps({
+            "ticker": str(sig.get("ticker") or "").upper(),
+            "side": str(sig.get("side") or "").lower(),
+            "verdict": verdict,
+            "lateness": lateness,
+            "source": sig.get("source") or sig.get("via") or "scanner",
+            "price": round(_finite_float(sig.get("signal_price"), 0) or 0, 2),
+        }, sort_keys=True).encode()).hexdigest()[:24]
+        sig["alert_fingerprint"] = fingerprint
+        if cooldown:
+            for prior in load_signals():
+                if (
+                    prior.get("status") == "pending"
+                    and prior.get("alert_fingerprint") == fingerprint
+                ):
+                    try:
+                        age = (now - datetime.fromisoformat(str(prior.get("created_at") or prior.get("ts")).replace("Z", "+00:00"))).total_seconds()
+                    except (TypeError, ValueError):
+                        age = cooldown + 1
+                    if age < cooldown:
+                        append_journal("signal_deduplicated", {
+                            "ticker": sig.get("ticker"), "duplicate_of": prior.get("id"),
+                            "cooldown_sec": cooldown,
+                        })
+                        return prior
 
         if flags:
             append_journal(
@@ -3553,8 +3668,6 @@ def api_backtest():
     """GET: progress + last result. POST: start a test on the watchlist (background)."""
     if request.method == "GET":
         return jsonify({"ok": True, "status": backtest.status(), "result": backtest.last_result(BACKTEST_PATH)})
-    if backtest.status().get("running"):
-        return jsonify({"ok": False, "error": "A test is already running."}), 409
     body = request.get_json(force=True, silent=True) or {}
     cfg = load_config()
     tickers = body.get("tickers") if isinstance(body.get("tickers"), list) else None
@@ -3572,9 +3685,9 @@ def api_backtest():
         "fee_bps": _cfg_fee_bps(cfg),
         "position_usd": round(equity * float(preset.get("max_position_pct") or 2) / 100.0, 2),
     }
-    threading.Thread(
-        target=backtest.run, args=(tickers, BACKTEST_PATH, params), daemon=True, name="backtest"
-    ).start()
+    started, message = backtest.start(tickers, BACKTEST_PATH, params)
+    if not started:
+        return jsonify({"ok": False, "error": message}), 409
     append_journal("backtest_started", {"tickers": tickers, "params": params})
     return jsonify({"ok": True, "started": True, "tickers": tickers})
 
@@ -3932,7 +4045,6 @@ def _edge_sample_stats(limit: int = 40) -> dict[str, Any]:
             abstains += 1
             continue
         actionable += 1
-        # crude: positive pnl_delta counts as win when present
         pnl = r.get("pnl_delta")
         if pnl is None:
             pnl = r.get("realized_pnl")
@@ -3954,6 +4066,121 @@ def _edge_sample_stats(limit: int = 40) -> dict[str, Any]:
     }
 
 
+def _execution_realism(ledger: dict[str, Any], limit: int = 200) -> dict[str, Any]:
+        """Summarize simulated/broker execution friction without implying edge."""
+        fills = (
+            list(ledger.get("fills") or [])
+            + list(ledger.get("broker_fills") or [])
+            + list(ledger.get("broker_fills_archive") or [])
+        )[:limit]
+        if not fills:
+            return {"n": 0, "avg_slippage_bps": None, "total_slippage_usd": 0.0,
+                    "total_fees_usd": 0.0, "broker_fills": 0, "paper_fills": 0}
+        slip_bps = []
+        total_slip = total_fee = 0.0
+        broker = paper = 0
+        for fill in fills:
+            try:
+                if fill.get("slip_bps") is not None:
+                    slip_bps.append(abs(float(fill["slip_bps"])))
+                total_slip += float(fill.get("slip_usd") or 0)
+                total_fee += float(fill.get("fee_usd") or 0)
+            except (TypeError, ValueError):
+                continue
+            if fill.get("simulated") or fill.get("fill_style") == "mid_or_taker":
+                paper += 1
+            elif fill.get("broker"):
+                broker += 1
+        return {
+            "n": len(fills),
+            "avg_slippage_bps": round(sum(slip_bps) / len(slip_bps), 3) if slip_bps else None,
+            "total_slippage_usd": round(total_slip, 4),
+            "total_fees_usd": round(total_fee, 4),
+            "broker_fills": broker,
+            "paper_fills": paper,
+            "sample_only": True,
+        }
+
+
+def _risk_cockpit(cfg: dict[str, Any], ledger: dict[str, Any]) -> dict[str, Any]:
+        daily = daily_target_progress(cfg, ledger)
+        positions = [p for p in (ledger.get("positions") or []) if (_finite_float(p.get("shares"), 0) or 0) > 0]
+        exposure = 0.0
+        for p in positions:
+            exposure += abs((_finite_float(p.get("shares"), 0) or 0) * (_finite_float(p.get("avg_price"), 0) or 0))
+        ks = cfg.get("kill_switch") or {}
+        equity = _finite_float(cfg.get("paper_equity"), 100000.0) or 100000.0
+        test_notional = equity * float(get_preset(cfg.get("risk_preset")).get("max_position_pct") or 0) / 100.0
+        allowed, reason = can_take_trade(cfg, ledger, max(test_notional, 0.01)) if cfg.get("session_active") else (False, "session_not_active")
+        return {
+            "session_active": bool(cfg.get("session_active")),
+            "mode": cfg.get("mode"),
+            "trade_allowed": allowed,
+            "trade_gate_reason": reason,
+            "test_order_notional_usd": round(test_notional, 2),
+            "open_positions": len(positions),
+            "exposure_usd": round(exposure, 2),
+            "daily_pnl_usd": round(_finite_float(daily.get("pnl"), 0) or 0, 2),
+            "max_session_loss_usd": cfg.get("max_session_loss_usd"),
+            "kill_switch_armed": bool(ks.get("armed")),
+            "broker_position_check": "available" if _broker_public_status().get("configured") else "not_configured",
+            "data_files_healthy": not bool(_CORRUPT_PATHS),
+        }
+
+
+def _promotion_gate(cfg: dict[str, Any], ledger: dict[str, Any]) -> dict[str, Any]:
+        """Conservative paper-to-live checklist; this never enables live mode."""
+        window_days = int(_finite_float(cfg.get("promotion_window_days"), 30) or 30)
+        cutoff = datetime.now(timezone.utc).timestamp() - window_days * 86400
+        fills = []
+        all_fills = (
+            list(ledger.get("fills") or [])
+            + list(ledger.get("fills_archive") or [])
+            + list(ledger.get("broker_fills") or [])
+            + list(ledger.get("broker_fills_archive") or [])
+        )
+        for fill in all_fills:
+            try:
+                ts = datetime.fromisoformat(str(fill.get("ts") or "").replace("Z", "+00:00")).timestamp()
+            except (TypeError, ValueError, OSError):
+                continue
+            if ts >= cutoff:
+                fills.append(fill)
+        grouped: dict[str, float] = {}
+        for fill in fills:
+            pnl_value = _finite_float(fill.get("realized_pnl"))
+            if pnl_value is None:
+                continue
+            key = str(fill.get("position_id") or fill.get("signal_id") or fill.get("id") or "")
+            if key:
+                grouped[key] = grouped.get(key, 0.0) + pnl_value
+        pnl = list(grouped.values())
+        closed = [{"realized_pnl": value} for value in pnl]
+        wins = [f for f in closed if (_finite_float(f.get("realized_pnl"), 0) or 0) > 0]
+        running = peak = drawdown = 0.0
+        for value in pnl:
+            running += value
+            peak = max(peak, running)
+            drawdown = max(drawdown, peak - running)
+        equity = max(_finite_float(cfg.get("paper_equity"), 1.0) or 1.0, 1.0)
+        n = len(closed)
+        win_rate = (len(wins) / n) if n else None
+        checks = {
+            "minimum_samples": n >= int(cfg.get("promotion_min_samples") or 30),
+            "minimum_win_rate": win_rate is not None and win_rate >= float(cfg.get("promotion_min_win_rate") or 0.52),
+            "maximum_drawdown": (drawdown / equity * 100) <= float(cfg.get("promotion_max_drawdown_pct") or 5.0),
+            "data_healthy": not bool(_CORRUPT_PATHS),
+        }
+        return {
+            "eligible": all(checks.values()),
+            "checks": checks,
+            "samples": n,
+            "win_rate": round(win_rate, 4) if win_rate is not None else None,
+            "drawdown_usd": round(drawdown, 2),
+            "drawdown_pct": round(drawdown / equity * 100, 3),
+            "window_days": window_days,
+            "note": "Evidence gate only; it never changes broker mode or places orders.",
+        }
 def _ranked_opportunities(
     signals: list[dict],
     decisions: list[dict] | None = None,
@@ -4325,6 +4552,89 @@ def _sparks_for_tickers(tickers: list[str]) -> dict[str, Any]:
     return {"ok": True, "sparks": out, "ttl_sec": _SPARK_TTL_SEC}
 
 
+_STATE_AUX_LOCK = threading.Lock()
+_STATE_AUX: dict[str, Any] = {"key": None, "at": 0.0, "data": None, "refreshing": False}
+_STATE_AUX_TTL = 30.0
+
+
+def _refresh_state_aux(cfg: dict[str, Any], watchlist: list[str], focus: str | None) -> None:
+    """Refresh slow informational providers without blocking the primary state route."""
+    try:
+        providers = api_providers.public_pack_status()
+    except Exception as exc:  # noqa: BLE001
+        providers = {"configured": {}, "error": str(exc)[:120]}
+    try:
+        watchlist_news = news_stream.watchlist_news(watchlist, per_symbol=3, max_total=18)
+    except Exception as exc:  # noqa: BLE001
+        watchlist_news = {"ok": False, "items": [], "error": str(exc)[:120]}
+    try:
+        edgar = edgar_client.recent_filings(focus, limit=6) if focus else {"ok": False, "filings": [], "status": "no_focus"}
+    except Exception as exc:  # noqa: BLE001
+        edgar = {"ok": False, "filings": [], "error": str(exc)[:120]}
+    try:
+        options = options_flow.flow_for_ticker(focus) if focus else {"ok": False, "status": "no_focus", "auto_trade": False}
+    except Exception as exc:  # noqa: BLE001
+        options = {"ok": False, "error": str(exc)[:120], "auto_trade": False}
+    try:
+        macro = {
+            "calendar": macro_calendar.calendar_snapshot(),
+            "risk": macro_calendar.risk_adjustment(focus, cfg),
+            "gates_enabled": bool(cfg.get("macro_gates_enabled", True)),
+        }
+    except Exception as exc:  # noqa: BLE001
+        macro = {"error": str(exc)[:120]}
+    try:
+        alerts = desk_alerts.drain_for_state(12)
+    except Exception as exc:  # noqa: BLE001
+        alerts = {"items": [], "error": str(exc)[:120]}
+    data = {
+        "providers": providers,
+        "api_pack": (providers or {}).get("configured") or {},
+        "watchlist_news": watchlist_news,
+        "edgar": edgar,
+        "options_flow": options,
+        "macro": macro,
+        "alerts": alerts,
+    }
+    with _STATE_AUX_LOCK:
+        _STATE_AUX.update(data=data, refreshing=False, at=__import__("time").time())
+
+
+def _refresh_state_aux_safe(cfg: dict[str, Any], watchlist: list[str], focus: str | None) -> None:
+    try:
+        _refresh_state_aux(cfg, watchlist, focus)
+    except Exception as exc:  # noqa: BLE001
+        with _STATE_AUX_LOCK:
+            _STATE_AUX["refreshing"] = False
+            _STATE_AUX["data"] = {
+                "providers": {"configured": {}, "error": str(exc)[:120]},
+                "api_pack": {},
+                "watchlist_news": {"ok": False, "items": [], "error": str(exc)[:120]},
+                "edgar": {"ok": False, "filings": [], "error": str(exc)[:120]},
+                "options_flow": {"ok": False, "error": str(exc)[:120], "auto_trade": False},
+                "macro": {"error": str(exc)[:120]},
+                "alerts": {"items": [], "error": str(exc)[:120]},
+            }
+
+
+def _state_aux_snapshot(cfg: dict[str, Any], watchlist: list[str], focus: str | None) -> dict[str, Any]:
+    key = (tuple(watchlist), focus, bool(cfg.get("macro_gates_enabled", True)))
+    now = __import__("time").time()
+    with _STATE_AUX_LOCK:
+        fresh = _STATE_AUX.get("key") == key and now - float(_STATE_AUX.get("at") or 0) < _STATE_AUX_TTL
+        if not fresh and not _STATE_AUX.get("refreshing"):
+            _STATE_AUX["key"] = key
+            _STATE_AUX["refreshing"] = True
+            threading.Thread(
+                target=_refresh_state_aux_safe,
+                args=(dict(cfg), list(watchlist), focus),
+                daemon=True,
+                name="state-aux-refresh",
+            ).start()
+        cached = _STATE_AUX.get("data") or {}
+    return dict(cached)
+
+
 @app.route("/")
 def index():
     return render_template("index.html", banner=BANNER)
@@ -4405,6 +4715,9 @@ def api_state():
             buzz_cache,
         ),
         "edge_sample": edge,
+        "execution_realism": _execution_realism(ledger),
+        "risk_cockpit": _risk_cockpit(cfg, ledger),
+        "promotion_gate": _promotion_gate(cfg, ledger),
         "buzz": buzz_sum,
         "heat": buzz_sum.get("heat") or [],
         "heat_enabled": bool(cfg.get("heat_enabled", True)),
@@ -4428,18 +4741,7 @@ def api_state():
         payload["equity_curve"] = list(ledger.get("equity_curve") or [])
     payload["pace"] = (payload.get("daily") or {}).get("pace") or {}
 
-    # --- API pack (edu): providers + news + EDGAR + options + macro + alerts ---
-    # Fail soft; never block /api/state on missing keys.
-    try:
-        payload["providers"] = api_providers.public_pack_status()
-        payload["api_pack"] = (payload["providers"] or {}).get("configured") or {}
-    except Exception as exc:  # noqa: BLE001
-        payload["providers"] = {"error": str(exc)[:120]}
-        payload["api_pack"] = {}
-    try:
-        payload["watchlist_news"] = news_stream.watchlist_news(watchlist, per_symbol=3, max_total=18)
-    except Exception as exc:  # noqa: BLE001
-        payload["watchlist_news"] = {"ok": False, "items": [], "error": str(exc)[:120]}
+    # --- API pack (edu): cached provider enrichment; never block /api/state on network I/O ---
     focus = None
     try:
         for d in decisions_preview:
@@ -4450,27 +4752,9 @@ def api_state():
         if not focus and watchlist:
             focus = str(watchlist[0]).upper()
         payload["focus_ticker"] = focus
-        if focus:
-            payload["edgar"] = edgar_client.recent_filings(focus, limit=6)
-            payload["options_flow"] = options_flow.flow_for_ticker(focus)
-        else:
-            payload["edgar"] = {"ok": False, "filings": [], "status": "no_focus"}
-            payload["options_flow"] = {"ok": False, "status": "no_focus", "auto_trade": False}
-    except Exception as exc:  # noqa: BLE001
-        payload["edgar"] = {"ok": False, "filings": [], "error": str(exc)[:120]}
-        payload["options_flow"] = {"ok": False, "error": str(exc)[:120], "auto_trade": False}
-    try:
-        payload["macro"] = {
-            "calendar": macro_calendar.calendar_snapshot(),
-            "risk": macro_calendar.risk_adjustment(focus, cfg),
-            "gates_enabled": bool(cfg.get("macro_gates_enabled", True)),
-        }
-    except Exception as exc:  # noqa: BLE001
-        payload["macro"] = {"error": str(exc)[:120]}
-    try:
-        payload["alerts"] = desk_alerts.drain_for_state(12)
-    except Exception as exc:  # noqa: BLE001
-        payload["alerts"] = {"items": [], "error": str(exc)[:120]}
+    except Exception:
+        focus = None
+    payload.update(_state_aux_snapshot(cfg, watchlist, focus))
     payload["corrupt_files"] = corrupt_files_status()
     try:
         payload.update(_money_snapshot(cfg))
@@ -4509,6 +4793,19 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
             new_mode = body["mode"]
             if new_mode not in ("manual", "auto_paper", "auto_live"):
                 return jsonify({"ok": False, "error": "Invalid mode"}), 400
+            if new_mode == "auto_live":
+                broker = _broker_public_status()
+                confirmation = str(body.get("live_confirm") or "").strip().upper()
+                expected = (
+                    "REAL"
+                    if broker.get("configured") and broker.get("paper_mode") is False
+                    else "AUTO_LIVE"
+                )
+                if confirmation != expected:
+                    return jsonify({
+                        "ok": False,
+                        "error": f"live_confirm must be {expected} before enabling auto_live",
+                    }), 400
             if new_mode == "auto_live":
                 # No ENABLE LIVE AUTO unlock — optional kill-switch limits only.
                 ks_in = body.get("kill_switch")
@@ -4624,7 +4921,13 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
                 cfg["max_session_loss_usd"] = abs(_num(raw, "Max session loss", lo=-1e9, hi=1e9))
             append_journal("max_session_loss_set", {"max_session_loss_usd": cfg["max_session_loss_usd"]})
 
-        for key in ("paper_equity", "signal_ttl_sec", "demo_signal_interval_sec", "scan_interval_sec", "slip_bps"):
+        for key in (
+            "paper_equity", "signal_ttl_sec", "demo_signal_interval_sec",
+            "scan_interval_sec", "slip_bps", "alert_cooldown_sec",
+            "promotion_min_samples", "promotion_min_win_rate",
+            "promotion_max_drawdown_pct",
+            "promotion_window_days",
+        ):
             if key in body:
                 lo, hi = _NUMERIC_CFG_LIMITS[key]
                 cfg[key] = _num(body[key], key, lo=lo, hi=hi)
@@ -5643,8 +5946,8 @@ def api_session_start():
                 "open_positions": len(open_pos),
                 "fills_today": len(fills_today),
                 "error": (
-                    f"Starting fresh will close out {len(open_pos)} open paper position(s) "
-                    f"and move {len(fills_today)} of today's trade(s) to history."
+                    f"Starting fresh will archive {len(open_pos)} still-open paper position(s) "
+                    f"without realizing them and move {len(fills_today)} of today's trade(s) to history."
                 ),
             }), 409
 
@@ -5693,7 +5996,16 @@ def api_session_start():
         if open_pos:
             arch = list(prev.get("positions_archive") or [])
             stamp = _now_iso()
-            arch = [dict(p, archived_at=stamp, archived_by="session_start") for p in open_pos] + arch
+            arch = [
+                dict(
+                    p,
+                    archived_at=stamp,
+                    archived_by="session_start",
+                    still_open=True,
+                    realized_at_archive=False,
+                )
+                for p in open_pos
+            ] + arch
             ledger["positions_archive"] = arch[:200]
         # Prefer clear fills for clean Today P&L; archive prior fills if present
         old_fills = prev.get("fills") or []
@@ -5802,6 +6114,7 @@ def api_session_stop():
 def api_ledger_reset():
     with _lock:
         cfg = load_config()
+        previous = load_ledger()
         equity = float(cfg.get("paper_equity", 100_000))
         ledger = {
             "equity": equity,
@@ -5810,6 +6123,10 @@ def api_ledger_reset():
             "fills": [],
             "daily": {},
         }
+        if previous.get("broker_daily"):
+            ledger["broker_daily"] = previous["broker_daily"]
+        if previous.get("broker_fills"):
+            ledger["broker_fills_archive"] = list(previous["broker_fills"])[:500]
         save_ledger(ledger)
         append_journal("ledger_reset", {"equity": equity})
         return jsonify({"ok": True, "ledger": ledger})
@@ -6122,6 +6439,57 @@ def api_edge_sample():
         limit = 40
     limit = max(5, min(limit, 200))
     return jsonify({"ok": True, "edge_sample": _edge_sample_stats(limit)})
+
+
+@app.route("/api/data-quality")
+def api_data_quality():
+    """Provider/source readiness and freshness signals for the desk."""
+    try:
+        providers = api_providers.public_pack_status()
+    except Exception as exc:  # noqa: BLE001
+        providers = {"configured": {}, "error": str(exc)[:120]}
+    configured = providers.get("configured") or {}
+    buzz_cache = buzz_sources.get_cached_buzz() or {}
+    cached_at = buzz_cache.get("cached_at_epoch")
+    cache_age = None
+    if cached_at:
+        cache_age = max(0.0, round(__import__("time").time() - float(cached_at), 1))
+    return jsonify({
+        "ok": not bool(_CORRUPT_PATHS),
+        "healthy": not bool(_CORRUPT_PATHS),
+        "corrupt_files": corrupt_files_status(),
+        "providers": configured,
+        "configured_count": sum(bool(v) for v in configured.values()),
+        "fallback_policy": "yfinance -> Yahoo/NASDAQ -> optional Finnhub",
+        "quote_cache": {
+            "kind": "buzz_disk_memory",
+            "age_sec": cache_age,
+            "stale": bool(buzz_cache.get("stale")) if buzz_cache else True,
+        },
+        "note": "Provider availability is not a guarantee of quote freshness; inspect source and timestamp on each signal.",
+    })
+
+
+@app.route("/api/risk/cockpit")
+def api_risk_cockpit():
+    with _lock:
+        cfg, ledger = dict(load_config()), dict(load_ledger())
+    return jsonify({"ok": True, "risk": _risk_cockpit(cfg, ledger)})
+
+
+@app.route("/api/execution/realism")
+def api_execution_realism():
+    with _lock:
+        ledger = dict(load_ledger())
+    return jsonify({"ok": True, "execution": _execution_realism(ledger)})
+
+
+@app.route("/api/strategy/evidence")
+def api_strategy_evidence():
+    with _lock:
+        cfg, ledger = dict(load_config()), dict(load_ledger())
+    return jsonify({"ok": True, "evidence": _promotion_gate(cfg, ledger),
+                    "edge_sample": _edge_sample_stats(200)})
 
 
 

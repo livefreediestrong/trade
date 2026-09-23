@@ -510,6 +510,20 @@
     </div>
   </section>
 
+  <section class="panel adv-only" id="risk-cockpit-panel">
+    <div class="panel-head">
+      <h2>Risk cockpit <span class="title-ctx">(evidence and execution health)</span></h2>
+    </div>
+    <p class="hint-line quiet-hint">Operational checks only — this panel does not create a trading edge or authorize live mode.</p>
+    <div class="edge-grid" id="risk-cockpit-grid">
+      <div class="edge-cell"><span class="lbl">Trade permission</span><span class="val" id="risk-trade-allowed">-</span></div>
+      <div class="edge-cell"><span class="lbl">Open exposure</span><span class="val" id="risk-exposure">-</span></div>
+      <div class="edge-cell"><span class="lbl">Avg slippage</span><span class="val" id="risk-slippage">-</span></div>
+      <div class="edge-cell"><span class="lbl">Promotion gate</span><span class="val" id="risk-promotion">-</span></div>
+    </div>
+    <p class="muted-line" id="risk-quality-note"></p>
+  </section>
+
 
   <section class="panel buzz-panel adv-only" id="buzz-panel">
     <div class="panel-head">

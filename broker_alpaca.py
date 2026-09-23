@@ -223,6 +223,13 @@ def cancel_order(order_id: str) -> dict[str, Any]:
 TERMINAL_BAD = {"canceled", "cancelled", "expired", "rejected", "suspended", "stopped"}
 
 
+def _safe_float(value: Any) -> float | None:
+    try:
+        return float(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
 def get_order(order_id: str) -> dict[str, Any]:
     if not is_configured():
         return {"ok": False, "error": "not_configured"}
@@ -283,6 +290,36 @@ def wait_for_fill(order_id: str, *, timeout: float = 6.0, interval: float = 0.5)
         "filled_avg_price": _f("filled_avg_price"),
         "order_id": order_id,
     }
+
+
+def reconcile_after_timeout(order_id: str, *, timeout: float = 2.0) -> dict[str, Any]:
+    """Cancel an order that did not finish polling, then return its final state."""
+    current = get_order(order_id)
+    if current.get("ok"):
+        status = str((current.get("order") or {}).get("status") or "").lower()
+        if status not in {"filled", *TERMINAL_BAD}:
+            cancel_order(order_id)
+        final = get_order(order_id)
+        if final.get("ok"):
+            order = final.get("order") or {}
+            filled_qty = _safe_float(order.get("filled_qty")) or 0.0
+            final_status = str(order.get("status") or "").lower()
+            if final_status == "filled":
+                state = "filled"
+            elif filled_qty > 0:
+                state = "partially_filled"
+            elif final_status in TERMINAL_BAD:
+                state = "failed"
+            else:
+                state = "unknown"
+            return {
+                "state": state,
+                "alpaca_status": final_status or None,
+                "filled_qty": filled_qty,
+                "filled_avg_price": _safe_float(order.get("filled_avg_price")),
+                "order_id": order_id,
+            }
+    return wait_for_fill(order_id, timeout=max(0.0, timeout))
 
 
 def _normalize_side(side: str) -> str | None:

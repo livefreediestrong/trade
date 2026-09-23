@@ -186,6 +186,37 @@ _state: dict[str, Any] = {"running": False, "progress": 0, "total": 0, "message"
 _lock = threading.Lock()
 
 
+def start(
+    tickers: list[str],
+    out_path: Path,
+    params: Optional[dict[str, Any]] = None,
+) -> tuple[bool, str]:
+    """Start exactly one background run, atomically claiming the job slot."""
+    with _lock:
+        if _state.get("running"):
+            return False, "A test is already running."
+        _state.update(
+            running=True,
+            progress=0,
+            total=len(tickers),
+            message="Starting…",
+            started=time.time(),
+        )
+
+    def worker() -> None:
+        try:
+            run(tickers, out_path, params, _claimed=True)
+        except Exception as exc:  # noqa: BLE001
+            with _lock:
+                _state["message"] = f"Failed: {str(exc)[:160]}"
+        finally:
+            with _lock:
+                _state["running"] = False
+
+    threading.Thread(target=worker, daemon=True, name="backtest").start()
+    return True, "started"
+
+
 def status() -> dict[str, Any]:
     with _lock:
         return dict(_state)
@@ -202,11 +233,16 @@ def _fetch(ticker: str) -> Optional[pd.DataFrame]:
 
 
 def run(tickers: list[str], out_path: Path, params: Optional[dict[str, Any]] = None,
-        fetch: Callable[[str], Optional[pd.DataFrame]] = _fetch) -> dict[str, Any]:
-    with _lock:
-        if _state.get("running"):
-            return {"ok": False, "error": "A test is already running."}
-        _state.update(running=True, progress=0, total=len(tickers), message="Downloading prices…", started=time.time())
+        fetch: Callable[[str], Optional[pd.DataFrame]] = _fetch,
+        *, _claimed: bool = False) -> dict[str, Any]:
+    if not _claimed:
+        with _lock:
+            if _state.get("running"):
+                return {"ok": False, "error": "A test is already running."}
+            _state.update(running=True, progress=0, total=len(tickers), message="Downloading prices…", started=time.time())
+    else:
+        with _lock:
+            _state["message"] = "Downloading prices…"
     all_trades: list[dict[str, Any]] = []
     used, skipped = [], []
     try:

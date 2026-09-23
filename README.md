@@ -14,7 +14,8 @@ Companion-style app for a Windows PC beside `holdings-options-monitor`.
 - Raw `/api/broker/*`, `/api/orders`, `/api/alpaca/*`, `/api/ibkr/*`, `/api/tos/*` stay **403** (use desk approve / auto_live).
 - **auto_live / approve (when mode=auto_live):** `can_take_trade` + size/loss caps **first**, then broker submit. Successful broker submit is **broker-only** (no dual local `paper_fill`). Broker fail → **no trade** (never booked as paper).
 - UI masthead: **PAPER ONLY** unless `ALPACA_PAPER=false` and keys set → **LIVE ENDPOINT**.
-- Switching to real money requires typing REAL in the confirm prompt.
+- Enabling `auto_live` requires a matching server-side confirmation; real-money endpoints specifically require typing `REAL` in the UI prompt.
+- The desk is unauthenticated on loopback only. If exposed beyond loopback with `TOMAHAWK_HOST` / `TOMAHAWK_ALLOWED_HOSTS`, set a long random `TOMAHAWK_AUTH_TOKEN`; remote requests must send `X-Tomahawk-Token` or `Authorization: Bearer`.
 
 Kill-switch / daily profit target remain **optional** research controls; they do not block mode entry by default.
 
@@ -70,6 +71,8 @@ Suggested size cuts for late/chasing appear in reason text / `size_mult_suggeste
 - Background **scan loop** default interval **120s** (`scan_interval_sec`).
 - Daily profit target (if set) still pauses new fills when hit; kill-switch only when armed.
 - **Journal** of actions in `./data/journal.json`.
+- **Alert cooldown** deduplicates repeated pending ticker/verdict alerts (`alert_cooldown_sec`, default 300).
+- **Risk cockpit** exposes data health, exposure, slippage/fee friction, and a conservative paper-evidence promotion checklist.
 
 ## Persist
 
@@ -120,6 +123,10 @@ Open `http://127.0.0.1:5056`
 - `POST /api/config` — mode / preset / watchlist / optional kill-switch
 - `POST /api/signals/generate` — force one watchlist scan (optional `{"ticker": "AAPL"}`); the idea always waits for Approve
 - `POST /api/signals/<id>/approve` — paper fill; if mode=auto_live → gate then broker-or-paper (no dual-book)
+- `GET /api/data-quality` — provider readiness, data-file health, and fallback policy
+- `GET /api/risk/cockpit` — current exposure and permission-to-trade checks
+- `GET /api/execution/realism` — sampled slippage, fees, and paper/broker execution counts
+- `GET /api/strategy/evidence` — evidence/promotion gate; never enables live trading
 - `POST /api/signals/<id>/reject`
 - `POST /api/ledger/reset`
 - `GET /api/health` — includes `llm: {configured, model, enabled}`
@@ -130,7 +137,7 @@ Open `http://127.0.0.1:5056`
 ## Broker adapter summary (Alpaca optional)
 
 1. Default mode is **manual**; fills are local paper unless auto_live + keys.
-2. **auto_live** on a real-money endpoint asks you to type REAL; on Alpaca paper a confirm dialog.
+2. **auto_live** on a real-money endpoint asks you to type REAL; the server rejects the transition without that confirmation. On Alpaca paper, a confirm dialog is shown.
 3. `live_broker_place_order` posts to Alpaca when keys are set; journals every attempt. Missing keys → `live_not_configured`.
 4. Desk **never** dual-books: broker success skips local `paper_fill`; broker fail is reported as a failure (no paper fallback).
 5. `ALPACA_PAPER` defaults **true**. `false` → live money endpoint; UI shows **LIVE ENDPOINT**.
@@ -141,8 +148,8 @@ Open `http://127.0.0.1:5056`
 
 - **Local-only by default.** Binds `127.0.0.1:5056`. Requests with a foreign `Host`, a foreign `Origin`, or `Sec-Fetch-Site: cross-site` get 403, so a web page you visit can't switch modes or approve trades. To expose on a LAN on purpose: `TOMAHAWK_HOST=0.0.0.0` plus `TOMAHAWK_ALLOWED_HOSTS=192.168.x.y:5056`.
 - **Corrupt data fails closed.** A BOM is tolerated. An unreadable `data/*.json` is backed up as `*.corrupt.<timestamp>.bak`, never overwritten, and trading is gated until it's repaired and the app restarted (`corrupt_files` in `/api/health` and `/api/state`; UI toast).
-- **Broker honesty.** A broker order that fails or is rejected is **not** booked as a local paper trade. Fills use Alpaca's `filled_avg_price`/`filled_qty` (polled up to `BROKER_FILL_WAIT_SEC`, default 6s); otherwise the fill is flagged `confirmed:false`, `price_estimated:true`. Broker orders count toward max trades/day, and broker day P&L (equity − last_equity) is checked against the loss caps. Gate+submit is serialized.
-- A crashed approve marks the signal `rejected` (never stuck in `approving`, never silently re-pending). Signals stuck in `approving` are released at startup.
+- **Broker honesty.** A broker order that fails or is rejected is **not** booked as a local paper trade. Fills use Alpaca's `filled_avg_price`/`filled_qty`; orders still pending after `BROKER_FILL_WAIT_SEC` are canceled/reconciled, and only confirmed or partially confirmed fills are recorded. Broker orders count toward max trades/day, broker fills are persisted separately, and broker day P&L (equity − last_equity) is checked against the loss caps. Gate+submit is serialized.
+- A crashed approve marks the signal `rejected` (never stuck in `approving`, never silently re-pending). Signals stuck in `approving` are released at startup. Starting a fresh paper session requires confirmation before archiving open positions; archived positions are marked still open rather than realized exits.
 - `signals.json` keeps the newest 300 resolved signals plus all pending ones.
 - Tests: `.venv\Scripts\python -m pip install pytest` then `.venv\Scripts\python -m pytest tests -q` (uses a temp data dir; no network).
 
