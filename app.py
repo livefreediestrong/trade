@@ -55,6 +55,7 @@ import desk_alerts
 import macro_calendar
 import edgar_client
 import options_flow
+import evidence_model
 from risk_policy import RISK_PRESETS
 
 APP_DIR = Path(__file__).resolve().parent
@@ -258,6 +259,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # Optional broad-market filter. Disabled by default until live data coverage is proven.
     "market_regime_gate_enabled": False,
     "social_enabled": False,
+    # Authorized X (Twitter) API v2 recent-search adapter — research-only,
+    # display-only. Requires social_enabled=true AND X_BEARER_TOKEN set. Off
+    # by default; never influences execution gates.
+    "x_enabled": False,
     # API pack — macro calendar gates (Fed/CPI/earnings); degrade when keys missing
     "macro_gates_enabled": True,
     "macro_size_mult": 0.5,
@@ -5263,7 +5268,7 @@ def _refresh_state_aux(cfg: dict[str, Any], watchlist: list[str], focus: str | N
     except Exception as exc:  # noqa: BLE001
         watchlist_news = {"ok": False, "items": [], "error": str(exc)[:120]}
     try:
-        social = social_intelligence.snapshot(watchlist) if cfg.get("social_enabled") else {
+        social = social_intelligence.snapshot(watchlist, cfg=cfg) if cfg.get("social_enabled") else {
             "ok": False, "enabled": False, "pulse": [], "items": [], "display_only": True,
         }
     except Exception as exc:  # noqa: BLE001
@@ -5289,7 +5294,32 @@ def _refresh_state_aux(cfg: dict[str, Any], watchlist: list[str], focus: str | N
     except Exception as exc:  # noqa: BLE001
         alerts = {"items": [], "error": str(exc)[:120]}
     try:
+        market_fundamental_envelopes: list[Any] = []
+        if focus:
+            import data_sources as _ds
+
+            quote = _ds.finnhub_quote(focus)
+            if quote:
+                market_fundamental_envelopes.append(evidence_model.from_market_context(focus, quote))
+            rec = _ds.finnhub_recommendation(focus)
+            if rec:
+                market_fundamental_envelopes.append(
+                    evidence_model.from_fundamental_context(
+                        focus, {"metric": "analyst_recommendation", "summary": str(rec)[:200]}
+                    )
+                )
+    except Exception:  # noqa: BLE001
+        market_fundamental_envelopes = []
+    try:
         intelligence = news_intelligence.analyze_items(watchlist_news.get("items") or [])
+        all_envelope_dicts = [
+            *(intelligence.get("envelopes") or []),
+            *((edgar or {}).get("envelopes") or []),
+            *(((macro or {}).get("calendar") or {}).get("envelopes") or []),
+            *(social.get("envelopes") or []),
+            *[e.to_dict() for e in market_fundamental_envelopes],
+        ]
+        research_fidelity = evidence_model.research_fidelity_summary_from_dicts(all_envelope_dicts)
         research_context = {
             "ticker": focus,
             "timeline": news_intelligence.build_timeline(
@@ -5303,6 +5333,8 @@ def _refresh_state_aux(cfg: dict[str, Any], watchlist: list[str], focus: str | N
             "provider_reliability": news_intelligence.provider_reliability(),
             "display_only": True,
             "social": social,
+            "research_fidelity": research_fidelity,
+            "envelopes": all_envelope_dicts[:150],
         }
     except Exception as exc:  # noqa: BLE001
         research_context = {"ticker": focus, "timeline": [], "error": str(exc)[:120], "display_only": True}
@@ -5316,6 +5348,7 @@ def _refresh_state_aux(cfg: dict[str, Any], watchlist: list[str], focus: str | N
         "alerts": alerts,
         "research_context": research_context,
         "social": social,
+        "research_fidelity": research_context.get("research_fidelity") or evidence_model.research_fidelity_summary([]),
     }
     with _STATE_AUX_LOCK:
         if _STATE_AUX.get("key") == (tuple(watchlist), focus, bool(cfg.get("macro_gates_enabled", True)), bool(cfg.get("social_enabled"))):
@@ -5340,11 +5373,18 @@ def _refresh_state_aux_safe(cfg: dict[str, Any], watchlist: list[str], focus: st
                 "alerts": {"items": [], "error": str(exc)[:120]},
                 "research_context": {"timeline": [], "error": str(exc)[:120], "display_only": True},
                 "social": {"ok": False, "pulse": [], "items": [], "display_only": True},
+                "research_fidelity": evidence_model.research_fidelity_summary([]),
             }
 
 
 def _state_aux_snapshot(cfg: dict[str, Any], watchlist: list[str], focus: str | None) -> dict[str, Any]:
-    key = (tuple(watchlist), focus, bool(cfg.get("macro_gates_enabled", True)), bool(cfg.get("social_enabled")))
+    key = (
+        tuple(watchlist),
+        focus,
+        bool(cfg.get("macro_gates_enabled", True)),
+        bool(cfg.get("social_enabled")),
+        bool(cfg.get("x_enabled")),
+    )
     now = __import__("time").time()
     with _STATE_AUX_LOCK:
         fresh = _STATE_AUX.get("key") == key and now - float(_STATE_AUX.get("at") or 0) < _STATE_AUX_TTL
@@ -5703,6 +5743,9 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
         if "social_enabled" in body:
             cfg["social_enabled"] = bool(body["social_enabled"])
             append_journal("social_enabled_set", {"social_enabled": cfg["social_enabled"]})
+        if "x_enabled" in body:
+            cfg["x_enabled"] = bool(body["x_enabled"])
+            append_journal("x_enabled_set", {"x_enabled": cfg["x_enabled"]})
         # API pack macro gates
         for _mk, _cast in (
             ("macro_gates_enabled", bool),
@@ -7297,11 +7340,26 @@ def api_data_quality():
 @app.route("/api/research/x")
 def api_research_x():
     """Authorized X API pulse; explicitly display-only and never an execution gate."""
-    import x_social
+    import x_adapter
     cfg = load_config()
-    if not bool(cfg.get("social_enabled")):
-        return jsonify({"ok": False, "enabled": False, "items": [], "research_only": True, "error": "social_disabled"})
-    return jsonify(x_social.snapshot(list(cfg.get("watchlist") or [])))
+    if not x_adapter.is_enabled(cfg):
+        return jsonify({
+            "ok": False,
+            "enabled": False,
+            "items": [],
+            "research_only": True,
+            "error": "x_disabled",
+            "status": x_adapter.public_status(),
+        })
+    rows = x_adapter.rows_for_watchlist(list(cfg.get("watchlist") or []), cfg)
+    return jsonify({
+        "ok": True,
+        "enabled": True,
+        "items": rows,
+        "count": len(rows),
+        "research_only": True,
+        "status": x_adapter.public_status(),
+    })
 
 
 @app.route("/api/research/fundamentals/<ticker>")
@@ -7464,6 +7522,8 @@ def api_research_intelligence():
                 "digest": analysis.get("digest") or [],
                 "alerts": analysis.get("alerts") or [],
                 "provider_reliability": news_intelligence.provider_reliability(),
+                "research_fidelity": analysis.get("research_fidelity"),
+                "envelopes": analysis.get("envelopes") or [],
                 "display_only": True,
             }
         )
@@ -7537,7 +7597,40 @@ def api_research_social():
         return jsonify(social_intelligence.snapshot(
             watchlist,
             force=str(request.args.get("force") or "").lower() in {"1", "true", "yes"},
+            cfg=cfg,
         ))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(exc)[:200], "display_only": True}), 500
+
+
+@app.route("/api/research/fidelity")
+def api_research_fidelity():
+    """Canonical research_fidelity summary — coverage/freshness/confidence
+    across news, social (Reddit/Stocktwits/authorized X), SEC/EDGAR, macro,
+    and market/fundamental context for the requested ticker(s). Read-only;
+    never affects execution gates."""
+    cfg = load_config()
+    raw = request.args.get("symbols") or request.args.get("ticker") or ""
+    syms = [s.strip().upper() for s in raw.replace(";", ",").split(",") if s.strip()]
+    if not syms:
+        syms = list((cfg.get("watchlist") or DEFAULT_WATCHLIST)[:12])
+    focus = syms[0] if syms else None
+    try:
+        watchlist = _state_aux_snapshot(cfg, syms, focus)
+        research_context = (watchlist or {}).get("research_context") or {}
+        return jsonify(
+            {
+                "ok": True,
+                "ticker": focus,
+                "symbols": syms,
+                "research_fidelity": research_context.get("research_fidelity")
+                or evidence_model.research_fidelity_summary([]),
+                "envelopes": research_context.get("envelopes") or [],
+                "social_enabled": bool(cfg.get("social_enabled")),
+                "x_enabled": bool(cfg.get("x_enabled")),
+                "display_only": True,
+            }
+        )
     except Exception as exc:  # noqa: BLE001
         return jsonify({"ok": False, "error": str(exc)[:200], "display_only": True}), 500
 

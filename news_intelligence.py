@@ -7,6 +7,8 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
+import evidence_model
+
 _POSITIVE = re.compile(r"\b(beat|raises|raised|upgrade|approved|growth|surge|record|wins)\b", re.I)
 _NEGATIVE = re.compile(r"\b(miss|cuts|cut|downgrade|rejected|decline|loss|lawsuit|probe|recall)\b", re.I)
 _STATS: dict[str, dict[str, Any]] = defaultdict(
@@ -102,6 +104,7 @@ def analyze_items(items: list[dict[str, Any]] | None, *, now: float | None = Non
         and int(row.get("source_agreement") or 0) >= 2
         and not row.get("contradiction")
     ]
+    envelopes = build_envelopes(enriched, now=now_value)
     return {
         "items": enriched,
         "source_agreement": [
@@ -122,8 +125,19 @@ def analyze_items(items: list[dict[str, Any]] | None, *, now: float | None = Non
             "stale_count": sum(1 for row in enriched if float(row.get("freshness_score") or 0) < 0.25),
         },
         "provider_reliability": provider_reliability(),
+        "research_fidelity": evidence_model.research_fidelity_summary(envelopes),
+        "envelopes": evidence_model.envelopes_to_dicts(envelopes)[:100],
         "display_only": True,
     }
+
+
+def build_envelopes(items: list[dict[str, Any]] | None, *, now: float | None = None) -> list[Any]:
+    """Convert analyzed news items into canonical evidence envelopes,
+    deduped and cross-linked for support/contradiction."""
+    envelopes = evidence_model.dedupe(
+        [evidence_model.from_news_item(item, now=now) for item in items or []]
+    )
+    return evidence_model.link_support_contradiction(envelopes)
 
 
 def build_timeline(

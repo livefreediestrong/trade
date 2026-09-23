@@ -5,7 +5,7 @@ import time
 import news_intelligence
 import news_stream
 import social_intelligence
-import x_social
+import x_adapter
 
 
 def test_compact_news_timestamp_is_parsed_before_epoch_conversion():
@@ -34,6 +34,7 @@ def test_social_summary_separates_threads_from_authors():
 
 def test_x_adapter_is_disabled_without_token(monkeypatch):
     monkeypatch.delenv("X_BEARER_TOKEN", raising=False)
-    result = x_social.snapshot(["AAPL"])
-    assert result["enabled"] is False
-    assert result["research_only"] is True
+    monkeypatch.delenv("TWITTER_BEARER_TOKEN", raising=False)
+    assert x_adapter.is_configured() is False
+    assert x_adapter.is_enabled({"social_enabled": True, "x_enabled": True}) is False
+    assert x_adapter.search_recent("AAPL") == []

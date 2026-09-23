@@ -18,6 +18,9 @@ from typing import Any
 
 import requests
 
+import evidence_model
+import x_adapter
+
 _lock = threading.RLock()
 _cache: dict[str, Any] = {"at": 0.0, "payload": None}
 _TTL = 60.0
@@ -199,13 +202,30 @@ def _configured_feeds() -> tuple[str, ...]:
     return tuple(x.strip() for x in raw.split(",") if x.strip()) or DEFAULT_RSS_FEEDS
 
 
+def _dedupe_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop rows that collapse to the same canonical (source, source_id/url)
+    identity, keeping the first (most-recently-sorted) occurrence."""
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        key = evidence_model.canonical_hash(
+            row.get("source"), row.get("source_id") or row.get("permalink") or row.get("title")
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
 def _summarize(rows: list[dict[str, Any]], watchlist: list[str]) -> dict[str, Any]:
-    allowed = {str(t).upper().lstrip("$") for t in watchlist if t}
+    allowed = set(evidence_model.validate_tickers(watchlist))
     by_ticker: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         tickers = _tickers(f"{row.get('title', '')} {row.get('excerpt', '')}", allowed) if allowed else row.get("ticker_candidates", [])
         if allowed and not tickers:
             tickers = [t for t in (row.get("ticker_candidates") or []) if t in allowed]
+        tickers = evidence_model.validate_tickers(tickers)
         for ticker in tickers:
             by_ticker.setdefault(ticker, []).append(row)
     pulse = []
@@ -238,9 +258,9 @@ def _summarize(rows: list[dict[str, Any]], watchlist: list[str]) -> dict[str, An
     }
 
 
-def snapshot(watchlist: list[str] | None = None, *, force: bool = False) -> dict[str, Any]:
-    watchlist = list(watchlist or [])
-    key = tuple(sorted(str(t).upper() for t in watchlist))
+def snapshot(watchlist: list[str] | None = None, *, force: bool = False, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    watchlist = evidence_model.validate_tickers(watchlist)
+    key = (tuple(sorted(watchlist)), bool(x_adapter.is_enabled(cfg)))
     now = time.time()
     with _lock:
         if not force and _cache.get("payload") and now - float(_cache.get("at") or 0) < _TTL and _cache.get("key") == key:
@@ -251,31 +271,29 @@ def snapshot(watchlist: list[str] | None = None, *, force: bool = False) -> dict
     rows: list[dict[str, Any]] = []
     for subreddit in subreddits:
         rows.extend(_reddit_rows(subreddit))
-    symbols = [str(t).upper().lstrip("$") for t in watchlist if t]
+    symbols = list(watchlist)
     rows.extend(_stocktwits_rows(symbols))
     rows.extend(_rss_rows(_configured_feeds()))
-    unique: dict[tuple[str, str], dict[str, Any]] = {}
-    for index, row in enumerate(rows):
-        identity = str(row.get("source_id") or row.get("permalink") or "")
-        key = (str(row.get("source") or ""), identity or f"row-{index}")
-        unique.setdefault(key, row)
-    rows = list(unique.values())
-    def _sort_ts(row: dict[str, Any]) -> float:
-        try:
-            value = str(row.get("created_at") or "").replace("Z", "+00:00")
-            parsed = datetime.fromisoformat(value)
-            return parsed.timestamp()
-        except (TypeError, ValueError, OSError):
-            return 0.0
-    rows.sort(key=_sort_ts, reverse=True)
+    x_enabled = x_adapter.is_enabled(cfg)
+    if x_enabled:
+        rows.extend(x_adapter.rows_for_watchlist(symbols, cfg))
+    rows = _dedupe_rows(rows)
+    rows.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+    envelopes = evidence_model.dedupe(
+        [evidence_model.from_social_row(row, now=now) for row in rows]
+    )
+    envelopes = evidence_model.link_support_contradiction(envelopes)
     payload = {
         "ok": bool(rows),
         "provider": "social_public",
-        "source": "reddit_stocktwits_rss",
+        "source": "reddit_stocktwits_rss" + ("_x" if x_enabled else ""),
         "subreddits": list(subreddits),
         "rss_feeds": list(_configured_feeds()),
+        "x_enabled": x_enabled,
         "scanned_at": datetime.now(timezone.utc).isoformat(),
         "error": None if rows else "No public social rows available",
+        "research_fidelity": evidence_model.research_fidelity_summary(envelopes),
+        "envelopes": evidence_model.envelopes_to_dicts(envelopes)[:100],
         **_summarize(rows, watchlist),
     }
     with _lock:
@@ -283,17 +301,23 @@ def snapshot(watchlist: list[str] | None = None, *, force: bool = False) -> dict
     return dict(payload)
 
 
-def public_status() -> dict[str, Any]:
+def public_status(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    sources = ["reddit_public", "stocktwits_public", "public_rss"]
+    if x_adapter.is_configured():
+        sources.append("x_public")
     return {
         "enabled": True,
         "provider": "social_public",
         "configured": True,
         "read_only": True,
         "display_only": True,
-        "sources": ["reddit_public", "stocktwits_public", "public_rss"],
+        "sources": sources,
+        "x_adapter": x_adapter.public_status(),
+        "x_enabled": x_adapter.is_enabled(cfg),
         "docs": {
             "reddit": "https://www.reddit.com/dev/api/",
             "stocktwits": "https://api.stocktwits.com/developers/docs",
             "rss": "SOCIAL_RSS_FEEDS environment setting",
+            "x": "https://developer.x.com/en/docs/x-api/tweets/search/api-reference/get-tweets-search-recent",
         },
     }

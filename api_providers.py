@@ -57,6 +57,7 @@ def configured_map() -> dict[str, bool]:
         "gemini": _has("GEMINI_API_KEY") or _has("GOOGLE_API_KEY"),
         "reddit": _has("REDDIT_CLIENT_ID") and _has("REDDIT_CLIENT_SECRET"),
         "stocktwits": True,  # public trending — no key
+        "x": _has("X_BEARER_TOKEN") or _has("TWITTER_BEARER_TOKEN"),
         "yahoo": True,
         "x_api": _has("X_BEARER_TOKEN"),
     }
@@ -111,10 +112,13 @@ def public_pack_status() -> dict[str, Any]:
         "docs": "https://api.stocktwits.com/developers/docs",
     }
     try:
-        import x_social
-        details["x_api"] = x_social.public_status()
-    except Exception as exc:
-        details["x_api"] = {"configured": cfg["x_api"], "error": str(exc)[:80], "research_only": True}
+        import x_adapter as xa
+
+        details["x"] = xa.public_status()
+        details["x_api"] = details["x"]
+    except Exception as exc:  # noqa: BLE001
+        details["x"] = {"configured": cfg.get("x", False), "error": str(exc)[:80], "research_only": True}
+        details["x_api"] = details["x"]
     return {
         "configured": cfg,
         "details": details,
