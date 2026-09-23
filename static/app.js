@@ -2386,6 +2386,16 @@
         ? `<div class="row"><span class="k">After</span><span>Leaves about ${fmtMoney(Math.max(0, cash - total))} of your ${fmtMoney(cash)} paper cash</span></div>`
         : "";
       const brokerName = String(window.__brokerStatus?.broker || "broker").toUpperCase();
+      const ks = cfg.kill_switch || {};
+      const tradesUsed = Number(state?.loop?.session_totals?.intents || state?.daily?.trades || 0);
+      const maxTrades = Number(ks.max_trades_per_day || state?.preset?.max_trades_per_day || 0);
+      const lossLimit = Number(ks.max_daily_loss_usd || 0);
+      const dayPnl = Number(state?.daily?.pnl || 0);
+      const age = lastDataAt ? Math.max(0, Math.round((Date.now() - lastDataAt) / 1000)) : null;
+      const freshness = age == null ? "Not verified" : age > 25 ? `Stale (${age}s old)` : `Current (${age}s ago)`;
+      const riskText = maxTrades
+        ? `${tradesUsed}/${maxTrades} trades used${lossLimit ? ` · loss limit ${fmtMoney(lossLimit)}` : ""}`
+        : "Review guardrails before placing";
       const warn = live
         ? `<div class="approve-live-warn" role="alert"><strong>REAL MONEY.</strong> This sends a real market order to your ${brokerName} account. The fill price can differ from ${fmtMoney(px)}. Verify the account, quantity, and risk limits before placing it.</div>`
         : broker
@@ -2395,6 +2405,8 @@
         ${warn}
         <div class="row"><span class="k">Stock</span><span>${escapeHtml(s.ticker)}</span></div>
         <div class="row"><span class="k">Trade</span><span>${maths}</span></div>
+        <div class="row"><span class="k">Data</span><span>${escapeHtml(freshness)}</span></div>
+        <div class="row"><span class="k">Today</span><span>${escapeHtml(riskText)}${Number.isFinite(dayPnl) ? ` · P&amp;L ${fmtMoney(dayPnl)}` : ""}</span></div>
         ${left}
         <div class="row"><span class="k">Why</span><span>${escapeHtml(String(thesis).slice(0, 160))}</span></div>
       `;
@@ -2410,6 +2422,10 @@
       cbtn.classList.toggle("danger", live);
       cbtn.title = live ? "Sends a real-money market order" : "Fake money — practice trade";
       cbtn.disabled = false;
+      if (live && lastDataAt && Date.now() - lastDataAt > 25000) {
+        cbtn.disabled = true;
+        cbtn.title = "Refresh the desk before placing a live order";
+      }
     }
     $("#approve-modal")?.classList.toggle("is-live", live);
     // P0.4 quiet stop / TP — blank → fill_px + 0.8%×stop_r geometry
@@ -2450,6 +2466,31 @@
       const prev = document.getElementById(rid);
       if (prev && typeof prev.focus === "function") prev.focus();
     }
+
+    document.addEventListener("keydown", (ev) => {
+      const modal = $("#approve-modal");
+      if (!modal || modal.classList.contains("hidden")) return;
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        pendingApproveId = null;
+        closeApproveModal();
+        return;
+      }
+      if (ev.key !== "Tab") return;
+      const focusable = Array.from(modal.querySelectorAll(
+        "button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])"
+      ));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (ev.shiftKey && document.activeElement === first) {
+        ev.preventDefault();
+        last.focus();
+      } else if (!ev.shiftKey && document.activeElement === last) {
+        ev.preventDefault();
+        first.focus();
+      }
+    });
     modal.dataset.returnFocus = "";
   }
 
