@@ -23,6 +23,11 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None  # type: ignore
 
+try:
+    import storage as _storage
+except Exception:  # pragma: no cover - SQLite mirroring is optional/best-effort
+    _storage = None
+
 NY_TZ = ZoneInfo("America/New_York") if ZoneInfo else None
 RTH_OPEN = dtime(9, 30)
 RTH_CLOSE = dtime(16, 0)
@@ -297,6 +302,8 @@ class DecisionRing:
         payload = {"seq": self._seq, "events": self._events}
         tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         tmp.replace(self.path)
+        if _storage is not None:
+            _storage.mirror_decision_event(self._seq, self._events)
 
     def append(self, event: dict[str, Any]) -> dict[str, Any]:
         with self._lock:

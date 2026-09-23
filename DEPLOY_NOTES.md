@@ -8,7 +8,55 @@ Research desk with local paper default + optional Alpaca (`ALPACA_PAPER` default
 > Risk preset policy is maintained in `risk_policy.py`.
 Folder name unchanged (`daytrade-signal-desk`). Parent deploys (do not CopyFromBox from this agent).
 
-## Design themes deferred; reverted to chill slate (2026-09-22)
+## SQLite persistence foundation — staged, opt-in (2026-09-23)
+
+Added a schema-versioned SQLite store (`storage/`) alongside the existing
+JSON files under `data/`. This is a **foundation**, not a cutover: JSON
+stays the sole source of truth read by `app.py` unless an operator sets
+`TOMAHAWK_STORAGE_BACKEND=dual` (mirror both, JSON still authoritative) or
+`sqlite` (same mirroring; reads still come from JSON in this stage). Default
+is `json`, i.e. zero behavior change.
+
+- `storage/db.py` — WAL mode + `PRAGMA foreign_keys=ON` connections,
+  idempotent versioned migrations (`schema_migrations` table), backup via
+  the `sqlite3` backup API (self-contained, no `-wal`/`-shm` needed to
+  restore), and restore with `PRAGMA integrity_check` + stale-sidecar
+  cleanup before swapping the file in.
+- `storage/migrations.py` — v1 schema: `config_kv`, `signals`, `decisions` +
+  `decisions_meta`, `orders`, `fills`, `positions`, `journal`,
+  `market_cache`, `ledger_meta`. `fills.order_id` and `orders.signal_id` are
+  nullable FKs (`ON DELETE SET NULL`) so pruning old signals/orders never
+  orphans-and-crashes fill history.
+- `storage/repositories.py` — one thin repo class per domain (dict in,
+  dict out); no business logic, matches the existing JSON shapes exactly
+  (e.g. `signals`/`journal` keep a `seq` column to preserve list order).
+- `storage/json_bridge.py` — `import_all_from_json` (read-only on the JSON
+  side, safe to re-run), `export_all_to_json` (atomic temp-file+replace,
+  same pattern as `app.py`'s `_save_json`), `verify_parity` (diff-only, no
+  writes — the "prove legacy data remains safe" check).
+- `storage/backend.py` — the `TOMAHAWK_STORAGE_BACKEND` flag + best-effort
+  mirror functions (`mirror_config`/`mirror_signals`/`mirror_ledger`/
+  `mirror_journal`/`mirror_decision_event`). Mirror failures are logged and
+  swallowed — they can never break or roll back a JSON write that already
+  succeeded.
+- `app.py`'s `save_config`/`save_signals`/`save_ledger`/`save_journal` and
+  `paper_loop.DecisionRing._persist` call the matching mirror function
+  after the JSON write; all are no-ops when the backend flag is unset.
+- `tools/db_admin.py` — CLI: `status`, `import`, `export`, `verify`,
+  `backup [--label]`, `restore <file>`. Honors `TOMAHAWK_DATA_DIR`, so it
+  can be dry-run against a scratch copy of `data/` first.
+- `tests/test_sqlite_storage.py` (26 tests) — schema/WAL/FK checks,
+  migration idempotency, per-repo round trips, import-is-read-only,
+  import→export fixed point, parity-drift detection, backup/restore round
+  trip, and the opt-in flag/mirror behavior (including "mirror failure
+  never raises" and an `app.py` end-to-end check). Full suite:
+  `tests/` → 149 passed (123 pre-existing + 26 new), unchanged pre-existing
+  behavior.
+
+No PID file, credential, or secret handling was touched. `data/*.sqlite3`,
+`data/*.sqlite3-wal`/`-shm`, and `data/backups/` are gitignored.
+
+
 
 Pendleton / Wool craft / yarn felt theme system stripped. Desk restored to original chill slate/teal look. Simple vs Advanced IA, desk pulse, equity curve, trade glow, radar, and butler copy kept — without wool materials, theme picker, vibe-craft, felt badges, or yarn FX.
 
