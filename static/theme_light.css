@@ -490,6 +490,10 @@
 :root[data-theme="light"] kbd { border: 1px solid var(--border); background: rgba(9, 9, 9, 0.05); }
 :root[data-theme="light"] .session-chip.is-paused { color: var(--warn); border-color: var(--warn); }
 :root[data-theme="light"] .btn:focus-visible, :root[data-theme="light"] button:focus-visible, :root[data-theme="light"] a:focus-visible, :root[data-theme="light"] input:focus-visible, :root[data-theme="light"] select:focus-visible, :root[data-theme="light"] textarea:focus-visible, :root[data-theme="light"] summary:focus-visible { box-shadow: var(--focus-ring); }
+:root[data-theme="light"] .stage-bleed { background: var(--warn-bg); border: 1px solid var(--warn); }
+:root[data-theme="light"] .bench-line { color: var(--text-3); }
+:root[data-theme="light"] .bench-line.pos { color: var(--gain); }
+:root[data-theme="light"] .bench-line.neg { color: var(--loss); }
 
 /* ---- hand-tuned (generator output above is automatic) ---- */
 :root[data-theme="light"] {

@@ -943,6 +943,8 @@ def _money_snapshot(cfg: dict[str, Any]) -> dict[str, Any]:
     with _lock:
         ledger = load_ledger()
     out: dict[str, Any] = {
+        "bleed": bleed_status(ledger, cfg),
+        "benchmark": benchmark_status(ledger, cfg),
         "open_pnl_usd": round(_unrealized_mtm(ledger, recent_marks()), 2),
         "fees_today_usd": round(float((ledger.get("daily") or {}).get(_today_str(), {}).get("fees") or 0), 2),
         "broker_trades_today": _broker_trades_today(ledger),
@@ -950,6 +952,107 @@ def _money_snapshot(cfg: dict[str, Any]) -> dict[str, Any]:
     if cfg.get("mode") == "auto_live" or _broker_trades_today(ledger):
         out["broker_book"] = _broker_book_cached()
     return out
+
+
+# ---------------------------------------------------------------------------
+# Slow-bleed guard: many small losing trades + fees can drain an account while
+# nobody is watching. Pause new trades when the recent closed trades are net
+# negative AFTER costs; the user resumes deliberately (bleed_ack_at).
+# ---------------------------------------------------------------------------
+BLEED_WINDOW = 20      # look at this many most-recent closed trades
+BLEED_MIN_TRADES = 10  # need at least this many before judging
+
+
+def bleed_status(ledger: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+    enabled = cfg.get("bleed_guard_enabled", True) is not False
+    ack = str(cfg.get("bleed_ack_at") or "")
+    fills = [
+        f for f in list(ledger.get("fills") or []) + list(ledger.get("fills_archive") or [])
+        if isinstance(f, dict) and not f.get("broker")
+    ]
+    fills.sort(key=lambda f: str(f.get("ts") or ""), reverse=True)
+    closed = 0
+    realized = 0.0
+    fees = 0.0
+    seen: set[str] = set()
+    for f in fills:
+        fid = str(f.get("id") or "")
+        if fid and fid in seen:
+            continue
+        seen.add(fid)
+        if ack and str(f.get("ts") or "") <= ack:
+            break
+        try:
+            fees += float(f.get("fee_usd") or 0)
+        except (TypeError, ValueError):
+            pass
+        if str(f.get("side") or "").lower() == "sell" or "realized_pnl" in f:
+            closed += 1
+            try:
+                realized += float(f.get("realized_pnl") or 0)
+            except (TypeError, ValueError):
+                pass
+        if closed >= BLEED_WINDOW:
+            break
+    net = round(realized - fees, 2)
+    paused = enabled and closed >= BLEED_MIN_TRADES and net < 0
+    return {
+        "enabled": enabled,
+        "paused": paused,
+        "closed_trades": closed,
+        "window": BLEED_WINDOW,
+        "min_trades": BLEED_MIN_TRADES,
+        "realized_usd": round(realized, 2),
+        "fees_usd": round(fees, 2),
+        "net_usd": net,
+        "since": ack or None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Benchmark: would simply holding SPY have done better since the session began?
+# ---------------------------------------------------------------------------
+_SPY_CACHE: dict[str, Any] = {"at": 0.0, "px": None}
+
+
+def _spy_now() -> float | None:
+    import time as _t
+
+    now = _t.monotonic()
+    if _SPY_CACHE["px"] is not None and now - _SPY_CACHE["at"] < 60:
+        return _SPY_CACHE["px"]
+    px = fetch_last_price("SPY")
+    if px:
+        _SPY_CACHE.update(at=now, px=float(px))
+    return _SPY_CACHE["px"]
+
+
+def benchmark_status(ledger: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        spy0 = float(cfg.get("session_spy_start") or 0)
+        bank = float(cfg.get("session_bank_start") or 0)
+    except (TypeError, ValueError):
+        return None
+    if spy0 <= 0 or bank <= 0:
+        return None
+    spy1 = _spy_now()
+    if not spy1:
+        return {"ok": False, "error": "SPY price unavailable"}
+    equity = _ledger_equity_mtm(ledger, recent_marks())
+    desk_ret = equity / bank - 1.0
+    spy_ret = spy1 / spy0 - 1.0
+    return {
+        "ok": True,
+        "since": cfg.get("session_started_at"),
+        "bank_usd": round(bank, 2),
+        "desk_return_pct": round(desk_ret * 100, 3),
+        "desk_usd": round(equity - bank, 2),
+        "spy_return_pct": round(spy_ret * 100, 3),
+        "spy_usd": round(bank * spy_ret, 2),
+        "ahead_usd": round((equity - bank) - bank * spy_ret, 2),
+        "spy_start": round(spy0, 2),
+        "spy_now": round(spy1, 2),
+    }
 
 
 def _broker_trades_today(ledger: dict[str, Any]) -> int:
@@ -2301,6 +2404,15 @@ def can_take_trade(
             if pnl_mtm <= -abs(float(ks["max_daily_loss_usd"])):
                 return False, "Safety stop: today's max loss is reached (counting open positions). No new trades today."
 
+    if not reducing:
+        bs = bleed_status(ledger, load_config())
+        if bs["paused"]:
+            return False, (
+                f"Paused: your last {bs['closed_trades']} closed trades lost "
+                f"${abs(bs['net_usd']):,.2f} after costs (${bs['fees_usd']:,.2f} of that was fees). "
+                "Review them, then press Resume on the desk."
+            )
+
     # Session RTH gate (import is_rth from paper_loop)
     if cfg.get("rth_only", True) and not paper_loop_mod.is_rth():
         return False, "The market is closed. Trades wait for market hours (9:30 am – 4 pm Eastern, weekdays)."
@@ -3288,6 +3400,7 @@ def _paper_loop_deps() -> dict[str, Any]:
         "fetch_last_price": fetch_last_price,
         "reverse_paper_fill": reverse_paper_fill,
         "session_pnl_with_mtm": _session_pnl_with_mtm,
+        "bleed_status": bleed_status,
         "shadow_audit": _shadow_audit_wrap,
         "shadow_gate_enabled": llm_trader.shadow_gate_enabled,
         "cancel_pending_signals": _cancel_pending_signals_for_ticker,
@@ -5240,6 +5353,18 @@ def api_session_start():
         ledger_snap = ledger
         loop_st = get_paper_loop().status(cfg)
 
+    # Benchmark anchor: SPY price when this session started
+    try:
+        spy0 = fetch_last_price("SPY")
+        with _lock:
+            c2 = load_config()
+            c2["session_spy_start"] = float(spy0) if spy0 else None
+            c2["session_bank_start"] = beginning_bank
+            save_config(c2)
+            cfg_snap = c2
+    except Exception:
+        pass
+
     # Scan outside lock so /api/state is not blocked during session start
     signal = None
     cfg = cfg_snap
@@ -5266,6 +5391,19 @@ def api_session_start():
             "loop": loop_st,
         }
     )
+
+
+@app.route("/api/bleed/resume", methods=["POST"])
+def api_bleed_resume():
+    """User reviewed the losing streak and chooses to continue (count restarts now)."""
+    with _lock:
+        cfg = load_config()
+        before = bleed_status(load_ledger(), cfg)
+        cfg["bleed_ack_at"] = _now_iso()
+        save_config(cfg)
+        append_journal("bleed_resume", {"before": before})
+        after = bleed_status(load_ledger(), cfg)
+    return jsonify({"ok": True, "bleed": after})
 
 
 @app.route("/api/session/stop", methods=["POST"])

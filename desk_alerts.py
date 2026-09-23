@@ -166,7 +166,7 @@ def emit(
         "level": level,
         "detail": detail or {},
         "ts": datetime.now(timezone.utc).isoformat(),
-        "browser_notification": kind in ("waiting_enqueue", "goal_hit", "kill", "session_loss", "max_loss"),
+        "browser_notification": kind in ("waiting_enqueue", "goal_hit", "kill", "session_loss", "max_loss", "bleed"),
     }
     channels: dict[str, Any] = {"queue": True}
     channels["webhook"] = _post_webhook(event)

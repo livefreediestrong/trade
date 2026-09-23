@@ -321,3 +321,63 @@ def test_fred_outage_is_reported(monkeypatch):
     monkeypatch.setattr(macro_calendar, "_fred_get", lambda *a, **k: None)
     r = macro_calendar.fred_release_flags(date(2026, 9, 11))
     assert r["fred_error"] is True
+
+
+# ------------------------------------------------------------- slow-bleed guard
+
+def _losing_fills(n, loss=-2.0, fee=0.5, start_min=0):
+    out = []
+    for i in range(n):
+        ts = f"2026-09-22T14:{start_min + i:02d}:00+00:00"
+        out.append({"id": f"b{i}", "ts": ts, "side": "buy", "fee_usd": fee})
+        out.append({"id": f"s{i}", "ts": ts.replace(":00+", ":30+"), "side": "sell",
+                    "realized_pnl": loss, "fee_usd": fee})
+    return out
+
+
+def test_bleed_pauses_after_losing_streak(monkeypatch):
+    monkeypatch.setattr(paper_loop, "is_rth", lambda now=None: True)
+    led = desk.load_ledger()
+    led["fills"] = _losing_fills(12)
+    desk.save_ledger(led)
+    cfg = dict(desk.load_config(), session_active=True)
+    desk.save_config(cfg)
+    bs = desk.bleed_status(desk.load_ledger(), cfg)
+    assert bs["paused"] and bs["closed_trades"] == 12 and bs["net_usd"] < 0
+    ok, reason = desk.can_take_trade(cfg, desk.load_ledger(), 10.0)
+    assert not ok and "after costs" in reason
+    ok, _ = desk.can_take_trade(cfg, desk.load_ledger(), 10.0, reducing=True)
+    assert ok  # exits still allowed
+
+
+def test_bleed_needs_enough_trades_and_counts_fees():
+    cfg = desk.load_config()
+    assert not desk.bleed_status({"fills": _losing_fills(5)}, cfg)["paused"]  # too few to judge
+    # Each trade wins $0.80 but pays $1.00 in fees → net negative → pause
+    fills = _losing_fills(12, loss=0.8, fee=0.5)
+    bs = desk.bleed_status({"fills": fills}, cfg)
+    assert bs["realized_usd"] > 0 and bs["net_usd"] < 0 and bs["paused"]
+
+
+def test_bleed_resume_resets_window(client):
+    led = desk.load_ledger()
+    led["fills"] = _losing_fills(12)
+    desk.save_ledger(led)
+    assert desk.bleed_status(desk.load_ledger(), desk.load_config())["paused"]
+    r = client.post("/api/bleed/resume", base_url=BASE, json={})
+    assert r.status_code == 200 and not r.get_json()["bleed"]["paused"]
+
+
+# ------------------------------------------------------------- benchmark vs SPY
+
+def test_benchmark_vs_spy(monkeypatch):
+    monkeypatch.setattr(desk, "_spy_now", lambda: 505.0)  # SPY +1%
+    led = desk.load_ledger()
+    led.update(cash=10_050.0, positions=[])
+    cfg = dict(desk.load_config(), session_spy_start=500.0, session_bank_start=10_000.0)
+    b = desk.benchmark_status(led, cfg)
+    assert b["ok"] and b["desk_usd"] == 50.0 and b["spy_usd"] == 100.0 and b["ahead_usd"] == -50.0
+
+
+def test_benchmark_absent_without_anchor():
+    assert desk.benchmark_status(desk.load_ledger(), desk.load_config()) is None

@@ -177,3 +177,7 @@ Open `http://127.0.0.1:5056`
 - Pop-ups (Approve, tutorial, Settings, toasts) sit on top again in Simple; watchlist editable in Simple Settings; 44 px touch targets; focus rings; reduced-motion respected.
 
 Light mode: the ☀ / ☾ button in the header (defaults to your computer's setting). `static/theme_light.css` is **generated** from app.css — after editing app.css run `.venv\Scripts\python tools\gen_light_theme.py`. Money/paper/live colours are hand-tuned at the bottom of that script.
+
+## Slow-bleed guard & SPY benchmark
+- **Slow-bleed guard:** if your last 20 closed paper trades (at least 10) are net negative **after fees**, the desk stops opening new trades and shows "Paused to protect your money" with the numbers. Exits keep working. **Resume anyway** restarts the count (`POST /api/bleed/resume`). Tuning: `BLEED_WINDOW` / `BLEED_MIN_TRADES` in app.py; turn off with `bleed_guard_enabled: false` in config.
+- **You vs. SPY:** at Start checking the desk records SPY's price; the stage and the end-of-day recap show your return next to simply holding SPY with the same cash.

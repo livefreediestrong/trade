@@ -629,6 +629,7 @@
         const skip = String((loop && loop.last_skip) || "");
         const paused = {
           max_loss: "Paused · loss limit reached",
+          bleed_pause: "Paused · losing after costs",
           target_hit: "Paused · goal reached",
           empty_watchlist: "Paused · watchlist is empty",
           loop_disabled: "Paused · checks switched off",
@@ -892,6 +893,60 @@
     $("#one-job-stage")?.setAttribute("aria-busy", on ? "true" : "false");
   }
 
+  // ---- Slow-bleed guard + "you vs. just holding SPY"
+  function fmtPctSigned(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return "—";
+    return (n > 0 ? "+" : n < 0 ? "−" : "") + Math.abs(n).toFixed(2) + "%";
+  }
+  function benchSentence(b) {
+    if (!b || !b.ok) return "";
+    const ahead = Number(b.ahead_usd || 0);
+    const verdict = Math.abs(ahead) < 0.5
+      ? "about even with just holding SPY"
+      : ahead > 0
+        ? `${fmtMoney(ahead)} ahead of just holding SPY`
+        : `${fmtMoney(Math.abs(ahead))} behind just holding SPY`;
+    return `You ${fmtPctSigned(b.desk_return_pct)} (${fmtSigned(b.desk_usd)}) · SPY ${fmtPctSigned(b.spy_return_pct)} (${fmtSigned(b.spy_usd)}) — ${verdict}.`;
+  }
+  function renderBenchmark(data) {
+    const el = $("#bench-line");
+    if (!el) return;
+    const txt = benchSentence(data && data.benchmark);
+    el.hidden = !txt;
+    el.textContent = txt;
+    const ahead = Number(data?.benchmark?.ahead_usd || 0);
+    el.classList.toggle("pos", ahead >= 0.5);
+    el.classList.toggle("neg", ahead <= -0.5);
+  }
+  function renderBleed(data) {
+    const box = $("#stage-bleed");
+    if (!box) return;
+    const b = data && data.bleed;
+    const on = !!(b && b.paused);
+    box.hidden = !on;
+    document.body.classList.toggle("is-bleed-paused", on);
+    if (!on) return;
+    const t = box.querySelector("[data-bleed-text]");
+    if (t) {
+      t.textContent =
+        `Your last ${b.closed_trades} closed trades lost ${fmtMoney(Math.abs(b.net_usd))} in total after costs ` +
+        `(trading results ${fmtSigned(b.realized_usd)}, fees −${fmtMoney(b.fees_usd)}). ` +
+        `Small losses like this add up quietly, so no new trades will be placed until you choose to resume. ` +
+        `Stop-loss and take-profit on open positions keep working.`;
+    }
+  }
+  $("#btn-bleed-resume")?.addEventListener("click", async () => {
+    if (!confirm("Resume trading? The losing-streak count starts over from now.")) return;
+    try {
+      await api("/api/bleed/resume", { method: "POST", body: "{}" });
+      toast("Resumed — the desk will watch the next trades");
+      await refresh();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  });
+
   // ---- End-of-day recap (shown after Stop)
   function showRecap(before, after) {
     const modal = $("#recap-modal");
@@ -911,8 +966,9 @@
     body.innerHTML = `
       <div class="recap-big money ${pnl > 0 ? "pos" : pnl < 0 ? "neg" : ""}">${fmtSigned(pnl)}</div>
       <p class="recap-line">${escapeHtml(goalLine)}</p>
+      ${after.benchmark && after.benchmark.ok ? `<p class="recap-line">${escapeHtml(benchSentence(after.benchmark))}</p>` : ""}
       <ul class="recap-list">
-        <li><strong>${trades}</strong> paper trade${trades === 1 ? "" : "s"} today</li>
+        <li><strong>${trades}</strong> paper trade${trades === 1 ? "" : "s"} today${Number(d.fees || 0) > 0 ? ` · pretend costs ${fmtMoney(d.fees)} (already taken out of the number above)` : ""}</li>
         <li><strong>${positions.length}</strong> position${positions.length === 1 ? "" : "s"} still open${positions.length ? ` (worth ${fmtSigned(open)} vs. what you paid)` : ""}</li>
       </ul>
       ${positions.length ? `<p class="muted">Open positions keep their stop-loss and take-profit while the market is open. You can also close them all now.</p>` : ""}`;
@@ -945,6 +1001,8 @@
     renderTop(data);
     renderOpenPnl(data);
     renderBrokerBook(data);
+    renderBleed(data);
+    renderBenchmark(data);
     renderLoopPanel(data);
     try { renderNews(data); } catch (_) {}
     renderLoopFeed();
@@ -4340,6 +4398,8 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
       lite.buzz && lite.buzz.updated_at,
       lite.brain_mode, lite.pace && lite.pace.status,
       lite.open_pnl_usd, lite.broker_trades_today,
+      lite.bleed && lite.bleed.paused, lite.bleed && lite.bleed.net_usd,
+      lite.benchmark && lite.benchmark.ahead_usd,
       lite.broker_book && lite.broker_book.day_pnl_usd,
       lite.broker_book && (lite.broker_book.positions || []).length,
       loop.decision_in_flight, loop.last_skip,
@@ -4374,7 +4434,12 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
     if (lite.open_pnl_usd !== undefined) state.open_pnl_usd = lite.open_pnl_usd;
     if (lite.broker_trades_today !== undefined) state.broker_trades_today = lite.broker_trades_today;
     state.broker_book = lite.broker_book || null;
-    try { renderOpenPnl(state); renderBrokerBook(state); syncThinking(state.loop); } catch (_) {}
+    if (lite.bleed !== undefined) state.bleed = lite.bleed;
+    if (lite.benchmark !== undefined) state.benchmark = lite.benchmark;
+    try {
+      renderOpenPnl(state); renderBrokerBook(state); syncThinking(state.loop);
+      renderBleed(state); renderBenchmark(state);
+    } catch (_) {}
     if (lite.buzz) state.buzz = Object.assign({}, state.buzz || {}, lite.buzz);
     if (lite.heat) {
       state.heat = lite.heat;

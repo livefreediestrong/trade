@@ -727,6 +727,29 @@ class PaperLoop:
                 pass
             return interval
 
+        bleed_fn = deps.get("bleed_status")
+        if bleed_fn:
+            try:
+                bs = bleed_fn(ledger, cfg)
+            except Exception:
+                bs = {}
+            if bs.get("paused"):
+                self._last_skip = "bleed_pause"
+                self._emit_skip("loop_skip_bleed", bs, append_journal, throttle_key="bleed")
+                try:
+                    import desk_alerts as _da
+
+                    _da.emit(
+                        "bleed",
+                        f"Paused: last {bs.get('closed_trades')} trades lost ${abs(float(bs.get('net_usd') or 0)):,.2f} after costs",
+                        detail=bs,
+                        level="error",
+                        dedupe_key=f"bleed|{bs.get('since')}",
+                    )
+                except Exception:
+                    pass
+                return interval
+
         symbols = prune_watchlist_for_trading(
             list(cfg.get("watchlist") or []),
             focus=str(cfg.get("watchlist_focus") or "liquid"),

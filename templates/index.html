@@ -222,6 +222,14 @@
         <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
         <span data-thinking-text>Checking…</span>
       </div>
+      <div class="stage-bleed" id="stage-bleed" role="alert" hidden>
+        <strong>Paused to protect your money.</strong>
+        <p data-bleed-text></p>
+        <div class="bleed-actions">
+          <button type="button" class="btn sm" id="btn-bleed-resume">Resume anyway</button>
+          <span class="muted">Tip: look at the Positions and trade history first.</span>
+        </div>
+      </div>
       <div class="stage-decide" id="stage-decide" hidden></div>
       <div class="stage">
         <div class="goal-race simple-only" id="stage-goal-race" aria-label="Goal race">
@@ -232,6 +240,7 @@
           </div>
           <span class="rem" id="stage-race-rem"></span>
         </div>
+        <p class="bench-line" id="bench-line" hidden title="Compares this desk with simply buying the S&amp;P 500 (SPY) with the same cash when you pressed Start checking."></p>
         <div class="loop-action-row">
           <div class="call-spoken big-action hold" id="loop-big-action" role="status" aria-live="polite">
             <span class="action-aurora" aria-hidden="true"></span>
