@@ -37,6 +37,7 @@ import llm_trader
 import lessons
 import claude_brain
 import backtest
+import lifecycle as lifecycle_mod
 import paper_loop as paper_loop_mod
 import session_track
 import buzz_sources
@@ -64,6 +65,7 @@ JOURNAL_PATH = DATA_DIR / "journal.json"
 DECISIONS_PATH = DATA_DIR / "decisions.json"
 LESSONS_PATH = DATA_DIR / "lessons.json"
 BACKTEST_PATH = DATA_DIR / "backtest.json"
+LIFECYCLE_PATH = DATA_DIR / "lifecycle.json"
 
 BANNER = (
     "Tomahawk — Gemini research desk. Local paper by default; Alpaca optional "
@@ -4297,9 +4299,15 @@ def _paper_loop_deps() -> dict[str, Any]:
 def get_paper_loop() -> paper_loop_mod.PaperLoop:
     global _paper_loop
     if _paper_loop is None:
+        lifecycle_manager = lifecycle_mod.build_default_lifecycle_manager(
+            LIFECYCLE_PATH,
+            sink=lambda event, fields: append_journal(event, fields),
+            component="paper_loop",
+        )
         _paper_loop = paper_loop_mod.PaperLoop(
             decisions=_decision_ring,
             get_deps=_paper_loop_deps,
+            lifecycle=lifecycle_manager,
         )
     return _paper_loop
 
@@ -6727,6 +6735,56 @@ def api_session_stop():
                 "loop": get_paper_loop().status(cfg),
             }
         )
+
+
+@app.route("/api/session/kill", methods=["POST"])
+def api_session_kill():
+    """Hard kill switch: stop the loop immediately, cancel every resting pending
+    intent (nothing can fill later on stale state), and refuse further starts
+    until /api/session/kill/reset is called. Paper-only — no broker calls.
+    Idempotent: pass command_key (body or Idempotency-Key header) so a retried
+    request is applied at most once."""
+    body = request.get_json(silent=True) or {}
+    reason = str(body.get("reason") or "operator_kill_switch")[:200]
+    command_key = body.get("command_key") or request.headers.get("Idempotency-Key")
+    result = get_paper_loop().hard_kill(
+        reason=reason, command_key=command_key, append_journal=append_journal
+    )
+    with _lock:
+        cfg = load_config()
+        cfg["session_active"] = False
+        cfg["loop_enabled"] = False
+        save_config(cfg)
+        append_journal("kill_switch_hard_kill", {"reason": reason, **result})
+        loop_st = get_paper_loop().status(cfg)
+    return jsonify({"ok": True, "reason": reason, "cancelled_intents": result.get("cancelled_intents", []), "loop": loop_st})
+
+
+@app.route("/api/session/kill/reset", methods=["POST"])
+def api_session_kill_reset():
+    """Explicit operator action required to clear the hard kill switch. Never
+    triggered automatically."""
+    body = request.get_json(silent=True) or {}
+    reason = str(body.get("reason") or "operator_reset")[:200]
+    command_key = body.get("command_key") or request.headers.get("Idempotency-Key")
+    try:
+        get_paper_loop().reset_kill(reason=reason, command_key=command_key)
+    except lifecycle_mod.LifecycleTransitionError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 409
+    with _lock:
+        cfg = load_config()
+        loop_st = get_paper_loop().status(cfg)
+    append_journal("kill_switch_reset", {"reason": reason})
+    return jsonify({"ok": True, "loop": loop_st})
+
+
+@app.route("/api/session/lifecycle", methods=["GET"])
+def api_session_lifecycle():
+    """Read-only lifecycle/health snapshot: state, recovery_needed, recent
+    runs/heartbeats/retries — for dashboards and alerting."""
+    with _lock:
+        cfg = load_config()
+    return jsonify({"ok": True, "loop": get_paper_loop().status(cfg)})
 
 
 @app.route("/api/ledger/reset", methods=["POST"])

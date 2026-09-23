@@ -27,6 +27,44 @@ Companion-style app for a Windows PC beside `holdings-options-monitor`.
 
 Kill-switch / daily profit target remain **optional** research controls; they do not block mode entry by default.
 
+## Durable automation lifecycle (`lifecycle.py`)
+
+`paper_loop.PaperLoop` is backed by a durable worker-lifecycle foundation
+(`lifecycle.py`) so the background decision loop has explicit, crash-safe
+state instead of just an in-memory thread flag:
+
+- **States:** `idle -> starting -> running -> paused`, with `recovering` /
+  `failed` side states reached automatically on repeated tick errors, and a
+  sticky `killed` state reached only via an explicit hard kill.
+- **Durable records:** every state transition, run (start/end), heartbeat,
+  and retry is written to `data/lifecycle.json` using the same atomic
+  tmp-write + replace pattern as `decisions.json` — a crash mid-write can
+  never corrupt the previous good state, and a corrupt file is quarantined
+  to `lifecycle.json.corrupt.bak` rather than silently discarded.
+- **Hard kill switch:** `POST /api/session/kill` (optional `{"reason": ...}`)
+  stops the loop immediately, cancels every resting pending intent so
+  nothing can fill later on stale state, and blocks all future `start()`
+  calls — even across a process restart — until an operator explicitly calls
+  `POST /api/session/kill/reset`. This is paper-only and never touches a
+  broker.
+- **Idempotent commands:** pass `command_key` in the body (or an
+  `Idempotency-Key` header) to `/api/session/kill` / `/api/session/kill/reset`
+  so a retried request is applied at most once instead of double-cancelling
+  or double-resetting.
+- **Recovery-needed health signal:** `GET /api/session/lifecycle` (and the
+  `loop.lifecycle` field already returned by `/api/state` / `/api/session/*`)
+  reports `health.recovery_needed`, derived from a stale heartbeat, an
+  elevated consecutive-error streak, or a `failed` state — for dashboards and
+  alerting, not just log-diving.
+- **Structured telemetry:** every transition/command/heartbeat/retry is also
+  emitted as a JSON payload via the stdlib `logging` module
+  (`logging.getLogger("tomahawk.paper_loop")`) and mirrored into the existing
+  journal (`append_journal`) so it shows up in the desk's existing history
+  UI.
+
+None of this changes paper-loop trading behavior or live-order safety —
+it only governs *when* the loop is allowed to run and durably records what
+happened. See `tests/test_lifecycle.py` for the full behavioral contract.
 
 ## Gemini LLM (thesis + chat)
 

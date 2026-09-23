@@ -18,6 +18,13 @@ from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from lifecycle import (
+    LifecycleManager,
+    LifecycleTransitionError,
+    WorkerState,
+    build_default_lifecycle_manager,
+)
+
 try:
     from zoneinfo import ZoneInfo
 except ImportError:  # pragma: no cover
@@ -413,6 +420,7 @@ class PaperLoop:
         *,
         decisions: DecisionRing,
         get_deps: Callable[[], dict[str, Any]],
+        lifecycle: Optional[LifecycleManager] = None,
     ) -> None:
         self.decisions = decisions
         self.get_deps = get_deps
@@ -426,6 +434,16 @@ class PaperLoop:
         self._cycle_count = 0
         self._lock = threading.RLock()
         self._skip_last: dict[str, float] = {}
+        # Durable state machine (idle/starting/running/paused/killed/recovering/
+        # failed), run/command/heartbeat/retry records, and health/telemetry.
+        # Auto-derived next to decisions.json unless the caller wires its own
+        # (app.py shares one so the hard kill switch is visible on /api/state).
+        if lifecycle is None:
+            lifecycle = build_default_lifecycle_manager(
+                self.decisions.path.parent / "lifecycle.json",
+                component="paper_loop",
+            )
+        self.lifecycle = lifecycle
         # One trade-brain decision in flight (watchlist scan stays parallel elsewhere)
         self._decision_in_flight = False
         self._decision_started_at = 0.0
@@ -487,22 +505,115 @@ class PaperLoop:
                 "error_streak": self._error_streak,
                 "retry_in_sec": max(0, round(self._next_retry_at - time.time(), 1)),
             },
+            "lifecycle": self.lifecycle.status(
+                thread_alive=bool(self._thread and self._thread.is_alive())
+            ),
         }
 
-    def start(self) -> None:
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                self._running_flag = True
-                return
-            self._stop.clear()
-            self._running_flag = True
-            self._thread = threading.Thread(target=self._run, name="paper-loop", daemon=True)
-            self._thread.start()
+    def start(self, *, command_key: Optional[str] = None, reason: str = "start_requested") -> bool:
+        """Start the loop thread. Idempotent (thread already alive is a no-op) and
+        blocked while the hard kill switch is engaged — resume requires
+        ``reset_kill()`` first. Pass ``command_key`` to make an externally
+        triggered start idempotent across retried calls."""
 
-    def stop(self) -> None:
-        self._running_flag = False
-        with self._lock:
-            self._generation += 1
+        def _do_start() -> bool:
+            with self._lock:
+                if self.lifecycle.state == WorkerState.KILLED:
+                    self.lifecycle.telemetry.emit(
+                        "start_blocked_kill_switch", {"reason": reason}, level="warning"
+                    )
+                    return False
+                if self._thread and self._thread.is_alive():
+                    self._running_flag = True
+                    return True
+                self._stop.clear()
+                self._running_flag = True
+                try:
+                    self.lifecycle.begin_start(reason)
+                except LifecycleTransitionError:
+                    # Durable record says running/starting but no live thread —
+                    # a prior crash left a stale in-flight state. Reconcile via
+                    # recovering rather than refusing to (re)start.
+                    self.lifecycle.begin_recovery(f"stale_state_before_start:{reason}")
+                    self.lifecycle.begin_start(reason)
+                self._thread = threading.Thread(target=self._run, name="paper-loop", daemon=True)
+                self._thread.start()
+                return True
+
+        if command_key:
+            record = self.lifecycle.apply_command(command_key, "start", _do_start)
+            return bool(record.get("result"))
+        return _do_start()
+
+    def stop(self, *, command_key: Optional[str] = None, reason: str = "stop_requested") -> bool:
+        """Soft stop: pauses the loop (thread exits at the next tick boundary).
+        Preserves the durable run record and lifecycle state so ``start()`` can
+        resume cleanly. Use ``hard_kill()`` for an emergency stop that also
+        cancels pending intents and blocks future starts."""
+
+        def _do_stop() -> bool:
+            self._running_flag = False
+            with self._lock:
+                self._generation += 1
+                try:
+                    self.lifecycle.pause(reason)
+                except LifecycleTransitionError:
+                    pass  # already idle/paused/killed/failed — stop() is idempotent
+            return True
+
+        if command_key:
+            record = self.lifecycle.apply_command(command_key, "stop", _do_stop)
+            return bool(record.get("result"))
+        return _do_stop()
+
+    def hard_kill(
+        self,
+        *,
+        reason: str,
+        command_key: Optional[str] = None,
+        append_journal: Optional[Callable] = None,
+    ) -> dict[str, Any]:
+        """Hard kill switch: stop new work immediately and cancel every resting
+        pending intent so nothing can fill later on stale state. Sticky —
+        ``start()`` refuses to run again until ``reset_kill()`` is called, and
+        this survives a process restart (the durable record is what is
+        checked, not in-memory flags)."""
+
+        def _do_kill() -> dict[str, Any]:
+            self._running_flag = False
+            with self._lock:
+                self._generation += 1
+                self._stop.set()
+                pending_tickers = list(self._pending_intents.keys())
+            cancelled: list[str] = []
+            for ticker in pending_tickers:
+                try:
+                    if self.cancel_pending_intent(
+                        ticker, reason=reason, append_journal=append_journal
+                    ):
+                        cancelled.append(ticker)
+                except Exception:
+                    pass
+            self.lifecycle.kill(reason)
+            return {"cancelled_intents": cancelled}
+
+        if command_key:
+            record = self.lifecycle.apply_command(command_key, "kill", _do_kill)
+            return record.get("result") or {}
+        return _do_kill()
+
+    def reset_kill(self, *, reason: str = "operator_reset", command_key: Optional[str] = None) -> bool:
+        """Explicit operator action required to leave the killed state. Never
+        called automatically — that is the entire point of a hard kill switch."""
+
+        def _do_reset() -> bool:
+            self.lifecycle.reset_after_kill(reason)
+            return True
+
+        if command_key:
+            record = self.lifecycle.apply_command(command_key, "reset_kill", _do_reset)
+            return bool(record.get("result"))
+        return _do_reset()
 
     def session_totals(self) -> dict[str, Any]:
         with self._lock:
@@ -599,6 +710,13 @@ class PaperLoop:
             self._pending_intents.clear()
 
     def _run(self) -> None:
+        try:
+            self.lifecycle.mark_running("thread_running")
+        except LifecycleTransitionError:
+            # Killed (or otherwise blocked) between thread creation and the
+            # thread actually starting — exit immediately, do no work.
+            self._running_flag = False
+            return
         while not self._stop.is_set():
             slept = 5
             try:
@@ -611,10 +729,23 @@ class PaperLoop:
                 self._last_error = None
                 self._error_streak = 0
                 self._next_retry_at = 0.0
+                self.lifecycle.recover_ok("cycle_succeeded")
+                self.lifecycle.heartbeat(cycle_count=self._cycle_count, error_streak=0)
             except Exception as exc:  # noqa: BLE001
                 self._error_streak = min(self._error_streak + 1, 6)
                 self._last_error = f"{type(exc).__name__}: {str(exc)[:180]}"
                 self._next_retry_at = time.time() + min(60.0, 5.0 * (2 ** (self._error_streak - 1)))
+                retry_delay = self._next_retry_at - time.time()
+                self.lifecycle.record_retry(
+                    attempt=self._error_streak, delay_sec=retry_delay, error=self._last_error
+                )
+                self.lifecycle.heartbeat(
+                    cycle_count=self._cycle_count,
+                    error_streak=self._error_streak,
+                    last_error=self._last_error,
+                )
+                if self._error_streak >= 6 and self.lifecycle.state != WorkerState.FAILED:
+                    self.lifecycle.fail(self._last_error)
                 try:
                     deps = self.get_deps()
                     append_journal = deps.get("append_journal")
