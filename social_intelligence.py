@@ -212,18 +212,19 @@ def _summarize(rows: list[dict[str, Any]], watchlist: list[str]) -> dict[str, An
     for ticker, items in by_ticker.items():
         bullish = sum(i.get("sentiment") == "bullish" for i in items)
         bearish = sum(i.get("sentiment") == "bearish" for i in items)
-        authors = len({i.get("author_hash") for i in items})
+        threads = {str(i.get("thread_id") or i.get("source_id") or "") for i in items}
+        authors = {str(i.get("author_hash") or "unknown") for i in items}
         pulse.append({
             "ticker": ticker,
             "mentions": len(items),
-            "unique_threads": authors,
-            "unique_authors": authors,
+            "unique_threads": len(threads - {""}),
+            "unique_authors": len(authors - {""}),
             "bullish": bullish,
             "bearish": bearish,
             "uncertain": len(items) - bullish - bearish,
             "attention_score": round(sum(max(0, int(i.get("score") or 0)) + max(0, int(i.get("comments") or 0)) for i in items) ** 0.5, 2),
-            "independence": round(authors / len(items), 3) if items else 0,
-            "quality": "low" if authors < 2 or authors / max(len(items), 1) < 0.35 else "moderate",
+            "independence": round(len(authors - {""}) / len(items), 3) if items else 0,
+            "quality": "low" if len(authors - {""}) < 2 or len(authors - {""}) / max(len(items), 1) < 0.35 else "moderate",
             "items": items[:5],
         })
     pulse.sort(key=lambda x: (x["mentions"], x["attention_score"]), reverse=True)
@@ -253,7 +254,20 @@ def snapshot(watchlist: list[str] | None = None, *, force: bool = False) -> dict
     symbols = [str(t).upper().lstrip("$") for t in watchlist if t]
     rows.extend(_stocktwits_rows(symbols))
     rows.extend(_rss_rows(_configured_feeds()))
-    rows.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+    unique: dict[tuple[str, str], dict[str, Any]] = {}
+    for index, row in enumerate(rows):
+        identity = str(row.get("source_id") or row.get("permalink") or "")
+        key = (str(row.get("source") or ""), identity or f"row-{index}")
+        unique.setdefault(key, row)
+    rows = list(unique.values())
+    def _sort_ts(row: dict[str, Any]) -> float:
+        try:
+            value = str(row.get("created_at") or "").replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(value)
+            return parsed.timestamp()
+        except (TypeError, ValueError, OSError):
+            return 0.0
+    rows.sort(key=_sort_ts, reverse=True)
     payload = {
         "ok": bool(rows),
         "provider": "social_public",

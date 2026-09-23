@@ -15,9 +15,13 @@ def _ts(value: Any) -> float | None:
 
 def scorecard(decisions: list[dict[str, Any]] | None, fills: list[dict[str, Any]] | None, *, now: float | None = None) -> dict[str, Any]:
     rows = [d for d in decisions or [] if isinstance(d, dict) and d.get("event") in (None, "decision", "intent")]
-    filled_ids = {str(f.get("signal_id") or f.get("intent_id") or "") for f in fills or [] if isinstance(f, dict)}
+    filled_ids = {
+        str(f.get("signal_id") or f.get("intent_id") or "").strip()
+        for f in fills or []
+        if isinstance(f, dict) and str(f.get("signal_id") or f.get("intent_id") or "").strip()
+    }
     actionable = [d for d in rows if str(d.get("decision") or d.get("side") or "").lower() in ("buy", "sell")]
-    outcomes = [d for d in rows if d.get("outcome")]
+    outcomes = [d for d in rows if d.get("outcome") and str(d.get("id") or d.get("intent_id") or "").strip()]
     favorable_unfilled = [
         d for d in actionable
         if str(d.get("id") or d.get("intent_id") or "") not in filled_ids
@@ -25,7 +29,8 @@ def scorecard(decisions: list[dict[str, Any]] | None, fills: list[dict[str, Any]
     ]
     blocked = [d for d in actionable if d.get("gated") or d.get("blocked") or d.get("data_error")]
     outcome_counts = Counter(str(d.get("outcome") or "unmeasured") for d in rows)
-    capture_rate = len([d for d in actionable if str(d.get("id") or d.get("intent_id") or "") in filled_ids]) / len(actionable) if actionable else None
+    actionable = [d for d in actionable if str(d.get("id") or d.get("intent_id") or "").strip()]
+    capture_rate = len([d for d in actionable if str(d.get("id") or d.get("intent_id") or "").strip() in filled_ids]) / len(actionable) if actionable else None
     return {
         "decisions": len(rows),
         "actionable": len(actionable),
