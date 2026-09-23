@@ -429,6 +429,10 @@ class PaperLoop:
         # One trade-brain decision in flight (watchlist scan stays parallel elsewhere)
         self._decision_in_flight = False
         self._decision_started_at = 0.0
+        self._last_cycle_at: str | None = None
+        self._last_error: str | None = None
+        self._error_streak = 0
+        self._next_retry_at = 0.0
         self._pending_intents: dict[str, dict[str, Any]] = {}
         self._session_totals: dict[str, Any] = {
             "late_blocks": 0,
@@ -477,6 +481,12 @@ class PaperLoop:
             "pending_intents": pending_n,
             "session_totals": totals,
             "brain_mode": cfg.get("brain_mode") or cfg.get("model"),
+            "automation_health": {
+                "last_cycle_at": self._last_cycle_at,
+                "last_error": self._last_error,
+                "error_streak": self._error_streak,
+                "retry_in_sec": max(0, round(self._next_retry_at - time.time(), 1)),
+            },
         }
 
     def start(self) -> None:
@@ -592,16 +602,34 @@ class PaperLoop:
         while not self._stop.is_set():
             slept = 5
             try:
+                retry_in = self._next_retry_at - time.time()
+                if retry_in > 0:
+                    self._stop.wait(timeout=min(retry_in, 60))
+                    continue
                 slept = self._tick()
+                self._last_cycle_at = datetime.now(timezone.utc).isoformat()
+                self._last_error = None
+                self._error_streak = 0
+                self._next_retry_at = 0.0
             except Exception as exc:  # noqa: BLE001
+                self._error_streak = min(self._error_streak + 1, 6)
+                self._last_error = f"{type(exc).__name__}: {str(exc)[:180]}"
+                self._next_retry_at = time.time() + min(60.0, 5.0 * (2 ** (self._error_streak - 1)))
                 try:
                     deps = self.get_deps()
                     append_journal = deps.get("append_journal")
                     if append_journal:
-                        append_journal("paper_loop_error", {"error": str(exc)})
+                        append_journal(
+                            "paper_loop_error",
+                            {
+                                "error": self._last_error,
+                                "error_streak": self._error_streak,
+                                "retry_in_sec": round(self._next_retry_at - time.time(), 1),
+                            },
+                        )
                 except Exception:
                     pass
-                slept = 5
+                slept = min(60, 5 * (2 ** (self._error_streak - 1)))
             self._stop.wait(timeout=max(1, slept))
 
     def _tick(self) -> int:

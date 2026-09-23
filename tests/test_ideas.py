@@ -123,6 +123,18 @@ def test_no_history_means_no_note():
     assert "past_results_for_similar_setups" not in a
 
 
+def test_paper_loop_status_exposes_automation_health():
+    loop = paper_loop.PaperLoop(
+        decisions=paper_loop.DecisionRing(Path(tempfile.mkdtemp()) / "decisions.json"),
+        get_deps=lambda: {},
+    )
+    status = loop.status({"loop_interval_sec": 60, "mode": "auto_paper"})
+    health = status["automation_health"]
+    assert health["error_streak"] == 0
+    assert health["last_error"] is None
+    assert "retry_in_sec" in health
+
+
 # ------------------------------------------------------------- midday check
 
 def test_midday_cuts_losers_and_protects_winners(monkeypatch):
