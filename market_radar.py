@@ -16,28 +16,48 @@ This module never calls Gemini/Jev.
 from __future__ import annotations
 
 import math
+import logging
+import os
 import threading
 import time
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any, Optional
 
 # ---------------------------------------------------------------------------
 # Defaults / filters
 # ---------------------------------------------------------------------------
 
-DEFAULT_TOP_N = 20
-DEFAULT_REFRESH_SEC = 300  # 5 min — avoid hammering quote APIs
-MIN_REFRESH_SEC = 60
-MAX_REFRESH_SEC = 3600
+class RadarTuning:
+    """Centralized, auditable thresholds for whole-market research scans."""
 
-MIN_PRICE = 2.0
-MIN_DOLLAR_VOLUME = 5_000_000.0
+    DEFAULT_TOP_N = 20
+    DEFAULT_REFRESH_SEC = 300
+    MIN_REFRESH_SEC = 60
+    MAX_REFRESH_SEC = 3600
+    MIN_PRICE = 5.0
+    MIN_DOLLAR_VOLUME = 5_000_000.0
+    MIN_VOLUME = 200_000
+    MIN_ABS_PCT = 0.15
+    DISTRIBUTION_PCT = -2.0
+    DISTRIBUTION_REL_VOLUME = 3.0
+    PARABOLIC_DAY_PCT = 50.0
+    MAX_ABS_PCT = 80.0
+
+
+DEFAULT_TOP_N = RadarTuning.DEFAULT_TOP_N
+DEFAULT_REFRESH_SEC = RadarTuning.DEFAULT_REFRESH_SEC
+MIN_REFRESH_SEC = RadarTuning.MIN_REFRESH_SEC
+MAX_REFRESH_SEC = RadarTuning.MAX_REFRESH_SEC
+MIN_PRICE = RadarTuning.MIN_PRICE
+MIN_DOLLAR_VOLUME = RadarTuning.MIN_DOLLAR_VOLUME
 # Alpaca's free IEX feed sees roughly 2-3% of consolidated US volume; scale so the
 # consolidated-volume thresholds below still mean something. Labeled "_iex_est".
 IEX_VOLUME_SHARE = 0.025
 EMPTY_SCAN_BACKOFF_SEC = 120.0
-MIN_VOLUME = 200_000
-MAX_ABS_PCT = 80.0  # discard halt/glitch outliers
+MIN_VOLUME = RadarTuning.MIN_VOLUME
+MAX_ABS_PCT = RadarTuning.MAX_ABS_PCT
 
 # Broader than CURATED_LIQUID_US — used when Alpaca/batch path needs a universe
 # without listing every US equity. ~120 liquid names.
@@ -67,6 +87,24 @@ _cache: dict[str, Any] = {
     "top_n": DEFAULT_TOP_N,
 }
 
+_log = logging.getLogger("tomahawk.market_radar")
+_log.setLevel(logging.INFO)
+_log.propagate = False
+if not _log.handlers:
+    try:
+        _log_dir = Path(os.environ.get("TOMAHAWK_DATA_DIR", "data"))
+        _log_dir.mkdir(parents=True, exist_ok=True)
+        _log_handler = RotatingFileHandler(
+            _log_dir / "market_radar.log",
+            maxBytes=512 * 1024,
+            backupCount=2,
+            encoding="utf-8",
+        )
+        _log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        _log.addHandler(_log_handler)
+    except OSError:
+        pass
+
 
 def clamp_refresh_sec(sec: Any) -> int:
     try:
@@ -92,7 +130,8 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
     try:
         if v is None:
             return default
-        return float(v)
+        value = float(v)
+        return value if math.isfinite(value) else default
     except (TypeError, ValueError):
         return default
 
@@ -202,6 +241,11 @@ def _row_from_quote(
         return None
     rvol = _rel_vol(volume, avg_vol)
     score = _composite_score(pct, rvol, dollar_vol)
+    flags: list[str] = []
+    if pct <= RadarTuning.DISTRIBUTION_PCT and rvol >= RadarTuning.DISTRIBUTION_REL_VOLUME:
+        flags.append("distribution_day")
+    if abs(pct) >= RadarTuning.PARABOLIC_DAY_PCT:
+        flags.append("parabolic_move")
     return {
         "ticker": sym,
         "price": round(price, 4),
@@ -212,6 +256,7 @@ def _row_from_quote(
         "dollar_volume": round(dollar_vol, 0),
         "score": score,
         "source": source,
+        "research_flags": flags,
     }
 
 
@@ -520,6 +565,7 @@ def scan_movers(
                 source = "alpaca"
         except Exception as exc:  # noqa: BLE001
             error = f"alpaca: {exc}"
+            _log.warning("alpaca mover scan failed: %s", exc)
 
     # API pack: Polygon after Alpaca, before Yahoo
     if not rows:
@@ -529,6 +575,7 @@ def scan_movers(
                 source = "polygon"
         except Exception as exc:  # noqa: BLE001
             error = (error + "; " if error else "") + f"polygon: {exc}"
+            _log.warning("polygon mover scan failed: %s", exc)
 
     if not rows:
         try:
@@ -537,6 +584,7 @@ def scan_movers(
                 source = "yahoo_screener"
         except Exception as exc:  # noqa: BLE001
             error = (error + "; " if error else "") + f"yahoo: {exc}"
+            _log.warning("yahoo screener scan failed: %s", exc)
 
     if not rows:
         try:
@@ -545,6 +593,7 @@ def scan_movers(
                 source = "batch_quotes"
         except Exception as exc:  # noqa: BLE001
             error = (error + "; " if error else "") + f"batch: {exc}"
+            _log.warning("batch quote scan failed: %s", exc)
 
     movers = _dedupe_rank(rows, top_n)
     return {
@@ -612,6 +661,7 @@ def maybe_refresh(cfg: dict[str, Any] | None = None, *, force: bool = False) -> 
         result = scan_movers(top_n=top_n)
     except Exception as exc:  # noqa: BLE001
         result = {"movers": [], "source": None, "error": str(exc)[:200]}
+        _log.exception("mover refresh failed")
     finally:
         with _lock:
             _cache["scanning"] = False

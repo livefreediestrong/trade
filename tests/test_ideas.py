@@ -165,6 +165,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 import backtest  # noqa: E402
+import market_radar  # noqa: E402
 import screener_logic  # noqa: E402
 
 
@@ -231,6 +232,24 @@ def test_intraday_signals_vwap_and_relvol():
     assert sig["vwap_slope_pct"] < 0 and sig["vwap_dist_atr"] < 0
     v, flags, notes = screener_logic.intraday_adjust("PASS", sig)
     assert v == "WATCH" and "below_falling_vwap" in flags and "volume_surge_5m" in flags
+
+
+def test_market_radar_rejects_nonfinite_and_low_price():
+    assert market_radar._safe_float(float("nan"), 7.0) == 7.0
+    assert market_radar._row_from_quote(
+        "PENNY", price=4.99, pct=4.0, volume=2_000_000, avg_vol=500_000
+    ) is None
+
+
+def test_market_radar_marks_distribution_and_parabolic_moves():
+    distribution = market_radar._row_from_quote(
+        "AAA", price=100, pct=-4.0, volume=3_000_000, avg_vol=500_000
+    )
+    parabolic = market_radar._row_from_quote(
+        "BBB", price=100, pct=55.0, volume=3_000_000, avg_vol=500_000
+    )
+    assert distribution and "distribution_day" in distribution["research_flags"]
+    assert parabolic and "parabolic_move" in parabolic["research_flags"]
 
 
 # ------------------------------------------------------------- Claude brain

@@ -19,6 +19,8 @@ Companion-style app for a Windows PC beside `holdings-options-monitor`.
 - Production startup uses Waitress; set `TOMAHAWK_TRUSTED_PROXY_HOPS=1` only when one trusted reverse proxy terminates HTTPS. Use `TOMAHAWK_DEV_SERVER=1` only for local development.
 - Only one server instance is allowed by default. The process lock prevents concurrent JSON read-modify-write corruption.
 - Backtests are screening evidence only; they do not provide statistical proof of edge and should be checked across symbols, periods, and cost assumptions.
+- Market-radar results apply centralized liquidity gates and label distribution/parabolic moves as research warnings; these warnings can downgrade a candidate to `WATCH` but never authorize an order.
+- Radar provider failures are retained in the response and written to `data/market_radar.log` with rotation.
 
 Kill-switch / daily profit target remain **optional** research controls; they do not block mode entry by default.
 

@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 import data_sources as ds
+from market_radar import RadarTuning
 
 SECTOR_ETF = {
     "Technology": "XLK",
@@ -460,22 +461,28 @@ def analyze_ticker(ticker: str) -> dict[str, Any]:
                 else 0.0
             )
             cmf = chaikin_money_flow(s, 20)
+            green_days_5 = 0
+            if len(s) >= 6:
+                green_days_5 = int((s["Close"].iloc[-6:].pct_change().dropna() > 0).sum())
             sector_data = {
                 "etf": sector_etf,
                 "today_pct": round(float(today_pct), 2),
                 "five_d_pct": round(float(five_d), 2),
                 "twenty_d_pct": round(float(twenty_d), 2),
                 "cmf": round(cmf, 4) if cmf is not None else None,
+                "green_days_5": green_days_5,
             }
 
     sector_ok = (
         sector_data is not None
         and sector_data["today_pct"] > 0
+        and sector_data.get("green_days_5", 0) >= 3
         and (sector_data["cmf"] or 0) > 0
     )
     sector_dying = (
         sector_data is not None
         and sector_data["today_pct"] < 0
+        and sector_data.get("green_days_5", 5) <= 1
         and (sector_data["cmf"] or 0) < 0
     )
 
@@ -483,6 +490,14 @@ def analyze_ticker(ticker: str) -> dict[str, Any]:
     gap_pct = float(change_pct) if change_pct is not None else 0.0
     halt_or_gap = False
     research_flags: list[str] = []
+    if change_pct <= RadarTuning.DISTRIBUTION_PCT and rel_vol >= RadarTuning.DISTRIBUTION_REL_VOLUME:
+        research_flags.append("distribution_day")
+    if (
+        change_pct >= RadarTuning.PARABOLIC_DAY_PCT
+        or (len(daily) >= 6 and (last_close / float(daily["Close"].iloc[-6]) - 1) * 100 >= 80)
+        or (len(daily) >= 21 and (last_close / float(daily["Close"].iloc[-21]) - 1) * 100 >= 150)
+    ):
+        research_flags.append("parabolic_move")
     market_state = str(info.get("marketState") or "")
     if "HALT" in market_state.upper():
         halt_or_gap = True
@@ -566,6 +581,13 @@ def analyze_ticker(ticker: str) -> dict[str, Any]:
     else:
         verdict = "WATCH"
         verdict_text = "Mixed signals. Not a clean go."
+
+    if research_flags and verdict == "PASS":
+        verdict = "WATCH"
+        verdict_text = (
+            f"{verdict_text} Research warning: {', '.join(research_flags)}. "
+            "Do not chase; require a fresh setup."
+        )
 
     # Optional live quote polish
     fh_quote = ds.finnhub_quote(ticker)
