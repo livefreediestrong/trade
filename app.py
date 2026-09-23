@@ -5074,9 +5074,9 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
         # Mode changes
         if "mode" in body:
             new_mode = body["mode"]
-            if new_mode not in ("manual", "auto_paper", "auto_live"):
+            if new_mode not in ("manual", "auto_paper", "auto_live", "live_manual"):
                 return jsonify({"ok": False, "error": "Invalid mode"}), 400
-            if new_mode == "auto_live":
+            if new_mode in ("auto_live", "live_manual"):
                 broker = _broker_public_status()
                 confirmation = str(body.get("live_confirm") or "").strip().upper()
                 expected = (
@@ -6095,7 +6095,7 @@ def api_approve(sig_id: str):
 
     # Manual approve: paper by default. auto_live → gate then broker (no dual-book).
     try:
-        if cfg.get("mode") == "auto_live":
+        if cfg.get("mode") in ("auto_live", "live_manual"):
             result = execute_gated_broker_or_paper(
                 sig, cfg, source="manual_approve", via="manual_approve_while_auto_live"
             )
@@ -6240,7 +6240,7 @@ def api_session_start():
         # Respect the user's fill choice (Ask me first stays Ask me first).
         if req_mode in ("manual", "auto_paper"):
             cfg["mode"] = req_mode
-        elif cfg.get("mode") not in ("manual", "auto_paper", "auto_live"):
+        elif cfg.get("mode") not in ("manual", "auto_paper", "auto_live", "live_manual"):
             cfg["mode"] = "manual"
         cfg["session_active"] = True
         cfg["session_started_at"] = _now_iso()

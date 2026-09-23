@@ -1827,12 +1827,12 @@
     if (!modeSel) return;
     const mode = modeSel.value;
     const body = { mode };
-    if (mode === "auto_live") {
+    if (mode === "auto_live" || mode === "live_manual") {
       const b0 = window.__brokerStatus || {};
       if (b0.configured && b0.paper_mode === false) {
         const typed = prompt(
           "This connects the desk to your REAL-MONEY Alpaca account.\n" +
-          "Approvals and automatic trades will place real orders.\n\n" +
+          (mode === "live_manual" ? "Each approved idea will place one real order.\n\n" : "Approvals and automatic trades will place real orders.\n\n") +
           "Type REAL to continue:"
         );
         if (String(typed || "").trim().toUpperCase() !== "REAL") {
@@ -1840,7 +1840,9 @@
           return;
         }
         body.live_confirm = "REAL";
-      } else if (!confirm("Switch to Auto + Alpaca? Trades will be sent to your Alpaca paper account.")) {
+      } else if (!confirm(mode === "live_manual"
+        ? "Switch to approve-first Alpaca mode? Each approved idea will be sent to your Alpaca paper account."
+        : "Switch to Auto + Alpaca? Trades will be sent to your Alpaca paper account.")) {
         return;
       } else {
         body.live_confirm = "AUTO_LIVE";
@@ -1862,16 +1864,18 @@
       const data = await api("/api/config", { method: "POST", body: JSON.stringify(body) });
       const b = data.broker || window.__brokerStatus || {};
       let msg = `Mode set to ${data.config?.mode || mode}`;
-      if (mode === "auto_live") {
+      if (mode === "auto_live" || mode === "live_manual") {
         if (b.configured && b.paper_mode === false) {
-          msg = "Auto + Alpaca — LIVE ENDPOINT (ALPACA_PAPER=false, real money)";
+          msg = mode === "live_manual"
+            ? "Approve-first Alpaca — LIVE ENDPOINT (real money)"
+            : "Auto + Alpaca — LIVE ENDPOINT (ALPACA_PAPER=false, real money)";
         } else if (b.configured) {
           msg = "Auto + Alpaca — paper-api (broker-only on success; no dual local book)";
         } else {
           msg = "Auto + Alpaca — no keys; will use local paper until Alpaca is configured";
         }
       }
-      toast(msg, !!(mode === "auto_live" && b.configured && b.paper_mode === false));
+      toast(msg, !!((mode === "auto_live" || mode === "live_manual") && b.configured && b.paper_mode === false));
       await refresh();
     } catch (e) {
       toast(e.message, true);
