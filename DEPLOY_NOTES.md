@@ -1,6 +1,11 @@
 # Tomahawk deploy notes — deployment and safety notes
 
 Research desk with local paper default + optional Alpaca (`ALPACA_PAPER` defaults true). No secrets in this file. No git push from this change set.
+
+> **Current contract:** this file contains historical implementation notes. For current
+> broker behavior, use `README.md` and the code. In particular, broker submission
+> failure is not converted into a local paper fill.
+> Risk preset policy is maintained in `risk_policy.py`.
 Folder name unchanged (`daytrade-signal-desk`). Parent deploys (do not CopyFromBox from this agent).
 
 ## Design themes deferred; reverted to chill slate (2026-09-22)
@@ -244,7 +249,7 @@ Alerts polish, friction UX, NL find, chart strip (not in this ship).
 
 ### Behavior
 1. **Gate before broker** — `can_take_trade` + size/loss caps run **before** any Alpaca submit (never broker-before-gate).
-2. **No dual-book** — if Alpaca configured and submit succeeds → **broker-only** fill record (no local `paper_fill`). On broker fail → local paper fallback with `book=local_paper_fallback` + journal.
+2. **No dual-book** — if Alpaca configured and submit succeeds → **broker-only** fill record (no local `paper_fill`). Broker failure is recorded as a failure and is not converted into a local paper fill. (The older fallback wording in this historical entry is superseded.)
 3. **`ALPACA_PAPER` defaults true** (paper-api). `ALPACA_PAPER=false` → live money endpoint; UI masthead/chip/toast show **LIVE ENDPOINT** (not PAPER ONLY / Fake money).
 4. **Same size/loss caps** applied to broker qty path (`_cap_shares_for_broker`).
 5. **Flatten** — local paper close + Alpaca `cancel_all_orders` / `close_all_positions` when configured; if broker flatten fails → `refuse_flatten_as_complete` (not claimed complete).

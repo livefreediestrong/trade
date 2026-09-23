@@ -18,6 +18,7 @@ Companion-style app for a Windows PC beside `holdings-options-monitor`.
 - The desk is unauthenticated on loopback only. If exposed beyond loopback with `TOMAHAWK_HOST` / `TOMAHAWK_ALLOWED_HOSTS`, set a long random `TOMAHAWK_AUTH_TOKEN` and terminate HTTPS at the deployment boundary; remote requests must send `X-Tomahawk-Token` or `Authorization: Bearer`.
 - Production startup uses Waitress; set `TOMAHAWK_TRUSTED_PROXY_HOPS=1` only when one trusted reverse proxy terminates HTTPS. Use `TOMAHAWK_DEV_SERVER=1` only for local development.
 - Only one server instance is allowed by default. The process lock prevents concurrent JSON read-modify-write corruption.
+- Risk presets are defined in `risk_policy.py` and consumed by both paper and broker gate paths.
 - Backtests are screening evidence only; they do not provide statistical proof of edge and should be checked across symbols, periods, and cost assumptions.
 - Market-radar results apply centralized liquidity gates and label distribution/parabolic moves as research warnings; these warnings can downgrade a candidate to `WATCH` but never authorize an order.
 - Radar provider failures are retained in the response and written to `data/market_radar.log` with rotation.
@@ -96,7 +97,7 @@ Flask + Jinja + vanilla JS + yfinance/pandas/requests. Dark desk UI (`--bg #0b0f
 
 Double-click the **Tomahawk** desktop shortcut (runs `Start-Tomahawk.ps1`: starts the desk if needed, then opens the browser). First-time setup: `python -m venv .venv` then `.venv\Scripts\pip install -r requirements.txt`.
 
-(`Launch.bat` is legacy — it builds a separate `venv` folder.)
+(`Launch.bat` uses the same `.venv` folder.)
 
 Or after first setup:
 
@@ -114,8 +115,8 @@ powershell -NoProfile -File install_and_restart.ps1
 
 ```bash
 cd /workspace/daytrade-signal-desk
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 python app.py
 ```

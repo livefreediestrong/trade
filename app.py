@@ -7,7 +7,7 @@ Research draft: full playbook visible.
 Alpaca broker optional via broker_alpaca (ALPACA_API_KEY/SECRET).
 ALPACA_PAPER defaults true (paper-api). ALPACA_PAPER=false → live money endpoint.
 When Alpaca is configured, auto_live / approve submit to broker only on success
-(no dual local paper_fill). On broker fail, fall back to local paper with clear status.
+(no dual local paper_fill). On broker fail, no local paper fill is recorded.
 IBKR not wired. No ENABLE LIVE AUTO unlock ceremony.
 """
 
@@ -47,6 +47,7 @@ import desk_alerts
 import macro_calendar
 import edgar_client
 import options_flow
+from risk_policy import RISK_PRESETS
 
 APP_DIR = Path(__file__).resolve().parent
 # TOMAHAWK_DATA_DIR overrides (tests use a temp dir so they never touch real data)
@@ -65,33 +66,6 @@ BANNER = (
     "Tomahawk — Gemini research desk. Local paper by default; Alpaca optional "
     "(ALPACA_PAPER=true → paper-api; ALPACA_PAPER=false → LIVE money endpoint)."
 )
-
-RISK_PRESETS: dict[str, dict[str, Any]] = {
-    "low": {
-        "max_position_pct": 1.0,
-        "max_trades_per_day": 3,
-        "max_daily_loss_pct": 1.0,
-        "min_confidence": 0.0,
-        "stop_r": 1.0,
-        "target_r": 2.0,
-    },
-    "mid": {
-        "max_position_pct": 2.0,
-        "max_trades_per_day": 6,
-        "max_daily_loss_pct": 2.0,
-        "min_confidence": 0.0,
-        "stop_r": 1.0,
-        "target_r": 2.5,
-    },
-    "high": {
-        "max_position_pct": 4.0,
-        "max_trades_per_day": 12,
-        "max_daily_loss_pct": 4.0,
-        "min_confidence": 0.0,
-        "stop_r": 1.0,
-        "target_r": 3.0,
-    },
-}
 
 DEFAULT_WATCHLIST = ["AAPL", "MSFT", "NVDA", "TSLA", "AMD", "SPY", "QQQ"]
 
@@ -437,6 +411,7 @@ def _mark_corrupt(path: Path, reason: str) -> None:
     if key in _CORRUPT_PATHS:
         return
     _CORRUPT_PATHS[key] = str(reason)[:200]
+    logger.error("state file marked corrupt: %s (%s)", path, reason)
     try:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         bak = path.with_suffix(path.suffix + f".corrupt.{stamp}.bak")
@@ -449,7 +424,7 @@ def _mark_corrupt(path: Path, reason: str) -> None:
         )
     except OSError:
         pass
-    print(f"[tomahawk] CORRUPT {path.name}: {reason} — saves blocked, trading gated", flush=True)
+    logger.error("saves blocked and trading gated for %s", path.name)
 
 
 def _load_json(path: Path, default: Any) -> Any:

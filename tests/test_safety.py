@@ -106,6 +106,15 @@ def test_remote_client_requires_https_even_with_token(client, monkeypatch):
     assert r.get_json()["error"] == "https_required"
 
 
+def test_risk_policy_returns_defensive_preset_copy():
+    import risk_policy
+
+    preset = risk_policy.get_preset("low")
+    preset["max_position_pct"] = 999
+    assert risk_policy.get_preset("low")["max_position_pct"] == 1.0
+    assert risk_policy.get_preset("unknown")["max_trades_per_day"] == 6
+
+
 def test_llm_chat_rate_limit_is_fail_closed(client, monkeypatch):
     monkeypatch.setattr(desk, "_rate_limited", lambda *args, **kwargs: True)
     r = client.post("/api/llm/chat", base_url=BASE, json={"message": "hello"})
