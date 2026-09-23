@@ -4663,8 +4663,40 @@ def _ranked_opportunities(
     decisions: list[dict] | None = None,
     buzz: dict | None = None,
 ) -> list[dict]:
-    """Pending + recent loop candidates ranked PASS > WATCH > AVOID."""
+    """Pending + recent candidates ranked by one auditable priority policy."""
     rank = {"PASS": 0, "WATCH": 1, "AVOID": 2}
+
+    def priority(row: dict[str, Any], buzz_mentions: Any) -> tuple[float, list[str]]:
+        verdict = str(row.get("verdict") or "WATCH").upper()
+        try:
+            confidence = max(0.0, min(1.0, float(row.get("confidence") or 0)))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        score = {"PASS": 60.0, "WATCH": 35.0, "AVOID": 10.0}.get(verdict, 0.0)
+        reasons = [f"verdict:{verdict.lower()}"]
+        score += confidence * 25.0
+        if confidence >= 0.75:
+            reasons.append("high_confidence")
+        lateness = str(row.get("lateness_label") or "").lower()
+        if lateness in ("late", "chasing"):
+            score -= 25.0
+            reasons.append("late_entry")
+        flags = str(row.get("research_flag") or "") + " " + str(row.get("research_flags") or "")
+        for flag in ("execution_quality_block", "weak_market_regime", "sector_dying"):
+            if flag in flags:
+                score -= 20.0
+                reasons.append(flag)
+        try:
+            attention = float(buzz_mentions or 0)
+        except (TypeError, ValueError):
+            attention = 0.0
+        if attention > 0:
+            score += min(8.0, attention / 10.0)
+            reasons.append("attention_context")
+        if row.get("source") == "pending":
+            score += 3.0
+            reasons.append("needs_review")
+        return round(score, 2), reasons
     out: list[dict] = []
     for s in signals or []:
         if s.get("status") != "pending":
@@ -4687,6 +4719,8 @@ def _ranked_opportunities(
         }
         if bm:
             row["buzz_mentions"] = bm
+        row["priority_score"], row["priority_reasons"] = priority(row, bm)
+        row["priority_tier"] = "act_now" if row["priority_score"] >= 70 else "review" if row["priority_score"] >= 35 else "research"
         out.append(row)
     for d in decisions or []:
         if d.get("event") != "decision":
@@ -4712,8 +4746,14 @@ def _ranked_opportunities(
         }
         if bm:
             row["buzz_mentions"] = bm
+        row["priority_score"], row["priority_reasons"] = priority(row, bm)
+        row["priority_tier"] = "act_now" if row["priority_score"] >= 70 else "review" if row["priority_score"] >= 35 else "research"
         out.append(row)
-    out.sort(key=lambda x: (rank.get(str(x.get("verdict") or "").upper(), 9), -(float(x.get("confidence") or 0))))
+    out.sort(key=lambda x: (
+        -float(x.get("priority_score") or 0),
+        rank.get(str(x.get("verdict") or "").upper(), 9),
+        -float(x.get("confidence") or 0),
+    ))
     return out[:40]
 
 

@@ -199,6 +199,7 @@ Light mode: the ☀ / ☾ button in the header (defaults to your computer's sett
 - **You vs. SPY:** at Start checking the desk records SPY's price; the stage and the end-of-day recap show your return next to simply holding SPY with the same cash.
 - **Daily after-hours recap:** `/api/state` includes `daily_recap`, and `/api/report/daily` returns a descriptive close-of-day summary with net P&L after fees, fills, wins/losses, decisions, blocked calls, open positions, and tickers observed. It never authorizes overnight or live orders.
 - **Automation health:** automatic paper-loop status includes the last completed cycle, last error, consecutive error count, and bounded retry delay. Unexpected failures back off up to 60 seconds instead of retrying in a tight loop.
+- **Opportunity priorities:** pending and recent opportunities use one auditable score based on verdict, confidence, lateness, execution/regime flags, attention context, and review status. Each row exposes `priority_score`, `priority_tier` (`act_now`, `review`, or `research`), and reasons.
 
 ## Trading-bot ideas (from YouTube review, 2026-09-22)
 - **Trailing stop:** "Trailing stop %" in the Approve window — the stop follows the price up (never down).

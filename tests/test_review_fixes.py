@@ -131,6 +131,18 @@ def test_promotion_requires_net_expectancy_and_profit_factor():
     assert evidence["eligible"] is False
     assert evidence["checks"]["minimum_independent_tickers"] is False
     assert evidence["independent_tickers"] == 0
+
+
+def test_opportunities_use_auditable_priority():
+    rows = desk._ranked_opportunities([
+        {"id": "late", "status": "pending", "ticker": "AAPL", "verdict": "PASS",
+         "confidence": 0.9, "lateness_label": "chasing", "research_flags": ["execution_quality_block"]},
+        {"id": "clean", "status": "pending", "ticker": "MSFT", "verdict": "PASS",
+         "confidence": 0.8, "lateness_label": "early"},
+    ])
+    assert rows[0]["id"] == "clean"
+    assert rows[0]["priority_tier"] == "act_now"
+    assert "needs_review" in rows[0]["priority_reasons"]
 import llm_trader  # noqa: E402
 import paper_loop  # noqa: E402
 import session_track  # noqa: E402
