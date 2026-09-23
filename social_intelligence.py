@@ -1,8 +1,8 @@
 """Read-only social attention intelligence for research context.
 
-The adapter uses Reddit's public JSON endpoints only. It is deliberately
-display-only: social activity can explain attention and uncertainty, but never
-creates or approves a trade.
+Public Reddit, Stocktwits, and RSS inputs are normalized into one bounded,
+auditable pulse. This module is deliberately display-only: social activity can
+explain attention and uncertainty, but never creates or approves a trade.
 """
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ import hashlib
 import re
 import threading
 import time
+import os
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Any
 
@@ -28,6 +30,15 @@ _STOPWORDS = {
     "WHAT", "WHEN", "WILL", "BEEN", "ONLY", "VERY", "CALL", "PUT", "YOLO", "DD",
     "CEO", "CFO", "USA", "USD", "IMO", "ATH", "FOMO", "IV", "EPS",
 }
+DEFAULT_SUBREDDITS = ("wallstreetbets", "stocks", "investing", "options", "Daytrading", "Shortsqueeze")
+DEFAULT_RSS_FEEDS = (
+    "https://www.reddit.com/r/wallstreetbets/.rss",
+    "https://www.reddit.com/r/stocks/.rss",
+    "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+    "https://feeds.marketwatch.com/marketwatch/topstories/",
+    "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml",
+    "https://feeds.bbci.co.uk/news/business/rss.xml",
+)
 
 
 def _clean_text(value: Any, limit: int = 500) -> str:
@@ -56,7 +67,7 @@ def _sentiment(text: str) -> str:
     return "uncertain"
 
 
-def _reddit_rows(subreddit: str, limit: int = 50) -> list[dict[str, Any]]:
+def _reddit_rows(subreddit: str, limit: int = 40) -> list[dict[str, Any]]:
     try:
         response = requests.get(
             f"https://www.reddit.com/r/{subreddit}/new.json",
@@ -79,9 +90,12 @@ def _reddit_rows(subreddit: str, limit: int = 50) -> list[dict[str, Any]]:
         text = f"{title} {body}".strip()
         if not text:
             continue
-        created = float(data.get("created_utc") or 0)
+        try:
+            created = float(data.get("created_utc") or 0)
+        except (TypeError, ValueError):
+            created = 0.0
         rows.append({
-            "source": "reddit_wsb",
+            "source": f"reddit_{subreddit.lower()}",
             "source_id": str(data.get("id") or data.get("name") or ""),
             "thread_id": str(data.get("id") or ""),
             "author_hash": hashlib.sha256(
@@ -99,11 +113,99 @@ def _reddit_rows(subreddit: str, limit: int = 50) -> list[dict[str, Any]]:
     return rows
 
 
+def _stocktwits_rows(symbols: list[str], limit: int = 12) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for symbol in symbols[:20]:
+        try:
+            response = requests.get(
+                f"https://api.stocktwits.com/api/2/streams/symbol/{symbol.upper()}.json",
+                headers={"User-Agent": _UA, "Accept": "application/json"},
+                timeout=6,
+            )
+            if response.status_code != 200:
+                continue
+            messages = (response.json().get("messages") or [])[:limit]
+        except (OSError, ValueError, requests.RequestException):
+            continue
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            body = _clean_text(message.get("body"), 700)
+            if not body:
+                continue
+            created = str(message.get("created_at") or "")
+            sentiment = (message.get("entities") or {}).get("sentiment") or {}
+            label = str(sentiment.get("basic") or "").lower()
+            if label not in {"bullish", "bearish"}:
+                label = _sentiment(body)
+            rows.append({
+                "source": "stocktwits",
+                "source_id": str(message.get("id") or ""),
+                "thread_id": str(message.get("conversation", {}).get("parent_message_id") or ""),
+                "author_hash": hashlib.sha256(
+                    str((message.get("user") or {}).get("id") or "[unknown]").encode("utf-8")
+                ).hexdigest()[:16],
+                "created_at": created,
+                "title": f"${symbol.upper()} Stocktwits message",
+                "excerpt": body[:300],
+                "ticker_candidates": [symbol.upper()],
+                "sentiment": label,
+                "score": int(message.get("likes") or 0),
+                "comments": 0,
+                "permalink": message.get("conversation", {}).get("parent_message_id"),
+            })
+    return rows
+
+
+def _rss_rows(feeds: tuple[str, ...], limit: int = 15) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for feed in feeds[:6]:
+        try:
+            response = requests.get(
+                feed, headers={"User-Agent": _UA, "Accept": "application/rss+xml, application/xml"},
+                timeout=6,
+            )
+            if response.status_code != 200:
+                continue
+            root = ET.fromstring(getattr(response, "content", b""))
+        except (OSError, ET.ParseError, requests.RequestException):
+            continue
+        for item in root.findall(".//item")[:limit]:
+            title = _clean_text(item.findtext("title"), 300)
+            link = _clean_text(item.findtext("link"), 500)
+            description = _clean_text(item.findtext("description"), 700)
+            if not title:
+                continue
+            text = f"{title} {description}"
+            rows.append({
+                "source": "public_rss",
+                "source_id": hashlib.sha256(f"{feed}|{link}|{title}".encode("utf-8")).hexdigest()[:16],
+                "thread_id": "",
+                "author_hash": hashlib.sha256(feed.encode("utf-8")).hexdigest()[:16],
+                "created_at": _clean_text(item.findtext("pubDate"), 80) or None,
+                "title": title,
+                "excerpt": description[:300],
+                "ticker_candidates": _tickers(text),
+                "sentiment": _sentiment(text),
+                "score": 0,
+                "comments": 0,
+                "permalink": link or None,
+            })
+    return rows
+
+
+def _configured_feeds() -> tuple[str, ...]:
+    raw = os.environ.get("SOCIAL_RSS_FEEDS", "")
+    return tuple(x.strip() for x in raw.split(",") if x.strip()) or DEFAULT_RSS_FEEDS
+
+
 def _summarize(rows: list[dict[str, Any]], watchlist: list[str]) -> dict[str, Any]:
     allowed = {str(t).upper().lstrip("$") for t in watchlist if t}
     by_ticker: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         tickers = _tickers(f"{row.get('title', '')} {row.get('excerpt', '')}", allowed) if allowed else row.get("ticker_candidates", [])
+        if allowed and not tickers:
+            tickers = [t for t in (row.get("ticker_candidates") or []) if t in allowed]
         for ticker in tickers:
             by_ticker.setdefault(ticker, []).append(row)
     pulse = []
@@ -125,7 +227,14 @@ def _summarize(rows: list[dict[str, Any]], watchlist: list[str]) -> dict[str, An
             "items": items[:5],
         })
     pulse.sort(key=lambda x: (x["mentions"], x["attention_score"]), reverse=True)
-    return {"pulse": pulse[:30], "items": rows[:80], "display_only": True, "attention_only": True}
+    counts: dict[str, int] = {}
+    for row in rows:
+        source = str(row.get("source") or "unknown")
+        counts[source] = counts.get(source, 0) + 1
+    return {
+        "pulse": pulse[:30], "items": rows[:80], "source_counts": counts,
+        "display_only": True, "attention_only": True,
+    }
 
 
 def snapshot(watchlist: list[str] | None = None, *, force: bool = False) -> dict[str, Any]:
@@ -135,13 +244,24 @@ def snapshot(watchlist: list[str] | None = None, *, force: bool = False) -> dict
     with _lock:
         if not force and _cache.get("payload") and now - float(_cache.get("at") or 0) < _TTL and _cache.get("key") == key:
             return dict(_cache["payload"])
-    rows = _reddit_rows("wallstreetbets")
+    subreddits = tuple(
+        x.strip() for x in os.environ.get("SOCIAL_SUBREDDITS", "").split(",") if x.strip()
+    ) or DEFAULT_SUBREDDITS
+    rows: list[dict[str, Any]] = []
+    for subreddit in subreddits:
+        rows.extend(_reddit_rows(subreddit))
+    symbols = [str(t).upper().lstrip("$") for t in watchlist if t]
+    rows.extend(_stocktwits_rows(symbols))
+    rows.extend(_rss_rows(_configured_feeds()))
+    rows.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
     payload = {
         "ok": bool(rows),
-        "provider": "reddit_wsb",
-        "source": "public_reddit_json",
+        "provider": "social_public",
+        "source": "reddit_stocktwits_rss",
+        "subreddits": list(subreddits),
+        "rss_feeds": list(_configured_feeds()),
         "scanned_at": datetime.now(timezone.utc).isoformat(),
-        "error": None if rows else "No public Reddit rows available",
+        "error": None if rows else "No public social rows available",
         **_summarize(rows, watchlist),
     }
     with _lock:
@@ -152,9 +272,14 @@ def snapshot(watchlist: list[str] | None = None, *, force: bool = False) -> dict
 def public_status() -> dict[str, Any]:
     return {
         "enabled": True,
-        "provider": "reddit_wsb",
+        "provider": "social_public",
         "configured": True,
         "read_only": True,
         "display_only": True,
-        "docs": "https://www.reddit.com/dev/api/",
+        "sources": ["reddit_public", "stocktwits_public", "public_rss"],
+        "docs": {
+            "reddit": "https://www.reddit.com/dev/api/",
+            "stocktwits": "https://api.stocktwits.com/developers/docs",
+            "rss": "SOCIAL_RSS_FEEDS environment setting",
+        },
     }

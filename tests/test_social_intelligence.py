@@ -37,6 +37,7 @@ def test_social_snapshot_normalizes_and_summarizes_rows(monkeypatch):
             ]}}
 
     monkeypatch.setattr(social_intelligence.requests, "get", lambda *a, **k: Response())
+    monkeypatch.setenv("SOCIAL_SUBREDDITS", "wallstreetbets")
     result = social_intelligence.snapshot(["AAPL"], force=True)
     assert result["ok"] is True
     assert result["pulse"][0]["ticker"] == "AAPL"
@@ -49,3 +50,27 @@ def test_social_snapshot_normalizes_and_summarizes_rows(monkeypatch):
 
 def test_ticker_extraction_avoids_common_words():
     assert social_intelligence._tickers("THE CEO says $MSFT is strong") == ["MSFT"]
+
+
+def test_social_sources_are_combined(monkeypatch):
+    monkeypatch.setenv("SOCIAL_SUBREDDITS", "wallstreetbets")
+    monkeypatch.setattr(social_intelligence, "_reddit_rows", lambda subreddit: [{
+        "source": f"reddit_{subreddit}", "ticker_candidates": ["AAPL"],
+        "title": subreddit, "excerpt": "bullish", "sentiment": "bullish",
+        "author_hash": subreddit, "score": 1, "comments": 0,
+    }])
+    monkeypatch.setattr(social_intelligence, "_stocktwits_rows", lambda symbols: [{
+        "source": "stocktwits", "ticker_candidates": ["AAPL"],
+        "title": "message", "excerpt": "bearish", "sentiment": "bearish",
+        "author_hash": "tw", "score": 2, "comments": 0,
+    }])
+    monkeypatch.setattr(social_intelligence, "_rss_rows", lambda feeds: [{
+        "source": "public_rss", "ticker_candidates": ["AAPL"],
+        "title": "news", "excerpt": "uncertain", "sentiment": "uncertain",
+        "author_hash": "rss", "score": 0, "comments": 0,
+    }])
+    result = social_intelligence.snapshot(["AAPL"], force=True)
+    assert result["source"] == "reddit_stocktwits_rss"
+    assert result["source_counts"]["stocktwits"] == 1
+    assert result["source_counts"]["public_rss"] == 1
+    assert len(result["pulse"]) == 1
