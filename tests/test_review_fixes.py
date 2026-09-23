@@ -18,6 +18,25 @@ os.environ["TOMAHAWK_NO_BG"] = "1"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app as desk  # noqa: E402
+
+
+def test_atr_risk_sizing_caps_requested_shares():
+    sig = {
+        "ticker": "AAPL",
+        "signal_price": 10.0,
+        "suggested_shares": 100,
+        "atr_usd": 2.0,
+    }
+    shares, notional, error = desk._cap_shares_for_broker(
+        sig,
+        {"risk_preset": "mid", "risk_per_trade_pct": 0.25, "atr_stop_multiple": 1.0},
+        {"equity": 10_000},
+        equity_override=10_000,
+    )
+    assert error is None
+    assert shares == 12
+    assert notional == 120.0
+    assert sig["size_capped_for_atr_risk"] is True
 import llm_trader  # noqa: E402
 import paper_loop  # noqa: E402
 import session_track  # noqa: E402

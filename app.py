@@ -256,6 +256,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "decision_horizon_min": 20,
     # Paper friction analogs (bps)
     "fee_bps": 1.0,
+    "risk_per_trade_pct": 0.25,
+    "atr_stop_multiple": 1.0,
 }
 
 _lock = threading.RLock()
@@ -536,6 +538,8 @@ _NUMERIC_CFG_LIMITS: dict[str, tuple[float, float]] = {
     "max_session_loss_usd": (0.0, 1e9),
     "slip_bps": (0.0, 500.0),
     "fee_bps": (0.0, 500.0),
+    "risk_per_trade_pct": (0.0, 5.0),
+    "atr_stop_multiple": (0.25, 5.0),
     "signal_ttl_sec": (10.0, 86400.0),
     "demo_signal_interval_sec": (5.0, 86400.0),
     "scan_interval_sec": (15.0, 86400.0),
@@ -878,6 +882,21 @@ def _cap_shares_for_broker(
     shares = max(0, int(sig.get("suggested_shares") or 0))
     if shares <= 0:
         return 0, 0.0, "zero_shares"
+    atr = _finite_float(sig.get("atr_usd"))
+    risk_pct = _finite_float(cfg.get("risk_per_trade_pct"), 0.0) or 0.0
+    atr_multiple = _finite_float(cfg.get("atr_stop_multiple"), 1.0) or 1.0
+    if atr and atr > 0 and risk_pct > 0 and atr_multiple > 0:
+        risk_budget = equity * risk_pct / 100.0
+        risk_per_share = atr * atr_multiple
+        risk_shares = int(risk_budget / risk_per_share)
+        if risk_shares <= 0:
+            return 0, 0.0, "risk_budget_below_one_share"
+        if shares > risk_shares:
+            shares = risk_shares
+            sig["suggested_shares"] = shares
+            sig["size_capped_for_atr_risk"] = True
+            sig["atr_risk_budget_usd"] = round(risk_budget, 2)
+            sig["atr_stop_distance_usd"] = round(risk_per_share, 4)
     max_pos = equity * (float(preset["max_position_pct"]) / 100.0)
     max_shares = max(1, int(max_pos / max(px, 0.01))) if max_pos > 0 else shares
     if shares > max_shares:
@@ -2824,6 +2843,19 @@ def paper_fill(
     slip = px * (slip_bps / 10_000.0)
     fill_px = round(px + slip, 4) if side == "buy" else round(px - slip, 4)
     shares_req = max(0, int(signal.get("suggested_shares") or 1))
+    atr = _finite_float(signal.get("atr_usd"))
+    risk_pct = _finite_float(cfg.get("risk_per_trade_pct"), 0.0) or 0.0
+    atr_multiple = _finite_float(cfg.get("atr_stop_multiple"), 1.0) or 1.0
+    atr_risk_budget = None
+    atr_stop_distance = None
+    if atr and atr > 0 and risk_pct > 0:
+        atr_risk_budget = float(cfg.get("paper_equity") or 0) * risk_pct / 100.0
+        atr_stop_distance = atr * atr_multiple
+        risk_shares = int(atr_risk_budget / atr_stop_distance) if atr_stop_distance > 0 else 0
+        if risk_shares <= 0 and not bypass_gates:
+            return {"ok": False, "error": "risk_budget_below_one_share", "abstain": True}
+        if risk_shares > 0:
+            shares_req = min(shares_req, risk_shares)
     if shares_req <= 0:
         return {"ok": False, "error": "zero_shares", "abstain": True}
     notional = round(shares_req * fill_px, 2)
@@ -2991,6 +3023,9 @@ def paper_fill(
             "price_source": price_source,
             "simulated": True,
             "position_id": position_id,
+            "atr_usd": atr,
+            "atr_stop_distance_usd": round(atr_stop_distance, 4) if atr_stop_distance else None,
+            "atr_risk_budget_usd": round(atr_risk_budget, 2) if atr_risk_budget else None,
         }
         if realized_pnl:
             fill["realized_pnl"] = round(realized_pnl, 2)
