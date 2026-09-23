@@ -143,6 +143,18 @@ def test_opportunities_use_auditable_priority():
     assert rows[0]["id"] == "clean"
     assert rows[0]["priority_tier"] == "act_now"
     assert "needs_review" in rows[0]["priority_reasons"]
+
+
+def test_readiness_summary_never_claims_live_readiness():
+    result = desk.readiness_summary(
+        {"mode": "live_manual", "session_active": False},
+        {"positions": [], "fills": []},
+        loop={"automation_health": {"error_streak": 0}},
+        promotion={"eligible": False},
+    )
+    assert result["status"] == "blocked"
+    assert result["can_live_trade"] is False
+    assert "session inactive" in result["blockers"]
 import llm_trader  # noqa: E402
 import paper_loop  # noqa: E402
 import session_track  # noqa: E402

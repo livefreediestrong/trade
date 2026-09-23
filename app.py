@@ -4658,6 +4658,48 @@ def _promotion_gate(cfg: dict[str, Any], ledger: dict[str, Any]) -> dict[str, An
             "window_days": window_days,
             "note": "Evidence gate only; it never changes broker mode or places orders.",
         }
+
+
+def readiness_summary(
+    cfg: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    loop: dict[str, Any] | None = None,
+    promotion: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """One conservative summary of what the desk is currently ready to do."""
+    loop = loop or {}
+    promotion = promotion or _promotion_gate(cfg, ledger)
+    blockers: list[str] = []
+    cautions: list[str] = []
+    if cfg.get("mode") in ("auto_live", "live_manual"):
+        cautions.append("live broker mode requires explicit per-order approval")
+    if not bool(cfg.get("session_active")):
+        blockers.append("session inactive")
+    if loop.get("automation_health", {}).get("error_streak", 0):
+        blockers.append("automation errors need review")
+    if not bool(_risk_cockpit(cfg, ledger).get("data_files_healthy")):
+        blockers.append("data files need repair")
+    if not promotion.get("eligible"):
+        cautions.append("promotion evidence is not complete")
+    if cfg.get("mode") == "auto_live":
+        blockers.append("automatic live mode is not enabled by this readiness summary")
+    if blockers:
+        status = "blocked"
+    elif cfg.get("mode") == "auto_paper" and cfg.get("session_active"):
+        status = "paper_ready"
+    else:
+        status = "research_only"
+    return {
+        "status": status,
+        "can_research": True,
+        "can_paper_trade": status == "paper_ready",
+        "can_live_trade": False,
+        "blockers": blockers,
+        "cautions": cautions,
+        "priority": "resolve_blockers" if blockers else "review_high_priority_opportunities",
+        "note": "Readiness is conservative and descriptive; it never changes mode or places orders.",
+    }
 def _ranked_opportunities(
     signals: list[dict],
     decisions: list[dict] | None = None,
@@ -5211,6 +5253,7 @@ def api_state():
     loop_st = get_paper_loop().status(cfg)
     decisions_preview = _decision_ring.latest(25)
     edge = _edge_sample_stats(40)
+    promotion = _promotion_gate(cfg, ledger)
 
     buzz_sum = buzz_sources.buzz_summary_for_state(
         watchlist, focus_liquid=focus_liquid
@@ -5266,7 +5309,8 @@ def api_state():
         "edge_sample": edge,
         "execution_realism": _execution_realism(ledger),
         "risk_cockpit": _risk_cockpit(cfg, ledger),
-        "promotion_gate": _promotion_gate(cfg, ledger),
+        "promotion_gate": promotion,
+        "readiness": readiness_summary(cfg, ledger, loop=loop_st, promotion=promotion),
         "buzz": buzz_sum,
         "heat": buzz_sum.get("heat") or [],
         "heat_enabled": bool(cfg.get("heat_enabled", True)),
