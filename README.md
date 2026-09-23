@@ -79,6 +79,9 @@ Suggested size cuts for late/chasing appear in reason text / `size_mult_suggeste
 - **Journal** of actions in `./data/journal.json`.
 - **Alert cooldown** deduplicates repeated pending ticker/verdict alerts (`alert_cooldown_sec`, default 300).
 - **Risk cockpit** exposes data health, exposure, slippage/fee friction, and a conservative paper-evidence promotion checklist.
+- **News intelligence** merges Finnhub, Yahoo, and optional Benzinga headlines, removes near-duplicates,
+  normalizes publication times, and ranks explainable event tags (earnings, guidance, corporate actions,
+  regulatory, capital, analyst, executive, and macro). Headlines are display-only and never gate fills.
 
 ## Persist
 

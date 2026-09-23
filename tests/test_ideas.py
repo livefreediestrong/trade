@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import app as desk  # noqa: E402
 import lessons  # noqa: E402
+import news_stream  # noqa: E402
 import paper_loop  # noqa: E402
 import session_track  # noqa: E402
 
@@ -302,3 +303,55 @@ def test_brain_scoreboard_counts_same_decisions():
     lessons.record_outcome(desk.LESSONS_PATH, _ev(9, "helped"))  # no claude → excluded
     s = desk.brain_scoreboard(days=100000)
     assert s["compared_calls"] == 3 and s["main"]["helped"] == 2 and s["claude"]["helped"] == 2
+
+
+def test_news_enrichment_identifies_materiality_and_normalizes_timestamp():
+    published = datetime(2026, 9, 22, 15, 0, tzinfo=timezone.utc).timestamp()
+    row = news_stream.enrich_headline(
+        {
+            "title": "Company raises guidance after quarterly earnings beat",
+            "source": "Yahoo",
+            "ts": published,
+        },
+        now=published + 60,
+    )
+    assert row["source"] == "yahoo"
+    assert row["published_ts"] == published
+    assert row["age_seconds"] == 60.0
+    assert set(row["event_tags"]) == {"earnings", "guidance"}
+    assert row["materiality"] == "high"
+    assert row["intelligence_score"] > 2
+
+
+def test_news_for_symbol_deduplicates_and_ranks_headlines(monkeypatch):
+    monkeypatch.setattr(
+        news_stream,
+        "_benzinga_news",
+        lambda symbol, limit=5: [
+            {"title": "AAPL announces major acquisition", "ts": 2_000_000_000}
+        ],
+    )
+    import data_sources
+
+    monkeypatch.setattr(
+        data_sources,
+        "finnhub_news",
+        lambda symbol, days=5, limit=6: [
+            {"title": "AAPL announces major acquisition", "ts": 2_000_000_000},
+            {"title": "AAPL launches new product", "ts": 2_000_000_100},
+        ],
+    )
+    monkeypatch.setattr(
+        data_sources,
+        "yahoo_news",
+        lambda symbol, count=6: [
+            {"title": "AAPL launches new product", "ts": 2_000_000_100},
+        ],
+    )
+    rows = news_stream.news_for_symbol("AAPL", limit=6)
+    assert len(rows) == 2
+    assert rows[0]["materiality"] == "high"
+    assert {row["title"] for row in rows} == {
+        "AAPL announces major acquisition",
+        "AAPL launches new product",
+    }

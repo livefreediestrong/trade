@@ -6,8 +6,10 @@ Exposes watchlist_news for Advanced panel / state. Graceful degrade without keys
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,18 @@ import requests
 _lock = threading.RLock()
 _cache: dict[str, Any] = {"at": 0.0, "key": "", "payload": None}
 _CACHE_TTL = 120.0
+_SOURCE_WEIGHT = {"benzinga": 1.0, "finnhub": 0.9, "yahoo": 0.65}
+_EVENT_PATTERNS = {
+    "earnings": r"\b(earnings|quarterly results|eps|revenue|profit|loss)\b",
+    "guidance": r"\b(guidance|outlook|forecast|raises|cuts|lowers)\b",
+    "corporate_action": r"\b(acquire|acquisition|merger|deal|partnership|spin[- ]off)\b",
+    "regulatory": r"\b(fda|sec|doj|ftc|approval|lawsuit|investigation|recall)\b",
+    "capital": r"\b(offering|dilution|buyback|dividend|debt|bankruptcy)\b",
+    "analyst": r"\b(upgrade|downgrade|price target|analyst|rating)\b",
+    "executive": r"\b(ceo|cfo|resign|appointed|departure|executive)\b",
+    "macro": r"\b(fed|fomc|cpi|inflation|jobs report|tariff|rates?)\b",
+}
+_HIGH_IMPACT_EVENTS = {"earnings", "guidance", "corporate_action", "regulatory", "capital"}
 
 
 def _load_env() -> None:
@@ -101,6 +115,62 @@ def _benzinga_news(symbol: str, limit: int = 5) -> list[dict[str, Any]]:
         return []
 
 
+def _ts_seconds(value: Any) -> float | None:
+    """Convert provider timestamps to epoch seconds without trusting bad input."""
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+        if number > 1e12:
+            number /= 1000.0
+        return number if number > 0 else None
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except ValueError:
+        return None
+
+
+def _headline_key(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+
+
+def enrich_headline(item: dict[str, Any], *, now: float | None = None) -> dict[str, Any]:
+    """Add explainable research metadata; never produces a trade recommendation."""
+    row = dict(item)
+    title = str(row.get("title") or row.get("headline") or "").strip()
+    ts = _ts_seconds(row.get("ts") or row.get("published_at"))
+    now_value = float(now if now is not None else time.time())
+    age = max(0.0, now_value - ts) if ts is not None else None
+    source = str(row.get("source") or "news").lower()
+    lowered = title.lower()
+    tags = [name for name, pattern in _EVENT_PATTERNS.items() if re.search(pattern, lowered)]
+    score = _SOURCE_WEIGHT.get(source, 0.5)
+    if ts is not None:
+        score += max(0.0, 1.0 - min(age, 172800.0) / 172800.0) * 1.5
+    score += min(len(set(tags) & _HIGH_IMPACT_EVENTS), 2) * 0.8
+    row.update(
+        {
+            "title": title,
+            "source": source,
+            "published_ts": ts,
+            "age_seconds": round(age, 1) if age is not None else None,
+            "event_tags": tags,
+            "materiality": "high" if set(tags) & _HIGH_IMPACT_EVENTS else ("medium" if tags else "low"),
+            "intelligence_score": round(score, 4),
+            "headline_key": _headline_key(title),
+        }
+    )
+    return row
+
+
 def news_for_symbol(symbol: str, *, limit: int = 6) -> list[dict[str, Any]]:
     sym = (symbol or "").strip().upper()
     if not sym:
@@ -110,16 +180,14 @@ def news_for_symbol(symbol: str, *, limit: int = 6) -> list[dict[str, Any]]:
 
     def _add(rows: list[dict], src: str) -> None:
         for n in rows:
-            title = (n.get("title") or "").strip()
+            title = (n.get("title") or n.get("headline") or "").strip()
             if not title:
                 continue
-            key = title.lower()[:120]
+            row = enrich_headline(dict(n, source=n.get("source") or src, ticker=sym))
+            key = row["headline_key"]
             if key in seen:
                 continue
             seen.add(key)
-            row = dict(n)
-            row["source"] = row.get("source") or src
-            row["ticker"] = sym
             items.append(row)
 
     try:
@@ -130,7 +198,7 @@ def news_for_symbol(symbol: str, *, limit: int = 6) -> list[dict[str, Any]]:
     except Exception:
         pass
     _add(_benzinga_news(sym, limit=min(4, limit)), "benzinga")
-    # Prefer fresher / finnhub first already; trim
+    items.sort(key=lambda row: (float(row.get("intelligence_score") or 0), float(row.get("published_ts") or 0)), reverse=True)
     return items[:limit]
 
 
@@ -166,12 +234,37 @@ def watchlist_news(
         flat.extend(rows)
         if len(flat) >= max_total:
             break
+    flat.sort(
+        key=lambda row: (
+            float(row.get("intelligence_score") or 0),
+            float(row.get("published_ts") or 0),
+        ),
+        reverse=True,
+    )
     flat = flat[:max_total]
+    source_counts: dict[str, int] = {}
+    materiality_counts: dict[str, int] = {}
+    for row in flat:
+        source = str(row.get("source") or "unknown")
+        materiality = str(row.get("materiality") or "low")
+        source_counts[source] = source_counts.get(source, 0) + 1
+        materiality_counts[materiality] = materiality_counts.get(materiality, 0) + 1
     payload = {
         "ok": True,
         "items": flat,
         "by_ticker": by_ticker,
         "count": len(flat),
+        "source_counts": source_counts,
+        "materiality_counts": materiality_counts,
+        "intelligence": {
+            "ranked": True,
+            "deduplicated": True,
+            "display_only": True,
+            "latest_published_ts": max(
+                (float(row["published_ts"]) for row in flat if row.get("published_ts") is not None),
+                default=None,
+            ),
+        },
         "symbols": syms,
         "providers": public_status(),
         "as_of": time.time(),
