@@ -233,6 +233,8 @@ def test_walk_forward_reports_out_of_sample_folds():
     assert res["fold_count"] >= 5
     assert len(res["folds"]) == res["fold_count"]
     assert all("rule" in fold and "baseline" in fold for fold in res["folds"])
+    assert "buy_and_hold" in res["folds"][0]["benchmarks"]
+    assert res["benchmark_totals"]["no_trade_usd"] == 0.0
 
 
 def test_horizon_outcome_reports_costs_and_optional_path_metrics():

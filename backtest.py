@@ -96,8 +96,10 @@ def simulate_ticker(df60: pd.DataFrame, params: dict[str, Any]) -> list[dict[str
                     exit_px, why = target, "target"
                     break
             ret = (exit_px / entry_px - 1) - cost_frac
+            buy_hold_ret = (float(bars.iloc[-1]["Close"]) / entry_px - 1) - cost_frac
             out.append({
                 "day": d, "rule": signal, "ret": ret, "exit": why,
+                "buy_hold_ret": buy_hold_ret,
                 "pnl_usd": round(ret * p["position_usd"], 4),
             })
         closes.append(float(bars.iloc[-1]["Close"]))
@@ -127,6 +129,16 @@ def _stats(trades: list[dict[str, Any]], position_usd: float) -> dict[str, Any]:
     }
 
 
+def _buy_hold_stats(trades: list[dict[str, Any]], position_usd: float) -> dict[str, Any]:
+    """Cost-aware benchmark: enter every available day and hold to the close."""
+    benchmark = [
+        {**trade, "ret": trade["buy_hold_ret"]}
+        for trade in trades
+        if isinstance(trade.get("buy_hold_ret"), (int, float))
+    ]
+    return _stats(benchmark, position_usd)
+
+
 def evaluate(all_trades: list[dict[str, Any]], params: dict[str, Any]) -> dict[str, Any]:
     p = {**DEFAULT_PARAMS, **(params or {})}
     days = sorted({t["day"] for t in all_trades})
@@ -141,6 +153,10 @@ def evaluate(all_trades: list[dict[str, Any]], params: dict[str, Any]) -> dict[s
         "period": {"start": days[0], "split": cut, "end": days[-1]},
         "learn": {"rule": _stats([t for t in learn if t["rule"]], pu), "baseline": _stats(learn, pu)},
         "check": {"rule": _stats([t for t in check if t["rule"]], pu), "baseline": _stats(check, pu)},
+        "benchmarks": {
+            "no_trade": {"trades": 0, "total_usd": 0.0},
+            "buy_and_hold": _buy_hold_stats(all_trades, pu),
+        },
         "params": p,
         "not_included": ["sector money-flow check", "the AI brain's own judgment", "news / earnings"],
     }
@@ -169,11 +185,16 @@ def evaluate_walk_forward(all_trades: list[dict[str, Any]], params: dict[str, An
         test = [t for t in all_trades if t["day"] in test_set]
         rule = _stats([t for t in test if t["rule"]], p["position_usd"])
         baseline = _stats(test, p["position_usd"])
+        buy_hold = _buy_hold_stats(test, p["position_usd"])
         folds.append({
             "train": {"start": days[start - train_days], "end": days[start - 1], "trades": len(train)},
             "test": {"start": days[start], "end": days[min(start + test_days - 1, len(days) - 1)]},
             "rule": rule,
             "baseline": baseline,
+            "benchmarks": {
+                "no_trade": {"trades": 0, "total_usd": 0.0},
+                "buy_and_hold": buy_hold,
+            },
             "rule_edge_usd": round((rule.get("avg_per_trade_usd", 0) or 0) - (baseline.get("avg_per_trade_usd", 0) or 0), 3)
             if rule.get("trades") and baseline.get("trades") else None,
         })
@@ -189,6 +210,12 @@ def evaluate_walk_forward(all_trades: list[dict[str, Any]], params: dict[str, An
         "rule_beats_baseline_folds": len(edge_wins),
         "positive_fold_rate": round(len(positive) / len(tested), 3) if tested else None,
         "baseline_win_rate": round(len(edge_wins) / len(tested), 3) if tested else None,
+        "benchmark_totals": {
+            "no_trade_usd": 0.0,
+            "buy_and_hold_usd": round(
+                sum((f["benchmarks"]["buy_and_hold"].get("total_usd") or 0.0) for f in folds), 2
+            ),
+        },
         "minimum_folds_for_confidence": 5,
         "conclusion": (
             "insufficient_folds" if len(tested) < 5 else
