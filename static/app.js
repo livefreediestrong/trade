@@ -1436,7 +1436,7 @@
     return `<article class="signal-card ${escapeHtml(s.side)}">
       <div class="sig-head">
         <span class="sig-ticker">${escapeHtml(s.ticker)}</span>
-        <span class="sig-side ${s.side}">${escapeHtml(s.side)}</span>
+        <span class="sig-side ${escapeHtml(s.side)}">${escapeHtml(s.side)}</span>
       </div>
       ${signalBadges(s)}
       <div class="conf-bar"><div class="conf-fill" style="width:${confPct}%"></div></div>
