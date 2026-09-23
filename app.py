@@ -1787,7 +1787,14 @@ def _analysis_to_signal(
     notional = equity * (size_pct / 100.0)
     shares = max(1, int(notional / max(price, 0.01)))
 
-    stop_dist = round(price * 0.008 * preset["stop_r"], 2)
+    intraday = analysis.get("intraday") or {}
+    atr_usd = _finite_float(intraday.get("atr_usd"))
+    atr_multiple = _finite_float(cfg.get("atr_stop_multiple"), 1.0) or 1.0
+    stop_dist = round(
+        (atr_usd * atr_multiple if atr_usd and atr_usd > 0 else price * 0.008)
+        * preset["stop_r"],
+        2,
+    )
     target_dist = round(stop_dist * preset["target_r"], 2)
     stop = round(price - stop_dist, 2)
     target = round(price + target_dist, 2)
@@ -1828,6 +1835,10 @@ def _analysis_to_signal(
         "target": target,
         "stop_r": preset["stop_r"],
         "target_r": preset["target_r"],
+        "atr_usd": atr_usd,
+        "spread_atr": _finite_float(intraday.get("spread_atr")),
+        "vwap_dist_atr": _finite_float(intraday.get("vwap_dist_atr")),
+        "vwap_slope_pct": _finite_float(intraday.get("vwap_slope_pct")),
         "preset": preset_name,
         "status": "pending",
         "expires_at": exp.isoformat(),

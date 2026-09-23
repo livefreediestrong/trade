@@ -39,6 +39,27 @@ def test_atr_risk_sizing_caps_requested_shares():
     assert sig["size_capped_for_atr_risk"] is True
 
 
+def test_signal_uses_atr_stop_distance(monkeypatch):
+    monkeypatch.setattr(desk, "load_ledger", lambda: {"equity": 10_000})
+    cfg = desk.load_config()
+    cfg.update(atr_stop_multiple=1.5)
+    from app import _analysis_to_signal
+    sig = _analysis_to_signal({
+        "ticker": "AAPL",
+        "price": 100.0,
+        "verdict": "PASS",
+        "verdict_text": "clean setup",
+        "entry_quality": {"label": "early"},
+        "intraday": {"atr_usd": 2.0, "spread_atr": 0.02},
+        "volume": {"rel_vol": 2.0, "session_is_today": True},
+        "checks": {},
+        "sources": [],
+    }, cfg, desk.get_preset("mid"), force=True)
+    assert sig["atr_usd"] == 2.0
+    assert sig["stop"] == 97.0
+    assert sig["spread_atr"] == 0.02
+
+
 def test_promotion_requires_net_expectancy_and_profit_factor():
     now = datetime.now().astimezone().isoformat()
     cfg = {
