@@ -182,7 +182,7 @@ Open `http://127.0.0.1:5056`
 - Exit levels must be on the right side of entry; partial sells keep your levels.
 - Screener: no PASS from yesterday's volume; first-hour volume is time-adjusted; NaN last bars dropped; stale-trade halt proxy; yesterday's close is never labeled live.
 - Finnhub quota: earnings cached per ticker/day, option chains cached; radar fixed (right Finnhub fields, no rescan storm, IEX volume scaled + labeled, leveraged ETFs excluded).
-- Reddit public scraping is off unless `REDDIT_CLIENT_ID/SECRET` are set (or `REDDIT_PUBLIC_JSON=1`).
+- Social intelligence is off by default. Set `social_enabled: true` to poll public WSB JSON; it is read-only, rate-limited, and research-only.
 - Gemini cost recorded for every billed call from real token counts; loop totals reset at NY midnight. `tzdata` added to requirements.
 
 **Screen**
@@ -206,5 +206,6 @@ Light mode: the ☀ / ☾ button in the header (defaults to your computer's sett
 - **Midday check:** once a day after 12:00 ET, positions down 7%+ are closed and positions up 3%+ get their stop raised to the price paid (`MIDDAY_CUT_PCT`, `MIDDAY_BREAKEVEN_PCT`; off with `midday_check_enabled: false`).
 - **Report card:** header button — last 7 days, grade A–F, profit after costs, % of AI calls right, worst setups. `GET /api/report/weekly`.
 - **Scanner signals:** 5-minute relative volume (vs. the same time on prior days), VWAP and its slope, distance from VWAP / day's high in ATRs, bid-ask spread vs. ATR (market hours only). They can downgrade PASS → WATCH and are shown to the AI.
+- **Social pulse:** when enabled, `/api/state` and `/api/research/social` expose bounded WSB thread attention, ticker mentions, unique-author count, sentiment split, links, and quality warnings. Social activity never creates a PASS, changes sizing, or bypasses execution gates.
 - **Claude (`claude_brain.py`):** choose "Claude" as the brain, or tick "Claude head-to-head" to have Claude answer silently next to your main AI; the report card shows who was right more often on the same decisions. Needs `ANTHROPIC_API_KEY` in `.env`. Model `CLAUDE_MODEL` (default `claude-opus-5`, ~$5/$25 per million tokens), `CLAUDE_EFFORT` (default `low`). Uses server-side refusal fallbacks (`fallbacks: "default"`).
 - **Past-data test (`backtest.py`):** "Test the rules on past data" in the report card replays the screener's PASS rule on ~2 years of hourly prices with a learning/check split and a no-filter baseline. `GET/POST /api/backtest`.

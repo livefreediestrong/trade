@@ -44,6 +44,7 @@ import market_radar
 import api_providers
 import news_stream
 import news_intelligence
+import social_intelligence
 import market_capture
 import desk_alerts
 import macro_calendar
@@ -250,6 +251,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "radar_refresh_sec": 300,
     # Optional broad-market filter. Disabled by default until live data coverage is proven.
     "market_regime_gate_enabled": False,
+    "social_enabled": False,
     # API pack — macro calendar gates (Fed/CPI/earnings); degrade when keys missing
     "macro_gates_enabled": True,
     "macro_size_mult": 0.5,
@@ -4976,6 +4978,12 @@ def _refresh_state_aux(cfg: dict[str, Any], watchlist: list[str], focus: str | N
     except Exception as exc:  # noqa: BLE001
         watchlist_news = {"ok": False, "items": [], "error": str(exc)[:120]}
     try:
+        social = social_intelligence.snapshot(watchlist) if cfg.get("social_enabled") else {
+            "ok": False, "enabled": False, "pulse": [], "items": [], "display_only": True,
+        }
+    except Exception as exc:  # noqa: BLE001
+        social = {"ok": False, "enabled": bool(cfg.get("social_enabled")), "pulse": [], "items": [], "error": str(exc)[:120], "display_only": True}
+    try:
         edgar = edgar_client.recent_filings(focus, limit=6) if focus else {"ok": False, "filings": [], "status": "no_focus"}
     except Exception as exc:  # noqa: BLE001
         edgar = {"ok": False, "filings": [], "error": str(exc)[:120]}
@@ -5009,6 +5017,7 @@ def _refresh_state_aux(cfg: dict[str, Any], watchlist: list[str], focus: str | N
             "alerts": intelligence.get("alerts") or [],
             "provider_reliability": news_intelligence.provider_reliability(),
             "display_only": True,
+            "social": social,
         }
     except Exception as exc:  # noqa: BLE001
         research_context = {"ticker": focus, "timeline": [], "error": str(exc)[:120], "display_only": True}
@@ -5021,6 +5030,7 @@ def _refresh_state_aux(cfg: dict[str, Any], watchlist: list[str], focus: str | N
         "macro": macro,
         "alerts": alerts,
         "research_context": research_context,
+        "social": social,
     }
     with _STATE_AUX_LOCK:
         _STATE_AUX.update(data=data, refreshing=False, at=__import__("time").time())
@@ -5041,11 +5051,12 @@ def _refresh_state_aux_safe(cfg: dict[str, Any], watchlist: list[str], focus: st
                 "macro": {"error": str(exc)[:120]},
                 "alerts": {"items": [], "error": str(exc)[:120]},
                 "research_context": {"timeline": [], "error": str(exc)[:120], "display_only": True},
+                "social": {"ok": False, "pulse": [], "items": [], "display_only": True},
             }
 
 
 def _state_aux_snapshot(cfg: dict[str, Any], watchlist: list[str], focus: str | None) -> dict[str, Any]:
-    key = (tuple(watchlist), focus, bool(cfg.get("macro_gates_enabled", True)))
+    key = (tuple(watchlist), focus, bool(cfg.get("macro_gates_enabled", True)), bool(cfg.get("social_enabled")))
     now = __import__("time").time()
     with _STATE_AUX_LOCK:
         fresh = _STATE_AUX.get("key") == key and now - float(_STATE_AUX.get("at") or 0) < _STATE_AUX_TTL
@@ -5392,6 +5403,9 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
         if "radar_enabled" in body:
             cfg["radar_enabled"] = bool(body["radar_enabled"])
             append_journal("radar_enabled_set", {"radar_enabled": cfg["radar_enabled"]})
+        if "social_enabled" in body:
+            cfg["social_enabled"] = bool(body["social_enabled"])
+            append_journal("social_enabled_set", {"social_enabled": cfg["social_enabled"]})
         # API pack macro gates
         for _mk, _cast in (
             ("macro_gates_enabled", bool),
@@ -7135,6 +7149,28 @@ def api_research_macro():
         )
     except Exception as exc:  # noqa: BLE001
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/research/social")
+def api_research_social():
+    """Read-only WSB attention snapshot; never an execution recommendation."""
+    cfg = load_config()
+    if not cfg.get("social_enabled"):
+        return jsonify({
+            "ok": False,
+            "enabled": False,
+            "error": "social_disabled",
+            "display_only": True,
+            "attention_only": True,
+        })
+    watchlist = list(cfg.get("watchlist") or DEFAULT_WATCHLIST)
+    try:
+        return jsonify(social_intelligence.snapshot(
+            watchlist,
+            force=str(request.args.get("force") or "").lower() in {"1", "true", "yes"},
+        ))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(exc)[:200], "display_only": True}), 500
 
 @app.route("/api/health")
 def api_health():
