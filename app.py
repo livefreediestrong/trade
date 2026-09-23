@@ -651,6 +651,36 @@ def save_signals(signals: list[dict[str, Any]]) -> None:
     _save_json(SIGNALS_PATH, kept)
 
 
+def _signal_ui_projection(signal: dict[str, Any]) -> dict[str, Any]:
+    """Keep state polls small without changing persisted signal fidelity."""
+    fields = (
+        "id", "ticker", "side", "status", "ts", "created_at", "expires_at",
+        "confidence", "signal_price", "suggested_shares", "reason", "verdict",
+        "lateness_label", "entry_quality", "earnings", "rel_vol", "research_flags",
+        "research_flag", "llm_side", "llm_error", "llm_thesis", "citations",
+        "screener_citations", "gap_pct", "reject_reason", "size_mult_suggested",
+    )
+    out = {key: signal[key] for key in fields if key in signal}
+    for key, limit in (("reason", 320), ("llm_thesis", 600), ("reject_reason", 240)):
+        if key in out and out[key] is not None:
+            out[key] = str(out[key])[:limit]
+    for key in ("citations", "screener_citations"):
+        if isinstance(out.get(key), list):
+            out[key] = [
+                {k: item[k] for k in ("label", "key", "value") if k in item}
+                for item in out[key][:8]
+                if isinstance(item, dict)
+            ]
+    fill = signal.get("fill")
+    if isinstance(fill, dict):
+        out["fill"] = {
+            key: fill[key]
+            for key in ("shares", "price", "source", "ts", "confirmed", "broker")
+            if key in fill
+        }
+    return out
+
+
 def load_ledger() -> dict[str, Any]:
     default = {
         "equity": 100_000.0,
@@ -4900,17 +4930,17 @@ def api_state():
     if not bool(cfg.get("heat_enabled", True)):
         buzz_sum = dict(buzz_sum)
         buzz_sum["heat"] = []
-    # Enrich pending signal copies with buzz_mentions for UI badges (outside lock)
+    # Enrich signal copies with UI-safe fields and buzz counts (outside lock)
     buzz_cache = buzz_sources.get_cached_buzz()
     for st_key, lst in by_status.items():
         enriched = []
         for s in lst:
-            s2 = dict(s)
+            s2 = _signal_ui_projection(s)
             bm = buzz_sources.buzz_mentions_for_ticker(str(s.get("ticker") or ""), buzz_cache)
             if bm:
                 s2["buzz_mentions"] = bm
             enriched.append(s2)
-        by_status[st_key] = enriched
+        by_status[st_key] = enriched[:120]
 
     daily = daily_target_progress(cfg, ledger)
     llm_st = _llm_public_status(cfg)
@@ -4927,7 +4957,6 @@ def api_state():
         "preset": preset,
         "presets": RISK_PRESETS,
         "signals": by_status,
-        "all_signals": signals[:80],
         "ledger": ledger,
         "daily": daily,
         "journal": journal,
