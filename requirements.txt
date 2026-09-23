@@ -7,3 +7,4 @@ requests>=2.31.0
 python-dotenv>=1.0.0
 tzdata>=2024.1  # Windows has no system tz database (zoneinfo needs it)
 anthropic>=1.8  # Claude brain / head-to-head (optional; needs ANTHROPIC_API_KEY)
+ib-insync>=0.9.86  # Optional Interactive Brokers Gateway adapter

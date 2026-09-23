@@ -14,6 +14,7 @@ Companion-style app for a Windows PC beside `holdings-options-monitor`.
 - Raw `/api/broker/*`, `/api/orders`, `/api/alpaca/*`, `/api/ibkr/*`, `/api/tos/*` stay **403** (use desk approve / auto_live).
 - **auto_live / approve (when mode=auto_live):** `can_take_trade` + size/loss caps **first**, then broker submit. Successful broker submit is **broker-only** (no dual local `paper_fill`). Broker fail → **no trade** (never booked as paper).
 - **live_manual:** real-money-capable approve-first mode. Scanning can create ideas, but only an explicit Approve action submits the broker order; it never auto-submits.
+- **Interactive Brokers:** optional IB Gateway adapter via `BROKER_PROVIDER=ibkr`; default port `4002` is paper. Live requires `IBKR_LIVE=true`, Gateway port `4001`, and the existing explicit `REAL` confirmation.
 - UI masthead: **PAPER ONLY** unless `ALPACA_PAPER=false` and keys set → **LIVE ENDPOINT**.
 - Enabling `auto_live` requires a matching server-side confirmation; real-money endpoints specifically require typing `REAL` in the UI prompt.
 - The desk is unauthenticated on loopback only. If exposed beyond loopback with `TOMAHAWK_HOST` / `TOMAHAWK_ALLOWED_HOSTS`, set a long random `TOMAHAWK_AUTH_TOKEN` and terminate HTTPS at the deployment boundary; remote requests must send `X-Tomahawk-Token` or `Authorization: Bearer`.

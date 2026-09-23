@@ -758,7 +758,7 @@ def get_preset(name: str | None = None) -> dict[str, Any]:
 def _broker_public_status() -> dict[str, Any]:
     """Safe broker chip for health/state — never includes secrets."""
     try:
-        import broker_alpaca as alpaca
+        import broker_router as alpaca
     except ImportError:
         return {
             "broker": "alpaca",
@@ -791,7 +791,7 @@ def live_broker_place_order(order: dict[str, Any]) -> dict[str, Any]:
     Caller MUST run can_take_trade / size caps BEFORE calling this.
     """
     try:
-        import broker_alpaca as alpaca
+        import broker_router as alpaca
     except ImportError:
         append_journal(
             "broker_attempt",
@@ -842,7 +842,7 @@ def live_broker_place_order(order: dict[str, Any]) -> dict[str, Any]:
 
 def _broker_is_configured() -> bool:
     try:
-        import broker_alpaca as alpaca
+        import broker_router as alpaca
         return bool(alpaca.is_configured())
     except Exception:
         return False
@@ -972,7 +972,7 @@ def _broker_fill_record(
 def _broker_position_qty(ticker: str) -> tuple[float, str | None]:
     """Signed share count held at the broker for `ticker` (short < 0), or an error."""
     try:
-        import broker_alpaca as alpaca
+        import broker_router as alpaca
 
         res = alpaca.get_positions()
     except Exception as exc:  # noqa: BLE001
@@ -1011,7 +1011,7 @@ def _broker_book_cached() -> dict[str, Any] | None:
     if _BROKER_BOOK_CACHE["val"] is not None and now - _BROKER_BOOK_CACHE["at"] < _BROKER_BOOK_TTL:
         return _BROKER_BOOK_CACHE["val"]
     try:
-        import broker_alpaca as alpaca
+        import broker_router as alpaca
 
         acct = alpaca.get_account()
         pos = alpaca.get_positions()
@@ -1196,7 +1196,7 @@ def _record_broker_trade() -> None:
 def _reconcile_pending_broker_orders() -> None:
     """Reconcile broker orders that were still indeterminate after cancellation."""
     try:
-        import broker_alpaca as alpaca
+        import broker_router as alpaca
     except ImportError:
         return
     with _lock:
@@ -1279,7 +1279,7 @@ def _reconcile_pending_broker_orders() -> None:
 def _broker_day_pnl() -> tuple[float | None, float | None, str | None]:
     """(day_pnl, equity, error) from Alpaca account (equity - last_equity)."""
     try:
-        import broker_alpaca as alpaca
+        import broker_router as alpaca
 
         acct = alpaca.get_account()
     except Exception as exc:  # noqa: BLE001
@@ -1419,7 +1419,7 @@ def execute_gated_broker_or_paper(
         confirm: dict[str, Any] = {}
         if submitted and live_note.get("order_id"):
             try:
-                import broker_alpaca as alpaca
+                import broker_router as alpaca
 
                 confirm = alpaca.wait_for_fill(str(live_note["order_id"]), timeout=BROKER_FILL_WAIT_SEC)
                 if confirm.get("state") in ("pending", "partially_filled"):
@@ -1542,7 +1542,7 @@ def _execute_local_paper_no_broker(sig: dict[str, Any], cfg: dict[str, Any], *, 
 def broker_flatten_if_configured() -> dict[str, Any]:
     """Cancel/close Alpaca positions when configured; honest refuse when not."""
     try:
-        import broker_alpaca as alpaca
+        import broker_router as alpaca
     except ImportError:
         return {
             "ok": False,
