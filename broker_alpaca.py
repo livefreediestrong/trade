@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import requests
+from broker_capabilities import readiness
 
 PAPER_BASE = "https://paper-api.alpaca.markets"
 LIVE_BASE = "https://api.alpaca.markets"
@@ -87,7 +88,7 @@ def public_status() -> dict[str, Any]:
     """Safe status for /api/health and /api/state (never includes secrets)."""
     configured = is_configured()
     pm = paper_mode()
-    return {
+    status = {
         "broker": "alpaca",
         "configured": configured,
         "paper_mode": pm,
@@ -122,6 +123,15 @@ def public_status() -> dict[str, Any]:
             else "LIVE broker endpoint — real money if keys are live"
         ),
     }
+    status.update(
+        readiness(
+            broker="alpaca",
+            configured=configured,
+            paper_mode=pm,
+            connected=None,
+        )
+    )
+    return status
 
 
 def _headers() -> dict[str, str]:

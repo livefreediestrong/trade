@@ -785,7 +785,19 @@ def _broker_public_status() -> dict[str, Any]:
             "connected_label": "Broker module missing",
         }
     try:
-        return alpaca.public_status()
+        status = dict(alpaca.public_status())
+        if "capability_state" not in status:
+            from broker_capabilities import readiness
+
+            status.update(
+                readiness(
+                    broker=str(status.get("broker") or "broker"),
+                    configured=bool(status.get("configured")),
+                    paper_mode=bool(status.get("paper_mode", True)),
+                    connected=None,
+                )
+            )
+        return status
     except Exception as exc:  # noqa: BLE001
         return {
             "broker": "alpaca",
@@ -796,6 +808,64 @@ def _broker_public_status() -> dict[str, Any]:
             "connected_label": "Broker status error",
             "error": str(exc)[:200],
         }
+
+
+def _broker_readiness(*, fresh: bool = False) -> dict[str, Any]:
+    """Return a safe readiness contract; fresh checks are used before mode changes."""
+    status = _broker_public_status()
+    # Some integrations/tests provide the legacy minimal status shape. Treat it
+    # as descriptive only; real adapters always name their broker and capabilities.
+    if not fresh or not status.get("configured") or not status.get("broker"):
+        return status
+    try:
+        import broker_router as broker
+
+        if hasattr(broker, "connection_diagnostics"):
+            checked = broker.connection_diagnostics()
+            diagnostics = list(checked.get("diagnostics") or [])
+            status.update(
+                {
+                    "connected": bool(checked.get("connected")),
+                    "managed_accounts": list(checked.get("managed_accounts") or []),
+                    "selected_account": checked.get("selected_account") or status.get("selected_account"),
+                    "diagnostics": diagnostics,
+                }
+            )
+            from broker_capabilities import readiness
+
+            status.update(
+                readiness(
+                    broker=str(status.get("broker") or "broker"),
+                    configured=True,
+                    paper_mode=bool(status.get("paper_mode", True)),
+                    profile_valid=bool(status.get("profile_valid", True)),
+                    connected=bool(checked.get("connected")),
+                    selected_account=status.get("selected_account"),
+                    diagnostics=diagnostics,
+                )
+            )
+        else:
+            account = broker.get_account()
+            status["connected"] = bool(account.get("ok"))
+            if account.get("account_id"):
+                status["selected_account"] = account["account_id"]
+            if not account.get("ok"):
+                status["diagnostics"] = [{"code": "broker_unreachable", "message": "Broker account check failed; mode transition refused."}]
+            from broker_capabilities import readiness
+
+            status.update(
+                readiness(
+                    broker=str(status.get("broker") or "broker"),
+                    configured=True,
+                    paper_mode=bool(status.get("paper_mode", True)),
+                    connected=bool(account.get("ok")),
+                    selected_account=status.get("selected_account"),
+                    diagnostics=list(status.get("diagnostics") or []),
+                )
+            )
+    except Exception as exc:  # noqa: BLE001
+        status.update({"connected": False, "diagnostics": [{"code": "readiness_error", "message": str(exc)[:200]}]})
+    return status
 
 
 def live_broker_place_order(order: dict[str, Any]) -> dict[str, Any]:
@@ -5046,6 +5116,7 @@ def _build_state_lite() -> dict[str, Any]:
     except Exception:
         pass
     payload["corrupt_files"] = corrupt_files_status()
+    payload["broker_readiness"] = _broker_readiness(fresh=False)
     # Cache-only on lite path (bg_loop /api/radar refresh the cache)
     try:
         payload["radar"] = market_radar.public_status(cfg)
@@ -5420,6 +5491,12 @@ def api_state():
     return jsonify(payload)
 
 
+@app.route("/api/broker/readiness")
+def api_broker_readiness():
+    """Diagnostics-only broker probe; never returns credentials or sends orders."""
+    return jsonify({"ok": True, "broker": _broker_readiness(fresh=True)})
+
+
 @app.route("/api/config", methods=["GET", "POST"])
 def api_config():
     with _lock:
@@ -5450,7 +5527,13 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
             if new_mode not in ("manual", "auto_paper", "auto_live", "live_manual"):
                 return jsonify({"ok": False, "error": "Invalid mode"}), 400
             if new_mode in ("auto_live", "live_manual"):
-                broker = _broker_public_status()
+                broker = _broker_readiness(fresh=True)
+                if broker.get("configured") and "can_submit" in broker and not broker.get("can_submit"):
+                    detail = (broker.get("diagnostics") or [{}])[0].get("message") or "Broker readiness check failed."
+                    return jsonify({"ok": False, "error": f"Broker is not ready: {detail}", "broker": broker}), 409
+                if broker.get("configured") and broker.get("paper_mode") is False and "can_transition_live" in broker and not broker.get("can_transition_live"):
+                    detail = (broker.get("diagnostics") or [{}])[0].get("message") or "Live broker readiness check failed."
+                    return jsonify({"ok": False, "error": f"Live transition refused: {detail}", "broker": broker}), 409
                 confirmation = str(body.get("live_confirm") or "").strip().upper()
                 expected = (
                     "REAL"
@@ -5488,7 +5571,7 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
                 {
                     "mode": new_mode,
                     "research_draft": True,
-                    "broker": _broker_public_status(),
+                    "broker": _broker_readiness(fresh=False),
                 },
             )
             # Keep decision loop alive for Ask me first (manual) + session
