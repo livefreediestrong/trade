@@ -43,6 +43,7 @@ import buzz_sources
 import market_radar
 import api_providers
 import news_stream
+import news_intelligence
 import desk_alerts
 import macro_calendar
 import edgar_client
@@ -6819,6 +6820,70 @@ def api_research_news():
         return jsonify(news_stream.watchlist_news(syms))
     except Exception as exc:  # noqa: BLE001
         return jsonify({"ok": False, "items": [], "error": str(exc)}), 500
+
+
+@app.route("/api/research/intelligence")
+def api_research_intelligence():
+    raw = request.args.get("symbols") or request.args.get("ticker") or ""
+    syms = [s.strip().upper() for s in raw.replace(";", ",").split(",") if s.strip()]
+    if not syms:
+        syms = list((load_config().get("watchlist") or DEFAULT_WATCHLIST)[:12])
+    try:
+        news = news_stream.watchlist_news(syms, force=bool(request.args.get("force")))
+        items = list(news.get("items") or [])
+        filings = []
+        focus = syms[0] if syms else None
+        if focus:
+            filings = (edgar_client.recent_filings(focus, limit=6) or {}).get("filings") or []
+        timeline = news_intelligence.build_timeline(items, filings)
+        analysis = news_intelligence.analyze_items(items)
+        return jsonify(
+            {
+                "ok": True,
+                "ticker": focus,
+                "timeline": timeline[:40],
+                "analysis": analysis,
+                "digest": analysis.get("digest") or [],
+                "alerts": analysis.get("alerts") or [],
+                "provider_reliability": news_intelligence.provider_reliability(),
+                "display_only": True,
+            }
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:200], "display_only": True}), 500
+
+
+@app.route("/api/research/reaction")
+def api_research_reaction():
+    symbol = (request.args.get("symbol") or request.args.get("ticker") or "").strip().upper()
+    if not symbol:
+        return jsonify({"ok": False, "error": "symbol_required", "display_only": True}), 400
+    try:
+        news = news_stream.news_for_symbol(symbol, limit=20)
+        import data_sources
+        bars = data_sources.yahoo_chart_daily(symbol, days=180)
+        return jsonify({"ok": True, "study": news_intelligence.reaction_study(symbol, news, bars)})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:200], "display_only": True}), 500
+
+
+@app.route("/api/research/link", methods=["POST"])
+def api_research_link():
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict) or not body.get("signal_id") or not body.get("headline"):
+        return jsonify({"ok": False, "error": "signal_id_and_headline_required"}), 400
+    append_journal(
+        "research_link",
+        {
+            "signal_id": str(body["signal_id"])[:120],
+            "ticker": str(body.get("ticker") or "").upper()[:20],
+            "headline": str(body["headline"])[:300],
+            "link": str(body.get("link") or "")[:500],
+            "source": str(body.get("source") or "")[:80],
+            "display_only": True,
+        },
+    )
+    return jsonify({"ok": True, "linked": True, "display_only": True})
 
 
 @app.route("/api/research/macro")

@@ -5594,9 +5594,14 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
             ? ("News quiet — " + (err || "providers not returning"))
             : "News quiet for now — watchlist headlines are display-only";
       } else {
+        const analysis = wn.analysis || {};
+        const alerts = Array.isArray(analysis.alerts) ? analysis.alerts.length : 0;
+        const stale = analysis.freshness && Number(analysis.freshness.stale_count || 0);
         butler.textContent = simple
           ? "Watchlist headlines — display only, not a tip, do not gate fills"
-          : "Headlines are display-only — they do not gate fills (macro calendar can)";
+          : "Headlines are display-only — " +
+            (alerts ? alerts + " multi-source event" + (alerts === 1 ? "" : "s") + "; " : "") +
+            (stale ? stale + " stale; " : "") + "they do not gate fills (macro calendar can)";
       }
     }
 
@@ -5628,14 +5633,20 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
       const t = escapeHtml(String(n.ticker || "").toUpperCase() || "—");
       const title = escapeHtml(String(n.title || n.headline || "").slice(0, 140));
       const src = escapeHtml(String(n.source || n.publisher || "news"));
-      const age = escapeHtml(newsAge(n.ts));
+      const age = escapeHtml(newsAge(n.ts || n.published_ts));
+      const tags = Array.isArray(n.event_tags) && n.event_tags.length
+        ? " · " + escapeHtml(n.event_tags.slice(0, 2).join(", "))
+        : "";
+      const agreement = Number(n.source_agreement || 0) > 1
+        ? " · " + escapeHtml(String(n.source_agreement)) + " sources"
+        : "";
       const href = safeUrl(n.link || n.url);
       const tag = href ? "a" : "div";
       const hrefAttr = href ? ' href="' + escapeHtml(href) + '" target="_blank" rel="noopener noreferrer"' : "";
       return "<" + tag + ' class="news-row"' + hrefAttr + ">" +
         '<span class="news-sym">' + t + "</span>" +
         '<span class="news-title">' + title + "</span>" +
-        '<span class="news-meta"><span class="news-src">' + src + "</span><span>" + age + "</span></span>" +
+        '<span class="news-meta"><span class="news-src">' + src + tags + agreement + "</span><span>" + age + "</span></span>" +
         "</" + tag + ">";
     }).join("");
     if (prev && prev !== "empty") {

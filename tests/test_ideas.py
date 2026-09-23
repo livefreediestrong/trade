@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app as desk  # noqa: E402
 import lessons  # noqa: E402
 import news_stream  # noqa: E402
+import news_intelligence  # noqa: E402
 import paper_loop  # noqa: E402
 import session_track  # noqa: E402
 
@@ -397,3 +398,32 @@ def test_public_news_sources_are_parsed_and_attributed(monkeypatch):
     assert google[0]["publisher"] == "Google News"
     assert gdelt[0]["source"] == "gdelt"
     assert news_stream.enrich_headline(gdelt[0])["published_ts"] is not None
+
+
+def test_news_intelligence_agreement_contradictions_and_entity_checks():
+    items = [
+        news_stream.enrich_headline(
+            {"title": "AAPL raises guidance", "ticker": "AAPL", "source": "finnhub", "ts": 2_000_000_000}
+        ),
+        news_stream.enrich_headline(
+            {"title": "AAPL raises guidance", "ticker": "AAPL", "source": "yahoo", "ts": 2_000_000_000}
+        ),
+        news_stream.enrich_headline(
+            {"title": "AAPL guidance cut after probe", "ticker": "AAPL", "source": "gdelt", "ts": 2_000_000_000}
+        ),
+    ]
+    analysis = news_intelligence.analyze_items(items, now=2_000_000_100)
+    assert analysis["display_only"] is True
+    assert any(item["source_agreement"] >= 2 for item in analysis["items"])
+    assert any(item["contradiction"] for item in analysis["items"])
+    assert all(item["entity_match"] == "exact" for item in analysis["items"])
+
+
+def test_research_link_endpoint_journals_display_only_link(client):
+    response = client.post(
+        "/api/research/link",
+        base_url=BASE,
+        json={"signal_id": "sig-1", "ticker": "AAPL", "headline": "AAPL raises guidance"},
+    )
+    assert response.status_code == 200
+    assert any(entry["action"] == "research_link" for entry in desk.load_journal())

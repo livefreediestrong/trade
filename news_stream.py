@@ -280,13 +280,28 @@ def news_for_symbol(symbol: str, *, limit: int = 6) -> list[dict[str, Any]]:
     try:
         import data_sources as ds
 
-        _add(ds.finnhub_news(sym, days=5, limit=limit) or [], "finnhub")
-        _add(ds.yahoo_news(sym, count=limit) or [], "yahoo")
+        finnhub_rows = ds.finnhub_news(sym, days=5, limit=limit) or []
+        _add(finnhub_rows, "finnhub")
+        yahoo_rows = ds.yahoo_news(sym, count=limit) or []
+        _add(yahoo_rows, "yahoo")
+        import news_intelligence as ni
+        ni.record_provider("finnhub", ok=True, items=len(finnhub_rows))
+        ni.record_provider("yahoo", ok=True, items=len(yahoo_rows))
     except Exception:
         pass
-    _add(_benzinga_news(sym, limit=min(4, limit)), "benzinga")
-    _add(_google_news(sym, limit=min(4, limit)), "google_news")
-    _add(_gdelt_news(sym, limit=min(4, limit)), "gdelt")
+    for source, fetch in (
+        ("benzinga", lambda: _benzinga_news(sym, limit=min(4, limit))),
+        ("google_news", lambda: _google_news(sym, limit=min(4, limit))),
+        ("gdelt", lambda: _gdelt_news(sym, limit=min(4, limit))),
+    ):
+        try:
+            rows = fetch()
+            _add(rows, source)
+            import news_intelligence as ni
+            ni.record_provider(source, ok=True, items=len(rows))
+        except Exception as exc:
+            import news_intelligence as ni
+            ni.record_provider(source, ok=False, error=str(exc))
     items.sort(key=lambda row: (float(row.get("intelligence_score") or 0), float(row.get("published_ts") or 0)), reverse=True)
     return items[:limit]
 
@@ -338,6 +353,11 @@ def watchlist_news(
         materiality = str(row.get("materiality") or "low")
         source_counts[source] = source_counts.get(source, 0) + 1
         materiality_counts[materiality] = materiality_counts.get(materiality, 0) + 1
+    try:
+        import news_intelligence as ni
+        intelligence = ni.analyze_items(flat)
+    except Exception:
+        intelligence = {"display_only": True}
     payload = {
         "ok": True,
         "items": flat,
@@ -354,6 +374,7 @@ def watchlist_news(
                 default=None,
             ),
         },
+        "analysis": intelligence,
         "symbols": syms,
         "providers": public_status(),
         "as_of": time.time(),
