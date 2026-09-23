@@ -37,6 +37,28 @@ def test_atr_risk_sizing_caps_requested_shares():
     assert shares == 12
     assert notional == 120.0
     assert sig["size_capped_for_atr_risk"] is True
+
+
+def test_promotion_requires_net_expectancy_and_profit_factor():
+    now = datetime.now().astimezone().isoformat()
+    cfg = {
+        "paper_equity": 10_000,
+        "promotion_window_days": 30,
+        "promotion_min_samples": 2,
+        "promotion_min_win_rate": 0.5,
+        "promotion_min_expectancy_usd": 0,
+        "promotion_min_profit_factor": 1.05,
+    }
+    losing = {
+        "fills": [
+            {"ts": now, "position_id": "a", "realized_pnl": 2, "fee_usd": 0.5},
+            {"ts": now, "position_id": "b", "realized_pnl": -1, "fee_usd": 0.5},
+        ]
+    }
+    evidence = desk._promotion_gate(cfg, losing)
+    assert evidence["checks"]["positive_expectancy"] is False
+    assert evidence["checks"]["profit_factor"] is False
+    assert evidence["eligible"] is False
 import llm_trader  # noqa: E402
 import paper_loop  # noqa: E402
 import session_track  # noqa: E402

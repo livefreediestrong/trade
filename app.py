@@ -222,6 +222,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "alert_cooldown_sec": 300,
     "promotion_min_samples": 30,
     "promotion_min_win_rate": 0.52,
+    "promotion_min_expectancy_usd": 0.0,
+    "promotion_min_profit_factor": 1.05,
     "promotion_max_drawdown_pct": 5.0,
     "promotion_window_days": 30,
     # Session goal (USD). Not a guarantee — stops new auto/manual fills when realized day PnL hits it.
@@ -546,6 +548,8 @@ _NUMERIC_CFG_LIMITS: dict[str, tuple[float, float]] = {
     "alert_cooldown_sec": (0.0, 86400.0),
     "promotion_min_samples": (1.0, 100000.0),
     "promotion_min_win_rate": (0.0, 1.0),
+    "promotion_min_expectancy_usd": (-1e6, 1e6),
+    "promotion_min_profit_factor": (0.0, 100.0),
     "promotion_max_drawdown_pct": (0.0, 100.0),
     "promotion_window_days": (1.0, 3650.0),
     "macro_size_mult": (0.1, 1.0),
@@ -4443,12 +4447,11 @@ def _promotion_gate(cfg: dict[str, Any], ledger: dict[str, Any]) -> dict[str, An
                 fills.append(fill)
         grouped: dict[str, float] = {}
         for fill in fills:
-            pnl_value = _finite_float(fill.get("realized_pnl"))
-            if pnl_value is None:
-                continue
             key = str(fill.get("position_id") or fill.get("signal_id") or fill.get("id") or "")
             if key:
-                grouped[key] = grouped.get(key, 0.0) + pnl_value
+                pnl_value = _finite_float(fill.get("realized_pnl"), 0.0) or 0.0
+                fee_value = _finite_float(fill.get("fee_usd"), 0.0) or 0.0
+                grouped[key] = grouped.get(key, 0.0) + pnl_value - fee_value
         pnl = list(grouped.values())
         closed = [{"realized_pnl": value} for value in pnl]
         wins = [f for f in closed if (_finite_float(f.get("realized_pnl"), 0) or 0) > 0]
@@ -4460,9 +4463,19 @@ def _promotion_gate(cfg: dict[str, Any], ledger: dict[str, Any]) -> dict[str, An
         equity = max(_finite_float(cfg.get("paper_equity"), 1.0) or 1.0, 1.0)
         n = len(closed)
         win_rate = (len(wins) / n) if n else None
+        gross_wins = sum(value for value in pnl if value > 0)
+        gross_losses = -sum(value for value in pnl if value < 0)
+        expectancy = (sum(pnl) / n) if n else None
+        profit_factor = (gross_wins / gross_losses) if gross_losses > 0 else None
+        pf_threshold = float(cfg.get("promotion_min_profit_factor") or 1.05)
         checks = {
             "minimum_samples": n >= int(cfg.get("promotion_min_samples") or 30),
             "minimum_win_rate": win_rate is not None and win_rate >= float(cfg.get("promotion_min_win_rate") or 0.52),
+            "positive_expectancy": expectancy is not None and expectancy > float(cfg.get("promotion_min_expectancy_usd") or 0.0),
+            "profit_factor": (
+                (profit_factor is not None and profit_factor >= pf_threshold)
+                or (gross_wins > 0 and gross_losses == 0)
+            ),
             "maximum_drawdown": (drawdown / equity * 100) <= float(cfg.get("promotion_max_drawdown_pct") or 5.0),
             "data_healthy": not bool(_CORRUPT_PATHS),
         }
@@ -4471,6 +4484,8 @@ def _promotion_gate(cfg: dict[str, Any], ledger: dict[str, Any]) -> dict[str, An
             "checks": checks,
             "samples": n,
             "win_rate": round(win_rate, 4) if win_rate is not None else None,
+            "expectancy_usd": round(expectancy, 4) if expectancy is not None else None,
+            "profit_factor": round(profit_factor, 4) if profit_factor is not None else ("infinite" if gross_wins > 0 else None),
             "drawdown_usd": round(drawdown, 2),
             "drawdown_pct": round(drawdown / equity * 100, 3),
             "window_days": window_days,
@@ -5263,6 +5278,7 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
             "paper_equity", "signal_ttl_sec", "demo_signal_interval_sec",
             "scan_interval_sec", "slip_bps", "alert_cooldown_sec",
             "promotion_min_samples", "promotion_min_win_rate",
+            "promotion_min_expectancy_usd", "promotion_min_profit_factor",
             "promotion_max_drawdown_pct",
             "promotion_window_days",
         ):
