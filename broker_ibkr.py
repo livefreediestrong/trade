@@ -44,28 +44,42 @@ def paper_mode() -> bool:
 
 def public_status() -> dict[str, Any]:
     configured = is_configured()
+    port = int(os.environ.get("IB_GATEWAY_PORT", "4002"))
+    live = not paper_mode()
+    mismatch = (live and port != 4001) or (not live and port != 4002)
     return {
         "broker": "ibkr",
         "configured": configured,
         "paper_mode": paper_mode(),
-        "endpoint": f"{os.environ.get('IB_GATEWAY_HOST', '127.0.0.1')}:{os.environ.get('IB_GATEWAY_PORT', '4002')}",
+        "endpoint": f"{os.environ.get('IB_GATEWAY_HOST', '127.0.0.1')}:{port}",
         "status": "paper" if configured and paper_mode() else ("live" if configured else "not_configured"),
         "connected_label": "IB Gateway paper" if paper_mode() else "IB Gateway LIVE (real money)",
         "ui_badge": "IBKR PAPER" if paper_mode() else "IBKR LIVE",
         "masthead": "PAPER ONLY" if paper_mode() else "LIVE ENDPOINT",
         "masthead_title": "IB Gateway paper account" if paper_mode() else "IB Gateway live account — real money",
+        "connection": {"reason": "not_checked", "timeout_sec": 5, "client_id_base": os.environ.get("IB_CLIENT_ID", "37")},
+        "endpoint_mismatch": mismatch,
+        "setup_checklist": [
+            "Start IB Gateway or TWS and enable API socket clients",
+            f"Use port {4001 if live else 4002} for the selected {'live' if live else 'paper'} endpoint",
+            "Use a unique client ID and confirm the managed account",
+        ],
     }
 
 
 def get_account() -> dict[str, Any]:
-    try:
-        ib = _ib()
-        values = {str(x.tag): x.value for x in ib.accountSummary()}
-        accounts = list(ib.managedAccounts() or [])
-        ib.disconnect()
-        return {"ok": True, "account": values, "account_id": accounts[0] if accounts else None}
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)[:200], "account": {}}
+    last = None
+    for attempt in range(3):
+        try:
+            ib = _ib()
+            values = {str(x.tag): x.value for x in ib.accountSummary()}
+            accounts = list(ib.managedAccounts() or [])
+            ib.disconnect()
+            return {"ok": True, "account": values, "account_id": accounts[0] if accounts else None, "managed_accounts": accounts}
+        except Exception as exc:
+            last = exc
+            time.sleep(0.2 * (2 ** attempt))
+    return {"ok": False, "error": str(last)[:200], "account": {}, "diagnostic": "Check Gateway/TWS running, socket port, API enablement, and unique client ID"}
 
 
 def get_positions() -> dict[str, Any]:

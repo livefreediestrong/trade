@@ -131,26 +131,29 @@ def _ts_seconds(value: Any) -> float | None:
     """Convert provider timestamps to epoch seconds without trusting bad input."""
     if value is None or value == "":
         return None
-    try:
-        number = float(value)
-        if number > 1e12:
-            number /= 1000.0
-        return number if number > 0 else None
-    except (TypeError, ValueError):
-        pass
     text = str(value).strip()
     if not text:
         return None
     if re.fullmatch(r"\d{14}", text):
         try:
-            return datetime.strptime(text, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp()
+            parsed = datetime.strptime(text, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+            stamp = parsed.timestamp()
+            return stamp if stamp <= time.time() + 86400 else None
         except ValueError:
             return None
+    try:
+        number = float(value)
+        if number > 1e12:
+            number /= 1000.0
+        return number if 0 < number <= time.time() + 86400 else None
+    except (TypeError, ValueError):
+        pass
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.timestamp()
+        stamp = parsed.timestamp()
+        return stamp if stamp <= time.time() + 86400 else None
     except ValueError:
         return None
 
@@ -264,7 +267,7 @@ def news_for_symbol(symbol: str, *, limit: int = 6) -> list[dict[str, Any]]:
     if not sym:
         return []
     items: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen: dict[str, dict[str, Any]] = {}
 
     def _add(rows: list[dict], src: str) -> None:
         for n in rows:
@@ -273,10 +276,17 @@ def news_for_symbol(symbol: str, *, limit: int = 6) -> list[dict[str, Any]]:
                 continue
             row = enrich_headline(dict(n, source=n.get("source") or src, ticker=sym))
             key = row["headline_key"]
-            if key in seen:
+            prior = seen.get(key)
+            if prior is None:
+                seen[key] = row
+                items.append(row)
                 continue
-            seen.add(key)
-            items.append(row)
+            sources = sorted({str(prior.get("source") or src), str(row.get("source") or src)})
+            prior["corroborating_sources"] = sources
+            prior["source_count"] = len(sources)
+            if _SOURCE_WEIGHT.get(str(row.get("source") or src), 0) > _SOURCE_WEIGHT.get(str(prior.get("source") or ""), 0):
+                prior["provider_attribution"] = prior.get("publisher") or prior.get("source")
+                prior.update({k: row[k] for k in ("publisher", "link", "ts", "published_ts") if row.get(k) is not None})
 
     def source_fetches() -> list[tuple[str, Any]]:
         import data_sources as ds

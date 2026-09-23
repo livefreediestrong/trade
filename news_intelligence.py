@@ -37,10 +37,16 @@ def provider_reliability() -> dict[str, dict[str, Any]]:
 
 def _cluster_key(item: dict[str, Any]) -> str:
     tags = tuple(sorted(str(tag) for tag in (item.get("event_tags") or []) if tag))
-    if tags and item.get("ticker"):
-        return f"{str(item.get('ticker')).upper()}|{tags[0]}"
+    ticker = str(item.get("ticker") or "").upper()
+    published = item.get("published_ts")
+    try:
+        bucket = int(float(published) // 21600) if published is not None else "unknown"
+    except (TypeError, ValueError):
+        bucket = "unknown"
+    if tags and ticker:
+        return f"{ticker}|{tags[0]}|{bucket}"
     key = str(item.get("headline_key") or item.get("title") or "").lower()
-    return re.sub(r"\b(the|a|an)\b", " ", key)
+    return re.sub(r"\b(the|a|an)\b", " ", key) + f"|{bucket}"
 
 
 def _event_polarity(title: str) -> str:

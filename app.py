@@ -477,6 +477,8 @@ def _save_json(path: Path, data: Any) -> None:
     tmp = path.with_suffix(f".{threading.get_ident()}.tmp")
     with tmp.open("w", encoding="utf-8") as f:
         json.dump(_json_safe(data), f, indent=2, allow_nan=False)
+        f.flush()
+        os.fsync(f.fileno())
     # On Windows, replace() fails (WinError 5/32) while another thread has the file
     # open for reading. Retry briefly instead of failing the whole request.
     delay = 0.02
@@ -929,7 +931,8 @@ def _cap_shares_for_broker(
     return shares, notional, None
 
 
-_BROKER_SUBMIT_LOCK = threading.Lock()
+_BROKER_SUBMIT_LOCK = threading.RLock()
+_BROKER_IN_FLIGHT: set[str] = set()
 BROKER_FILL_WAIT_SEC = float(os.environ.get("BROKER_FILL_WAIT_SEC", "6") or 6)
 
 
@@ -1399,6 +1402,31 @@ def _broker_risk_gate(
 
 
 def execute_gated_broker_or_paper(
+    sig: dict[str, Any],
+    cfg: dict[str, Any],
+    *,
+    source: str,
+    via: str,
+) -> dict[str, Any]:
+    signal_id = str(sig.get("id") or "").strip()
+    with _BROKER_SUBMIT_LOCK:
+        with _lock:
+            ledger = load_ledger()
+            if signal_id and any(
+                str(row.get("signal_id") or "") == signal_id
+                for row in list(ledger.get("broker_fills") or []) + list(ledger.get("broker_fills_archive") or [])
+            ):
+                return {"ok": False, "error": "broker_signal_already_submitted", "gated": True}
+        if signal_id in _BROKER_IN_FLIGHT:
+            return {"ok": False, "error": "broker_signal_in_flight", "gated": True}
+        _BROKER_IN_FLIGHT.add(signal_id)
+        try:
+            return _execute_gated_broker_or_paper(sig, cfg, source=source, via=via)
+        finally:
+            _BROKER_IN_FLIGHT.discard(signal_id)
+
+
+def _execute_gated_broker_or_paper(
     sig: dict[str, Any],
     cfg: dict[str, Any],
     *,
@@ -3527,9 +3555,9 @@ def build_loop_signal(
     if not price:
         # No demo/hash fallback for loop fills — caller must abstain
         price = 0.0
-    side = (thesis.get("side") or "buy").lower()
+    side = (thesis.get("side") or "flat").lower()
     if side not in ("buy", "sell"):
-        side = "buy"
+        side = "flat"
     try:
         llm_conf = float(thesis.get("confidence") or 0)
     except (TypeError, ValueError):
@@ -4596,7 +4624,21 @@ def _promotion_gate(cfg: dict[str, Any], ledger: dict[str, Any]) -> dict[str, An
             + list(ledger.get("broker_fills") or [])
             + list(ledger.get("broker_fills_archive") or [])
         )
+        seen_fill_ids: set[str] = set()
         for fill in all_fills:
+            fill_id = str(fill.get("id") or fill.get("order_id") or "")
+            if fill_id and fill_id in seen_fill_ids:
+                continue
+            if fill_id:
+                seen_fill_ids.add(fill_id)
+            # Promotion evidence is executable net outcome only: a confirmed
+            # closing fill with realized P&L, never an opening/unconfirmed leg.
+            if not fill.get("confirmed", fill.get("broker_reconciled", True)):
+                continue
+            if _finite_float(fill.get("realized_pnl"), None) is None:
+                continue
+            if str(fill.get("side") or "").lower() not in {"sell", "cover", "close"}:
+                continue
             try:
                 ts = datetime.fromisoformat(str(fill.get("ts") or "").replace("Z", "+00:00")).timestamp()
             except (TypeError, ValueError, OSError):
@@ -4607,7 +4649,9 @@ def _promotion_gate(cfg: dict[str, Any], ledger: dict[str, Any]) -> dict[str, An
         for fill in fills:
             key = str(fill.get("position_id") or fill.get("signal_id") or fill.get("id") or "")
             if key:
-                pnl_value = _finite_float(fill.get("realized_pnl"), 0.0) or 0.0
+                pnl_value = _finite_float(fill.get("realized_pnl"), None)
+                if pnl_value is None:
+                    continue
                 fee_value = _finite_float(fill.get("fee_usd"), 0.0) or 0.0
                 grouped[key] = grouped.get(key, 0.0) + pnl_value - fee_value
         pnl = list(grouped.values())
@@ -5183,7 +5227,10 @@ def _refresh_state_aux(cfg: dict[str, Any], watchlist: list[str], focus: str | N
         "social": social,
     }
     with _STATE_AUX_LOCK:
-        _STATE_AUX.update(data=data, refreshing=False, at=__import__("time").time())
+        if _STATE_AUX.get("key") == (tuple(watchlist), focus, bool(cfg.get("macro_gates_enabled", True)), bool(cfg.get("social_enabled"))):
+            _STATE_AUX.update(data=data, refreshing=False, at=__import__("time").time())
+        else:
+            _STATE_AUX["refreshing"] = False
 
 
 def _refresh_state_aux_safe(cfg: dict[str, Any], watchlist: list[str], focus: str | None) -> None:
@@ -5277,11 +5324,6 @@ def api_state():
     llm_st = _llm_public_status(cfg)
     totals = loop_st.get("session_totals") or {}
     model_usd = float(totals.get("model_usd") or 0)
-    try:
-        if bool(cfg.get("radar_enabled")):
-            market_radar.maybe_refresh(cfg)  # radar_maybe_refresh_state
-    except Exception:
-        pass
     payload = {
         "banner": BANNER,
         "config": cfg,
@@ -6463,9 +6505,15 @@ def api_approve(sig_id: str):
     if not result.get("ok"):
         with _lock:
             signals = load_signals()
+            broker_result = result.get("broker") if isinstance(result.get("broker"), dict) else {}
+            broker_status = str(broker_result.get("status") or result.get("status") or "").lower()
             for i, s in enumerate(signals):
                 if s["id"] == sig_id and s.get("status") == "approving":
-                    s["status"] = "pending"
+                    s["status"] = (
+                        "submitted"
+                        if broker_status in {"submitted", "pending", "unknown", "paper_submitted", "live_submitted"}
+                        else "pending"
+                    )
                     signals[i] = s
                     break
             save_signals(signals)
@@ -7091,6 +7139,22 @@ def api_data_quality():
         },
         "note": "Provider availability is not a guarantee of quote freshness; inspect source and timestamp on each signal.",
     })
+
+
+@app.route("/api/research/x")
+def api_research_x():
+    """Authorized X API pulse; explicitly display-only and never an execution gate."""
+    import x_social
+    cfg = load_config()
+    if not bool(cfg.get("social_enabled")):
+        return jsonify({"ok": False, "enabled": False, "items": [], "research_only": True, "error": "social_disabled"})
+    return jsonify(x_social.snapshot(list(cfg.get("watchlist") or [])))
+
+
+@app.route("/api/research/fundamentals/<ticker>")
+def api_research_fundamentals(ticker: str):
+    import fundamental_quality
+    return jsonify(fundamental_quality.analyze(ticker))
 
 
 @app.route("/api/risk/cockpit")
