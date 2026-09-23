@@ -324,6 +324,8 @@ def test_news_enrichment_identifies_materiality_and_normalizes_timestamp():
 
 
 def test_news_for_symbol_deduplicates_and_ranks_headlines(monkeypatch):
+    monkeypatch.setattr(news_stream, "_google_news", lambda symbol, limit=5: [])
+    monkeypatch.setattr(news_stream, "_gdelt_news", lambda symbol, limit=5: [])
     monkeypatch.setattr(
         news_stream,
         "_benzinga_news",
@@ -355,3 +357,43 @@ def test_news_for_symbol_deduplicates_and_ranks_headlines(monkeypatch):
         "AAPL announces major acquisition",
         "AAPL launches new product",
     }
+
+
+def test_public_news_sources_are_parsed_and_attributed(monkeypatch):
+    class Response:
+        status_code = 200
+
+        def __init__(self, content=None, payload=None):
+            self.content = content or b""
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, **kwargs):
+        if "news.google.com" in url:
+            return Response(
+                b"""<rss><channel><item><title>AAPL launches product</title>
+                <link>https://example.test/aapl</link>
+                <pubDate>Tue, 22 Sep 2026 15:00:00 GMT</pubDate></item></channel></rss>"""
+            )
+        return Response(
+            payload={
+                "articles": [
+                    {
+                        "title": "AAPL raises guidance",
+                        "url": "https://example.test/gdelt",
+                        "domain": "example.test",
+                        "seendate": "20260922150100",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr(news_stream.requests, "get", fake_get)
+    google = news_stream._google_news("AAPL")
+    gdelt = news_stream._gdelt_news("AAPL")
+    assert google[0]["source"] == "google_news"
+    assert google[0]["publisher"] == "Google News"
+    assert gdelt[0]["source"] == "gdelt"
+    assert news_stream.enrich_headline(gdelt[0])["published_ts"] is not None

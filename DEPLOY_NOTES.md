@@ -323,7 +323,7 @@ Edu paper desk — **all optional**. Missing keys degrade cleanly (no crashes, h
 |--------|-----|------|
 | `polygon_client.py` | `POLYGON_API_KEY` | Snapshots + aggregates; radar source after Alpaca, before Yahoo |
 | `macro_calendar.py` | `FRED_API_KEY` (+ Finnhub earnings) | Fed/CPI/NFP flags; earnings-day size cut / force Ask-me-first |
-| `news_stream.py` | `FINNHUB_API_KEY`, optional `BENZINGA_API_KEY` | Deepen company-news + Yahoo → `watchlist_news` |
+| `news_stream.py` | `FINNHUB_API_KEY`, optional `BENZINGA_API_KEY` | Finnhub/Yahoo + public Google News RSS/GDELT discovery → `watchlist_news` |
 | `edgar_client.py` | `EDGAR_USER_AGENT` (email required) | Free data.sec.gov recent filings chip |
 | `options_flow.py` | `QUIVER_API_KEY` / `UNUSUAL_WHALES_API_KEY` / Finnhub | Advanced-only flow; **never** auto-trade |
 | `desk_alerts.py` | `ALERT_WEBHOOK_URL`, optional `TWILIO_*` + `ALERT_TWILIO=1` | Waiting / goal / kill → queue + webhook (+ Twilio stub) |

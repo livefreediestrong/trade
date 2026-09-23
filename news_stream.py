@@ -9,6 +9,7 @@ import os
 import re
 import threading
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,13 @@ import requests
 _lock = threading.RLock()
 _cache: dict[str, Any] = {"at": 0.0, "key": "", "payload": None}
 _CACHE_TTL = 120.0
-_SOURCE_WEIGHT = {"benzinga": 1.0, "finnhub": 0.9, "yahoo": 0.65}
+_SOURCE_WEIGHT = {
+    "benzinga": 1.0,
+    "finnhub": 0.9,
+    "google_news": 0.72,
+    "gdelt": 0.68,
+    "yahoo": 0.65,
+}
 _EVENT_PATTERNS = {
     "earnings": r"\b(earnings|quarterly results|eps|revenue|profit|loss)\b",
     "guidance": r"\b(guidance|outlook|forecast|raises|cuts|lowers)\b",
@@ -67,11 +74,15 @@ def public_status() -> dict[str, Any]:
         "finnhub": fh,
         "yahoo": True,
         "benzinga": bool(benzinga_key()),
+        "google_news": True,
+        "gdelt": True,
         "configured": True,  # Yahoo always available best-effort
         "docs": {
             "finnhub": "https://finnhub.io/docs/api/company-news",
             "benzinga": "https://docs.benzinga.io/benzinga-apis/news-v2/news",
             "yahoo": "Yahoo finance search (no key)",
+            "google_news": "Google News RSS search (no key)",
+            "gdelt": "https://api.gdeltproject.org/api/v2/doc/doc (no key)",
         },
     }
 
@@ -129,6 +140,11 @@ def _ts_seconds(value: Any) -> float | None:
     text = str(value).strip()
     if not text:
         return None
+    if re.fullmatch(r"\d{14}", text):
+        try:
+            return datetime.strptime(text, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            return None
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
@@ -136,6 +152,77 @@ def _ts_seconds(value: Any) -> float | None:
         return parsed.timestamp()
     except ValueError:
         return None
+
+
+def _google_news(symbol: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Public RSS search; useful as a broad discovery source, not a truth feed."""
+    try:
+        response = requests.get(
+            "https://news.google.com/rss/search",
+            params={"q": f'"{symbol.upper()}" stock', "hl": "en-US", "gl": "US", "ceid": "US:en"},
+            headers={"Accept": "application/rss+xml, application/xml", "User-Agent": "TomahawkDesk/1.0"},
+            timeout=8,
+        )
+        if response.status_code != 200:
+            return []
+        root = ET.fromstring(response.content)
+        rows = []
+        for item in root.findall(".//item")[:limit]:
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            published = (item.findtext("pubDate") or "").strip()
+            if title:
+                rows.append(
+                    {
+                        "title": title,
+                        "publisher": "Google News",
+                        "link": link,
+                        "ts": published,
+                        "source": "google_news",
+                        "ticker": symbol.upper(),
+                    }
+                )
+        return rows
+    except (ET.ParseError, requests.RequestException, ValueError, TypeError):
+        return []
+
+
+def _gdelt_news(symbol: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Public GDELT discovery search; results are attribution and recency signals only."""
+    try:
+        response = requests.get(
+            "https://api.gdeltproject.org/api/v2/doc/doc",
+            params={
+                "query": f'"{symbol.upper()}"',
+                "mode": "artlist",
+                "format": "json",
+                "maxrecords": limit,
+                "sort": "HybridRel",
+            },
+            headers={"Accept": "application/json", "User-Agent": "TomahawkDesk/1.0"},
+            timeout=8,
+        )
+        if response.status_code != 200:
+            return []
+        data = response.json()
+        rows = data.get("articles") if isinstance(data, dict) else []
+        out = []
+        for item in (rows or [])[:limit]:
+            if not isinstance(item, dict) or not item.get("title"):
+                continue
+            out.append(
+                {
+                    "title": item.get("title"),
+                    "publisher": item.get("domain") or "GDELT",
+                    "link": item.get("url"),
+                    "ts": item.get("seendate") or item.get("datetime"),
+                    "source": "gdelt",
+                    "ticker": symbol.upper(),
+                }
+            )
+        return out
+    except (requests.RequestException, ValueError, TypeError):
+        return []
 
 
 def _headline_key(title: str) -> str:
@@ -198,6 +285,8 @@ def news_for_symbol(symbol: str, *, limit: int = 6) -> list[dict[str, Any]]:
     except Exception:
         pass
     _add(_benzinga_news(sym, limit=min(4, limit)), "benzinga")
+    _add(_google_news(sym, limit=min(4, limit)), "google_news")
+    _add(_gdelt_news(sym, limit=min(4, limit)), "gdelt")
     items.sort(key=lambda row: (float(row.get("intelligence_score") or 0), float(row.get("published_ts") or 0)), reverse=True)
     return items[:limit]
 
