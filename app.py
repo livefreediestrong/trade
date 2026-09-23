@@ -2524,7 +2524,12 @@ def check_decision_outcomes(limit: int = 40) -> list[dict[str, Any]]:
             continue
         intended = str(ev.get("outcome_intended_side") or ev.get("intended_side") or "flat")
         result = session_track.classify_horizon_outcome(
-            intended_side=intended, mid_at=mid_at, mid_now=float(mid_now)
+            intended_side=intended,
+            mid_at=mid_at,
+            mid_now=float(mid_now),
+            path_prices=ev.get("outcome_path_prices"),
+            slip_bps=float(cfg.get("slip_bps") or 0),
+            fee_bps=float(cfg.get("fee_bps") or 0),
         )
         label = result.get("outcome")
         if not label:
@@ -2547,6 +2552,11 @@ def check_decision_outcomes(limit: int = 40) -> list[dict[str, Any]]:
             "outcome_move_bps": result.get("move_bps"),
             "outcome_ts": _now_iso(),
             "outcome_label": label,
+            "outcome_mfe_bps": result.get("mfe_bps"),
+            "outcome_mae_bps": result.get("mae_bps"),
+            "outcome_path_available": result.get("path_available"),
+            "outcome_executable_move_bps": result.get("executable_move_bps"),
+            "outcome_cost_bps": result.get("round_trip_cost_bps"),
             "paper_only": True,
         }
         patched = _decision_ring.patch(str(ev.get("id") or ""), updates)

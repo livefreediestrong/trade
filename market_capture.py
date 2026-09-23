@@ -40,7 +40,7 @@ def scorecard(decisions: list[dict[str, Any]] | None, fills: list[dict[str, Any]
             "horizon_outcomes": True,
             "execution_capture": True,
             "missed_opportunity": True,
-            "intraday_path_mfe_mae": False,
+            "intraday_path_mfe_mae": "conditional_quote_path",
         },
-        "note": "Descriptive paper/research coverage; not a profitability or live-trading signal.",
+        "note": "Descriptive paper/research coverage; executable costs and path metrics require captured quote paths.",
     }

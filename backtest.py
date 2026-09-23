@@ -145,7 +145,57 @@ def evaluate(all_trades: list[dict[str, Any]], params: dict[str, Any]) -> dict[s
         "not_included": ["sector money-flow check", "the AI brain's own judgment", "news / earnings"],
     }
     res["verdict"], res["explanation"], res["warnings"] = _verdict(res)
+    res["walk_forward"] = evaluate_walk_forward(all_trades, p)
     return res
+
+
+def evaluate_walk_forward(all_trades: list[dict[str, Any]], params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Evaluate sequential out-of-sample folds instead of one chosen split.
+
+    The rule is fixed for each fold; the train period is reported for context,
+    while all profitability conclusions use only the following test period.
+    """
+    p = {**DEFAULT_PARAMS, **(params or {})}
+    days = sorted({t["day"] for t in all_trades})
+    train_days = max(20, int(p.get("walk_train_days", 60)))
+    test_days = max(5, int(p.get("walk_test_days", 20)))
+    step_days = max(1, int(p.get("walk_step_days", test_days)))
+    folds: list[dict[str, Any]] = []
+    start = train_days
+    while start + test_days <= len(days):
+        train_set = set(days[start - train_days:start])
+        test_set = set(days[start:start + test_days])
+        train = [t for t in all_trades if t["day"] in train_set]
+        test = [t for t in all_trades if t["day"] in test_set]
+        rule = _stats([t for t in test if t["rule"]], p["position_usd"])
+        baseline = _stats(test, p["position_usd"])
+        folds.append({
+            "train": {"start": days[start - train_days], "end": days[start - 1], "trades": len(train)},
+            "test": {"start": days[start], "end": days[min(start + test_days - 1, len(days) - 1)]},
+            "rule": rule,
+            "baseline": baseline,
+            "rule_edge_usd": round((rule.get("avg_per_trade_usd", 0) or 0) - (baseline.get("avg_per_trade_usd", 0) or 0), 3)
+            if rule.get("trades") and baseline.get("trades") else None,
+        })
+        start += step_days
+    tested = [f for f in folds if f["rule"].get("trades")]
+    positive = [f for f in tested if (f.get("rule", {}).get("avg_per_trade_usd") or 0) > 0]
+    edge_wins = [f for f in tested if (f.get("rule_edge_usd") or 0) > 0]
+    return {
+        "folds": folds,
+        "fold_count": len(folds),
+        "tested_folds": len(tested),
+        "positive_rule_folds": len(positive),
+        "rule_beats_baseline_folds": len(edge_wins),
+        "positive_fold_rate": round(len(positive) / len(tested), 3) if tested else None,
+        "baseline_win_rate": round(len(edge_wins) / len(tested), 3) if tested else None,
+        "minimum_folds_for_confidence": 5,
+        "conclusion": (
+            "insufficient_folds" if len(tested) < 5 else
+            "consistent_out_of_sample" if len(positive) >= 0.6 * len(tested) and len(edge_wins) >= 0.6 * len(tested)
+            else "inconsistent_out_of_sample"
+        ),
+    }
 
 
 def _edge(block: dict[str, Any]) -> Optional[float]:

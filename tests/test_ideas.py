@@ -212,6 +212,34 @@ def test_backtest_finds_planted_edge_and_uses_no_future():
 def test_backtest_verdict_not_enough_with_little_data():
     res = backtest.evaluate(backtest.simulate_ticker(_hourly(days=70), {}), {})
     assert res["ok"] and res["verdict"] == "not_enough"
+    assert res["walk_forward"]["conclusion"] == "insufficient_folds"
+
+
+def test_walk_forward_reports_out_of_sample_folds():
+    trades = backtest.simulate_ticker(_hourly(days=180), {})
+    res = backtest.evaluate_walk_forward(
+        trades, {"walk_train_days": 40, "walk_test_days": 10, "walk_step_days": 10}
+    )
+    assert res["fold_count"] >= 5
+    assert len(res["folds"]) == res["fold_count"]
+    assert all("rule" in fold and "baseline" in fold for fold in res["folds"])
+
+
+def test_horizon_outcome_reports_costs_and_optional_path_metrics():
+    result = session_track.classify_horizon_outcome(
+        intended_side="buy",
+        mid_at=100,
+        mid_now=100.4,
+        path_prices=[100, 101, 99.5, 100.4],
+        slip_bps=5,
+        fee_bps=1,
+    )
+    assert result["outcome"] == "helped"
+    assert result["path_available"] is True
+    assert result["mfe_bps"] == 100.0
+    assert result["mae_bps"] == -50.0
+    assert result["round_trip_cost_bps"] == 12.0
+    assert result["executable_move_bps"] == 28.0
 
 
 def test_backtest_run_with_fake_fetch(tmp_path):

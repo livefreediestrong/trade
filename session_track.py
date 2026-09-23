@@ -510,6 +510,9 @@ def classify_horizon_outcome(
     mid_at: float,
     mid_now: float,
     flat_bps: float = OUTCOME_FLAT_BPS,
+    path_prices: list[float] | None = None,
+    slip_bps: float = 0.0,
+    fee_bps: float = 0.0,
 ) -> dict[str, Any]:
     intended = (intended_side or "flat").lower().strip()
     if intended in ("hold",):
@@ -536,6 +539,21 @@ def classify_horizon_outcome(
             label = "helped" if move_bps < 0 else "hurt"
     else:
         label = "flat" if abs_bps <= flat_bps else None
+    path = []
+    for value in path_prices or []:
+        try:
+            price = float(value)
+            if price > 0:
+                path.append(price)
+        except (TypeError, ValueError):
+            continue
+    if not path:
+        path = [mid_at, mid_now]
+    direction = 1 if intended == "buy" else -1 if intended == "sell" else 0
+    favorable = max(((price - mid_at) / mid_at) * 10_000 * direction for price in path) if direction else 0.0
+    adverse = min(((price - mid_at) / mid_at) * 10_000 * direction for price in path) if direction else 0.0
+    round_trip_cost_bps = max(0.0, float(slip_bps or 0) * 2 + float(fee_bps or 0) * 2)
+    executable_move_bps = move_bps * direction - round_trip_cost_bps if direction else 0.0
     return {
         "outcome": label,
         "move_bps": round(move_bps, 2),
@@ -543,6 +561,12 @@ def classify_horizon_outcome(
         "mid_now": round(mid_now, 4),
         "intended_side": intended,
         "flat_bps": flat_bps,
+        "mfe_bps": round(favorable, 2) if path_prices else None,
+        "mae_bps": round(adverse, 2) if path_prices else None,
+        "path_samples": len(path_prices or []),
+        "path_available": bool(path_prices),
+        "round_trip_cost_bps": round(round_trip_cost_bps, 2),
+        "executable_move_bps": round(executable_move_bps, 2) if direction else None,
         "paper_only": True,
     }
 
