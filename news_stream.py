@@ -10,6 +10,7 @@ import re
 import threading
 import time
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -277,31 +278,34 @@ def news_for_symbol(symbol: str, *, limit: int = 6) -> list[dict[str, Any]]:
             seen.add(key)
             items.append(row)
 
-    try:
+    def source_fetches() -> list[tuple[str, Any]]:
         import data_sources as ds
 
-        finnhub_rows = ds.finnhub_news(sym, days=5, limit=limit) or []
-        _add(finnhub_rows, "finnhub")
-        yahoo_rows = ds.yahoo_news(sym, count=limit) or []
-        _add(yahoo_rows, "yahoo")
-        import news_intelligence as ni
-        ni.record_provider("finnhub", ok=True, items=len(finnhub_rows))
-        ni.record_provider("yahoo", ok=True, items=len(yahoo_rows))
-    except Exception:
-        pass
-    for source, fetch in (
-        ("benzinga", lambda: _benzinga_news(sym, limit=min(4, limit))),
-        ("google_news", lambda: _google_news(sym, limit=min(4, limit))),
-        ("gdelt", lambda: _gdelt_news(sym, limit=min(4, limit))),
-    ):
-        try:
-            rows = fetch()
+        return [
+            ("finnhub", lambda: ds.finnhub_news(sym, days=5, limit=limit) or []),
+            ("yahoo", lambda: ds.yahoo_news(sym, count=limit) or []),
+            ("benzinga", lambda: _benzinga_news(sym, limit=min(4, limit))),
+            ("google_news", lambda: _google_news(sym, limit=min(4, limit))),
+            ("gdelt", lambda: _gdelt_news(sym, limit=min(4, limit))),
+        ]
+
+    source_jobs = source_fetches()
+    with ThreadPoolExecutor(max_workers=len(source_jobs), thread_name_prefix="provider-fetch") as pool:
+        futures = {pool.submit(fetch): source for source, fetch in source_jobs}
+        for future in as_completed(futures):
+            source = futures[future]
+            rows = []
+            error = None
+            try:
+                rows = future.result()
+            except Exception as exc:
+                error = exc
             _add(rows, source)
-            import news_intelligence as ni
-            ni.record_provider(source, ok=True, items=len(rows))
-        except Exception as exc:
-            import news_intelligence as ni
-            ni.record_provider(source, ok=False, error=str(exc))
+            try:
+                import news_intelligence as ni
+                ni.record_provider(source, ok=error is None, items=len(rows), error=str(error) if error else None)
+            except Exception:
+                pass
     items.sort(key=lambda row: (float(row.get("intelligence_score") or 0), float(row.get("published_ts") or 0)), reverse=True)
     return items[:limit]
 
@@ -332,12 +336,22 @@ def watchlist_news(
 
     by_ticker: dict[str, list] = {}
     flat: list[dict[str, Any]] = []
+    # Provider calls are independent. Bound concurrency to avoid turning a
+    # watchlist refresh into an uncontrolled outbound request burst.
+    workers = min(4, max(1, len(syms)))
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="news-fetch") as pool:
+        futures = {pool.submit(news_for_symbol, sym, limit=per_symbol): sym for sym in syms}
+        for future in as_completed(futures):
+            sym = futures[future]
+            try:
+                rows = future.result()
+            except Exception:
+                rows = []
+            by_ticker[sym] = rows
+    # Preserve watchlist order in the grouped payload and deterministic output.
     for sym in syms:
-        rows = news_for_symbol(sym, limit=per_symbol)
-        by_ticker[sym] = rows
+        rows = by_ticker.get(sym, [])
         flat.extend(rows)
-        if len(flat) >= max_total:
-            break
     flat.sort(
         key=lambda row: (
             float(row.get("intelligence_score") or 0),
