@@ -186,6 +186,36 @@ After a deploy from the box:
 powershell -NoProfile -File install_and_restart.ps1
 ```
 
+### Desktop launcher / restart scripts (process-safe)
+
+`Start-Tomahawk.ps1`, `restart_signal_desk.ps1`, `install_and_restart.ps1`, and
+`force_restart.ps1` all resolve the repo root from their own script location
+(`Split-Path -Parent $MyInvocation.MyCommand.Path` / `$PSScriptRoot`) — never
+a hardcoded path — and share `desk_launcher_lib.ps1` for identity-safe
+start/stop:
+
+- **Never kills "whatever is on the port."** They only stop a process they
+  can positively verify via `data\tomahawk.pid` (written by `app.py`'s
+  `acquire_instance_lock()`) *plus* a live python process whose command line
+  references `app.py`. If the PID file points at a process that fails that
+  check, they refuse to touch it (fail-closed) and print why — this matters
+  on a shared box where another worktree/checkout may already be running.
+- **Health checks are fingerprinted**, not just "port answers." `/api/health`
+  now returns a `fingerprint` block (`repo_root`, `commit`, `branch`, `pid`);
+  the scripts also cross-check that this exact repo's `tomahawk.pid` lock is
+  held by a live, verified process before declaring success. A different
+  checkout answering the same port is reported as a mismatch, not "healthy."
+- **No duplicate instances.** Starting when a verified instance is already
+  running is a no-op (reported, not started again).
+- **Logs are preserved, never overwritten.** Each start writes a new
+  timestamped file under `logs\` (gitignored); prior runs' logs are left
+  alone for troubleshooting.
+- Uses `.\run.bat` / `.\Launch.bat` (never a bare name) — some hardened
+  Windows machines set `NoDefaultCurrentDirectoryInExePath=1`, which makes
+  `cmd.exe /c run.bat` silently fail to resolve without the explicit `.\`.
+- `tests/test_launcher_scripts.py` statically validates all of the above
+  (PowerShell parse check + source-level safety-invariant assertions).
+
 ## Linux / this box
 
 ```bash

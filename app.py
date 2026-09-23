@@ -77,6 +77,39 @@ BANNER = (
     "(ALPACA_PAPER=true → paper-api; ALPACA_PAPER=false → LIVE money endpoint)."
 )
 
+_REPO_FINGERPRINT_CACHE: dict[str, Any] | None = None
+
+
+def _repo_fingerprint() -> dict[str, Any]:
+    """Best-effort checkout identity for health checks — lets a restart/launch
+    script confirm it's talking to *this* checkout, not another worktree that
+    happens to already own the same port. Never raises; missing git is fine."""
+    global _REPO_FINGERPRINT_CACHE
+    if _REPO_FINGERPRINT_CACHE is not None:
+        return _REPO_FINGERPRINT_CACHE
+    commit = None
+    branch = None
+    try:
+        import subprocess
+
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(APP_DIR), capture_output=True, text=True, timeout=3,
+        ).stdout.strip() or None
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=str(APP_DIR), capture_output=True, text=True, timeout=3,
+        ).stdout.strip() or None
+    except Exception:  # noqa: BLE001
+        pass
+    _REPO_FINGERPRINT_CACHE = {
+        "repo_root": str(APP_DIR),
+        "pid": os.getpid(),
+        "commit": commit,
+        "branch": branch,
+    }
+    return _REPO_FINGERPRINT_CACHE
+
 DEFAULT_WATCHLIST = ["AAPL", "MSFT", "NVDA", "TSLA", "AMD", "SPY", "QQQ"]
 
 def yahoo_symbol(symbol: str) -> str:
@@ -7647,6 +7680,7 @@ def api_health():
             "ok": not _CORRUPT_PATHS,
             "banner": BANNER,
             "port": DESK_PORT,
+            "fingerprint": _repo_fingerprint(),
             "corrupt_files": corrupt_files_status(),
             "live_locked": False,
             "research_draft": True,

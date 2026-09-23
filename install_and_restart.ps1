@@ -3,6 +3,7 @@
 $ErrorActionPreference = "Continue"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
+. (Join-Path $Root "desk_launcher_lib.ps1")
 
 Write-Host "Project root: $Root"
 
@@ -21,7 +22,7 @@ foreach ($c in $candidates) {
 }
 
 if (-not $py) {
-  Write-Host "No project venv found — trying py/python on PATH to create .venv"
+  Write-Host "No project venv found - trying py/python on PATH to create .venv"
   $bootstrap = $null
   foreach ($name in @("py", "python", "python3")) {
     $cmd = Get-Command $name -ErrorAction SilentlyContinue
@@ -51,17 +52,18 @@ if (Test-Path $restart) {
   Write-Host "Calling restart_signal_desk.ps1 ..."
   & powershell -NoProfile -ExecutionPolicy Bypass -File $restart
 } else {
-  Write-Host "restart_signal_desk.ps1 missing — starting app.py directly"
-  Start-Process -FilePath $py -ArgumentList "app.py" -WorkingDirectory $Root -WindowStyle Minimized
-  Start-Sleep -Seconds 3
+  Write-Host "restart_signal_desk.ps1 missing - starting app.py directly"
+  $start = Start-DeskProcess -Root $Root -PythonExe $py
+  Write-Host $start.Message
 }
 
 Write-Host "Verifying health..."
-try {
-  $r = Invoke-WebRequest -Uri "http://127.0.0.1:5056/api/health" -UseBasicParsing -TimeoutSec 8
-  Write-Host "Health: $($r.Content)"
-} catch {
-  Write-Host "Health check failed: $_"
+$health = Wait-DeskHealthy -Root $Root -TimeoutSec 30
+if ($health.Healthy) {
+  Write-Host "Health: $($health.Body)"
+} else {
+  Write-Warning $health.Message
+  Write-Host "Check the newest file under $(Get-DeskLogDir -Root $Root) for startup errors."
 }
 
 try {
