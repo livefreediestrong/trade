@@ -4146,6 +4146,20 @@ _INSTANCE_LOCK_PATH = Path(os.environ.get("TOMAHAWK_INSTANCE_LOCK", str(DATA_DIR
 _INSTANCE_LOCK_FD: int | None = None
 
 
+def _instance_pid_is_running(pid: int) -> bool:
+    if pid <= 0 or pid == os.getpid():
+        return pid == os.getpid()
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def acquire_instance_lock() -> None:
     """Prevent accidental double-starts that would corrupt JSON read-modify-write state."""
     global _INSTANCE_LOCK_FD
@@ -4156,6 +4170,22 @@ def acquire_instance_lock() -> None:
         _INSTANCE_LOCK_FD = os.open(str(_INSTANCE_LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.write(_INSTANCE_LOCK_FD, str(os.getpid()).encode("ascii"))
     except FileExistsError as exc:
+        try:
+            previous_pid = int(_INSTANCE_LOCK_PATH.read_text(encoding="ascii").strip())
+        except (OSError, ValueError):
+            previous_pid = 0
+        if previous_pid > 0 and not _instance_pid_is_running(previous_pid):
+            try:
+                _INSTANCE_LOCK_PATH.unlink()
+                _INSTANCE_LOCK_FD = os.open(
+                    str(_INSTANCE_LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY
+                )
+                os.write(_INSTANCE_LOCK_FD, str(os.getpid()).encode("ascii"))
+                return
+            except (FileExistsError, OSError):
+                if _INSTANCE_LOCK_FD is not None:
+                    os.close(_INSTANCE_LOCK_FD)
+                    _INSTANCE_LOCK_FD = None
         raise RuntimeError(
             f"Another Tomahawk instance appears to be running ({_INSTANCE_LOCK_PATH}). "
             "Remove the lock only after confirming the previous process stopped."

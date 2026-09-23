@@ -73,6 +73,20 @@ def test_same_origin_and_script_posts_allowed(client):
     assert r.status_code == 200
 
 
+def test_stale_instance_lock_is_reclaimed(tmp_path, monkeypatch):
+    lock_path = tmp_path / "tomahawk.pid"
+    lock_path.write_text("2147483647", encoding="ascii")
+    monkeypatch.setattr(desk, "_INSTANCE_LOCK_PATH", lock_path)
+    monkeypatch.setattr(desk, "_INSTANCE_LOCK_FD", None)
+
+    desk.acquire_instance_lock()
+    try:
+        assert lock_path.read_text(encoding="ascii") == str(os.getpid())
+    finally:
+        desk.release_instance_lock()
+    assert not lock_path.exists()
+
+
 def test_default_bind_is_localhost():
     assert desk.DESK_HOST == "127.0.0.1" or os.environ.get("TOMAHAWK_HOST")
 
