@@ -346,6 +346,8 @@ def _local_only_guard():
         return jsonify({"ok": False, "error": "forbidden_host"}), 403
     if not _is_loopback_request() and not _remote_request_authorized():
         return jsonify({"ok": False, "error": "remote_auth_required"}), 403
+    if not _is_loopback_request() and not request.is_secure:
+        return jsonify({"ok": False, "error": "https_required"}), 403
     if request.method in _UNSAFE_METHODS:
         origin = (request.headers.get("Origin") or "").strip().lower()
         if origin and origin != "null":
@@ -404,6 +406,26 @@ def corrupt_files_status() -> dict[str, str]:
     return dict(_CORRUPT_PATHS)
 
 
+def _mark_corrupt(path: Path, reason: str) -> None:
+    key = str(path.resolve())
+    if key in _CORRUPT_PATHS:
+        return
+    _CORRUPT_PATHS[key] = str(reason)[:200]
+    try:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bak = path.with_suffix(path.suffix + f".corrupt.{stamp}.bak")
+        bak.write_bytes(path.read_bytes())
+        note = path.with_suffix(path.suffix + ".corrupt.txt")
+        note.write_text(
+            f"unreadable or corrupt JSON: {reason}\nbackup: {bak.name}\n"
+            "Saves to this file are blocked until it is repaired and the app restarted.\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    print(f"[tomahawk] CORRUPT {path.name}: {reason} — saves blocked, trading gated", flush=True)
+
+
 def _load_json(path: Path, default: Any) -> Any:
     """Load JSON; on corrupt file backup aside and fail closed (return default, never overwrite)."""
     if not path.exists():
@@ -413,25 +435,10 @@ def _load_json(path: Path, default: Any) -> Any:
         with path.open("r", encoding="utf-8-sig") as f:
             return json.load(f)
     except json.JSONDecodeError as exc:
-        key = str(path.resolve())
-        if key not in _CORRUPT_PATHS:
-            _CORRUPT_PATHS[key] = str(exc)[:200]
-            try:
-                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                bak = path.with_suffix(path.suffix + f".corrupt.{stamp}.bak")
-                bak.write_bytes(path.read_bytes())
-                # Sidecar note for operators (avoid journal RMW here — may be the corrupt file).
-                note = path.with_suffix(path.suffix + ".corrupt.txt")
-                note.write_text(
-                    f"corrupt JSON: {exc}\nbackup: {bak.name}\n"
-                    "Saves to this file are blocked until it is repaired and the app restarted.\n",
-                    encoding="utf-8",
-                )
-            except OSError:
-                pass
-            print(f"[tomahawk] CORRUPT {path.name}: {exc} — saves blocked, trading gated", flush=True)
+        _mark_corrupt(path, str(exc))
         return default
     except OSError:
+        _mark_corrupt(path, "file could not be read")
         return default
 
 
@@ -599,6 +606,9 @@ def load_config() -> dict[str, Any]:
         cfg["watchlist"] = list(DEFAULT_WATCHLIST)
         _save_json(CONFIG_PATH, cfg)
         return cfg
+    if not isinstance(cfg, dict):
+        _mark_corrupt(CONFIG_PATH, "top-level JSON value must be an object")
+        return dict(DEFAULT_CONFIG)
     # merge defaults for new keys
     merged = dict(DEFAULT_CONFIG)
     merged.update(cfg)
@@ -616,7 +626,11 @@ def save_config(cfg: dict[str, Any]) -> None:
 
 
 def load_signals() -> list[dict[str, Any]]:
-    return _load_json(SIGNALS_PATH, [])
+    signals = _load_json(SIGNALS_PATH, [])
+    if not isinstance(signals, list) or any(not isinstance(s, dict) for s in signals):
+        _mark_corrupt(SIGNALS_PATH, "top-level JSON value must be a list of objects")
+        return []
+    return signals
 
 
 SIGNALS_KEEP = 300  # newest non-pending signals kept on disk (list is newest-first)
@@ -652,6 +666,9 @@ def load_ledger() -> dict[str, Any]:
         default["cash"] = float(cfg.get("paper_cash", default["equity"]))
         _save_json(LEDGER_PATH, default)
         return default
+    if not isinstance(data, dict):
+        _mark_corrupt(LEDGER_PATH, "top-level JSON value must be an object")
+        return default
     return data
 
 
@@ -662,7 +679,11 @@ def save_ledger(ledger: dict[str, Any]) -> None:
 
 
 def load_journal() -> list[dict[str, Any]]:
-    return _load_json(JOURNAL_PATH, [])
+    journal = _load_json(JOURNAL_PATH, [])
+    if not isinstance(journal, list) or any(not isinstance(entry, dict) for entry in journal):
+        _mark_corrupt(JOURNAL_PATH, "top-level JSON value must be a list of objects")
+        return []
+    return journal
 
 
 def append_journal(action: str, detail: dict[str, Any] | None = None) -> None:
@@ -1132,6 +1153,63 @@ def _record_broker_trade() -> None:
         save_ledger(ledger)
 
 
+def _reconcile_pending_broker_orders() -> None:
+    """Reconcile broker orders that were still indeterminate after cancellation."""
+    try:
+        import broker_alpaca as alpaca
+    except ImportError:
+        return
+    with _lock:
+        ledger = load_ledger()
+        pending = list(ledger.get("pending_broker_orders") or [])
+    if not pending:
+        return
+    remaining = []
+    resolved_ids: set[str] = set()
+    processed_ids: set[str] = set()
+    changed = False
+    for item in pending[:20]:
+        order_id = str(item.get("order_id") or "")
+        if not order_id:
+            continue
+        processed_ids.add(order_id)
+        result = alpaca.wait_for_fill(order_id, timeout=0.25, interval=0.1)
+        state = result.get("state")
+        if state in ("filled", "partially_filled"):
+            sig = dict(item.get("signal") or {})
+            broker = dict(item.get("broker") or {})
+            fill = _broker_fill_record(sig, broker, source="reconciled_broker", confirm=result)
+            fill["broker_reconciled"] = True
+            with _lock:
+                current = load_ledger()
+                current.setdefault("broker_fills", []).insert(0, fill)
+                current["broker_fills"] = current["broker_fills"][:200]
+                save_ledger(current)
+            _record_broker_trade()
+            append_journal("broker_fill_reconciled", {"order_id": order_id, "fill": fill})
+            changed = True
+            resolved_ids.add(order_id)
+        elif state in ("failed",):
+            append_journal("broker_order_reconciled_failed", {"order_id": order_id, "status": result.get("alpaca_status")})
+            changed = True
+            resolved_ids.add(order_id)
+        else:
+            item["last_checked_at"] = _now_iso()
+            remaining.append(item)
+    if changed or len(remaining) != len(pending):
+        with _lock:
+            current = load_ledger()
+            current_pending = list(current.get("pending_broker_orders") or [])
+            replacement = {str(item.get("order_id") or ""): item for item in remaining}
+            current["pending_broker_orders"] = [
+                replacement.get(str(item.get("order_id") or ""), item)
+                for item in current_pending
+                if str(item.get("order_id") or "") not in resolved_ids
+                and str(item.get("order_id") or "") not in processed_ids - resolved_ids
+            ] + remaining
+            save_ledger(current)
+
+
 def _broker_day_pnl() -> tuple[float | None, float | None, str | None]:
     """(day_pnl, equity, error) from Alpaca account (equity - last_equity)."""
     try:
@@ -1292,6 +1370,21 @@ def execute_gated_broker_or_paper(
                 live_note["error"] = f"Broker order {status} — no reconciled fill"
 
         if not submitted:
+            if live_note.get("order_id") and confirm.get("state") in ("pending", "unknown"):
+                with _lock:
+                    ledger = load_ledger()
+                    pending = ledger.setdefault("pending_broker_orders", [])
+                    pending.insert(
+                        0,
+                        {
+                            "order_id": live_note["order_id"],
+                            "signal": dict(sig),
+                            "broker": dict(live_note),
+                            "created_at": _now_iso(),
+                        },
+                    )
+                    ledger["pending_broker_orders"] = pending[:100]
+                    save_ledger(ledger)
             err = live_note.get("error") or live_note.get("message") or live_note.get("status") or "broker_failed"
             append_journal(
                 "broker_order_failed",
@@ -2118,7 +2211,7 @@ def daily_target_progress(cfg: dict[str, Any], ledger: dict[str, Any]) -> dict[s
 
 
 def _unrealized_mtm(ledger: dict[str, Any], marks: dict[str, float] | None = None) -> float:
-    """Open MTM vs avg: longs (mark-avg)*sh, shorts (avg-mark)*sh. marks optional."""
+    """Open MTM vs avg using actual marks; unknown positions are excluded."""
     marks = marks or {}
     total = 0.0
     for p in ledger.get("positions") or []:
@@ -2127,7 +2220,9 @@ def _unrealized_mtm(ledger: dict[str, Any], marks: dict[str, float] | None = Non
         if sh <= 0 or avg <= 0:
             continue
         t = str(p.get("ticker") or "").upper()
-        mark = float(marks.get(t) or avg)
+        if t not in marks:
+            continue
+        mark = float(marks[t])
         side = (p.get("side") or "long").lower()
         if side in ("long", "buy"):
             total += (mark - avg) * sh
@@ -2139,14 +2234,25 @@ def _unrealized_mtm(ledger: dict[str, Any], marks: dict[str, float] | None = Non
 def _session_pnl_with_mtm(ledger: dict[str, Any], marks: dict[str, float] | None = None) -> float:
     """Realized day PnL + open unrealized MTM.
 
-    With no explicit marks, uses prices seen in the last 10 minutes (falls back to
-    avg cost per position only when no recent price exists). Previously every
-    caller passed nothing, so "incl. open MTM" loss limits only saw realized P&L.
+    With no explicit marks, uses prices seen in the last 10 minutes. Positions without
+    a current mark are excluded from MTM and block new risk in the trade gate.
     """
     if marks is None:
         marks = _marks_for_ledger(ledger)
     stats = daily_stats(ledger)
     return round(float(stats.get("pnl", 0) or 0) + _unrealized_mtm(ledger, marks), 2)
+
+
+def _missing_marks(ledger: dict[str, Any], marks: dict[str, float]) -> list[str]:
+    return sorted(
+        {
+            str(p.get("ticker") or "").upper()
+            for p in (ledger.get("positions") or [])
+            if float(p.get("shares") or 0) > 0
+            and p.get("ticker")
+            and str(p.get("ticker") or "").upper() not in marks
+        }
+    )
 
 
 def _day_scoreboard(ledger: dict[str, Any], cfg: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -2483,6 +2589,11 @@ def can_take_trade(
     preset = get_preset(cfg.get("risk_preset"))
     stats = daily_stats(ledger)
     pnl_mtm = _session_pnl_with_mtm(ledger, marks)
+    if not reducing:
+        marks_for_risk = marks if marks is not None else _marks_for_ledger(ledger)
+        missing = _missing_marks(ledger, marks_for_risk)
+        if missing:
+            return False, f"Risk valuation unavailable for open position(s): {', '.join(missing)}"
     max_trades = preset["max_trades_per_day"]
     # kill-switch overrides when armed (optional research control; not required)
     ks = cfg.get("kill_switch") or {}
@@ -2560,7 +2671,9 @@ def _ledger_equity_mtm(ledger: dict[str, Any], mark_by_ticker: dict[str, float] 
             continue
         t = str(p.get("ticker") or "").upper()
         avg = float(p.get("avg_price") or 0)
-        mark = float(marks.get(t) or avg)
+        if t not in marks:
+            continue
+        mark = float(marks[t])
         side = (p.get("side") or "long").lower()
         if side in ("long", "buy"):
             long_val += sh * mark
@@ -3929,6 +4042,7 @@ def _bg_loop() -> None:
     """
     while not _bg_stop.wait(timeout=5):
         try:
+            _reconcile_pending_broker_orders()
             cfg = None
             should = False
             with _lock:

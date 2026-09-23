@@ -87,11 +87,23 @@ def test_remote_client_requires_auth_token(client, monkeypatch):
     assert r.status_code == 403
     r = client.get(
         "/api/health",
-        base_url=BASE,
+        base_url="https://127.0.0.1:5056",
         environ_base={"REMOTE_ADDR": "192.168.1.20"},
         headers={"X-Tomahawk-Token": "test-token"},
     )
     assert r.status_code == 200
+
+
+def test_remote_client_requires_https_even_with_token(client, monkeypatch):
+    monkeypatch.setenv("TOMAHAWK_AUTH_TOKEN", "test-token")
+    r = client.get(
+        "/api/health",
+        base_url=BASE,
+        environ_base={"REMOTE_ADDR": "192.168.1.20"},
+        headers={"X-Tomahawk-Token": "test-token"},
+    )
+    assert r.status_code == 403
+    assert r.get_json()["error"] == "https_required"
 
 
 def test_live_mode_requires_server_confirmation(client, monkeypatch):
@@ -147,6 +159,24 @@ def test_corrupt_ledger_blocks_trading(isolated_data):
     ok, reason = desk.can_take_trade(cfg, ledger, 100.0)
     assert not ok and "corrupt" in reason.lower()
     assert desk.LEDGER_PATH.read_text(encoding="utf-8") == "{not json"
+
+
+def test_structurally_invalid_ledger_is_marked_corrupt(isolated_data):
+    desk.LEDGER_PATH.write_text("[]", encoding="utf-8")
+    ledger = desk.load_ledger()
+    assert ledger["positions"] == []
+    assert str(desk.LEDGER_PATH.resolve()) in desk._CORRUPT_PATHS
+    assert list(isolated_data.glob("ledger.json.corrupt.*.bak"))
+
+
+def test_missing_marks_block_new_risk(monkeypatch):
+    ledger = desk.load_ledger()
+    ledger["positions"] = [{"ticker": "AAPL", "side": "long", "shares": 10, "avg_price": 100}]
+    cfg = dict(desk.load_config(), session_active=True, rth_only=False)
+    desk.save_config(cfg)
+    monkeypatch.setattr(desk, "fetch_last_price", lambda ticker: None)
+    ok, reason = desk.can_take_trade(cfg, ledger, 1000, marks={})
+    assert not ok and "valuation unavailable" in reason.lower()
 
 
 # ---------------------------------------------------------------- #9 signal pruning

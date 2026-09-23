@@ -1743,9 +1743,6 @@
     const pm = b.paper_mode !== false;
     if (book === "broker_only") {
       const where = pm ? "Alpaca paper account" : "your REAL Alpaca account";
-      if (fill && fill.confirmed === false) {
-        return `order sent to ${where}, but the fill isn't confirmed yet (price shown is an estimate)`;
-      }
       const sh = fill && fill.shares;
       const px = fill && fill.price;
       return sh && px

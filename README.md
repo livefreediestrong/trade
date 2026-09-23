@@ -15,7 +15,7 @@ Companion-style app for a Windows PC beside `holdings-options-monitor`.
 - **auto_live / approve (when mode=auto_live):** `can_take_trade` + size/loss caps **first**, then broker submit. Successful broker submit is **broker-only** (no dual local `paper_fill`). Broker fail → **no trade** (never booked as paper).
 - UI masthead: **PAPER ONLY** unless `ALPACA_PAPER=false` and keys set → **LIVE ENDPOINT**.
 - Enabling `auto_live` requires a matching server-side confirmation; real-money endpoints specifically require typing `REAL` in the UI prompt.
-- The desk is unauthenticated on loopback only. If exposed beyond loopback with `TOMAHAWK_HOST` / `TOMAHAWK_ALLOWED_HOSTS`, set a long random `TOMAHAWK_AUTH_TOKEN`; remote requests must send `X-Tomahawk-Token` or `Authorization: Bearer`.
+- The desk is unauthenticated on loopback only. If exposed beyond loopback with `TOMAHAWK_HOST` / `TOMAHAWK_ALLOWED_HOSTS`, set a long random `TOMAHAWK_AUTH_TOKEN` and terminate HTTPS at the deployment boundary; remote requests must send `X-Tomahawk-Token` or `Authorization: Bearer`.
 
 Kill-switch / daily profit target remain **optional** research controls; they do not block mode entry by default.
 
