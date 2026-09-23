@@ -5533,6 +5533,12 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
   async function loadIntelligence(ticker, force) {
     const sym = String(ticker || focusTicker || "").toUpperCase();
     if (!sym || intelligenceInflight || (!force && sym === intelligenceTicker && Date.now() - intelligenceAt < 120000)) return;
+    if (!force && state && state.research_context && String(state.research_context.ticker || "").toUpperCase() === sym) {
+      intelligenceTicker = sym;
+      intelligenceAt = Date.now();
+      renderIntelligence(state.research_context);
+      return;
+    }
     intelligenceInflight = true;
     try {
       const payload = await api("/api/research/intelligence?symbols=" + encodeURIComponent(sym) + (force ? "&force=1" : ""), { timeoutMs: 20000 });

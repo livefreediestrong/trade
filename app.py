@@ -4796,6 +4796,23 @@ def _refresh_state_aux(cfg: dict[str, Any], watchlist: list[str], focus: str | N
         alerts = desk_alerts.drain_for_state(12)
     except Exception as exc:  # noqa: BLE001
         alerts = {"items": [], "error": str(exc)[:120]}
+    try:
+        intelligence = news_intelligence.analyze_items(watchlist_news.get("items") or [])
+        research_context = {
+            "ticker": focus,
+            "timeline": news_intelligence.build_timeline(
+                watchlist_news.get("items") or [],
+                (edgar or {}).get("filings") or [],
+                ((macro or {}).get("calendar") or {}).get("release", {}).get("flags") or [],
+            )[:40],
+            "analysis": intelligence,
+            "digest": intelligence.get("digest") or [],
+            "alerts": intelligence.get("alerts") or [],
+            "provider_reliability": news_intelligence.provider_reliability(),
+            "display_only": True,
+        }
+    except Exception as exc:  # noqa: BLE001
+        research_context = {"ticker": focus, "timeline": [], "error": str(exc)[:120], "display_only": True}
     data = {
         "providers": providers,
         "api_pack": (providers or {}).get("configured") or {},
@@ -4804,6 +4821,7 @@ def _refresh_state_aux(cfg: dict[str, Any], watchlist: list[str], focus: str | N
         "options_flow": options,
         "macro": macro,
         "alerts": alerts,
+        "research_context": research_context,
     }
     with _STATE_AUX_LOCK:
         _STATE_AUX.update(data=data, refreshing=False, at=__import__("time").time())
@@ -4823,6 +4841,7 @@ def _refresh_state_aux_safe(cfg: dict[str, Any], watchlist: list[str], focus: st
                 "options_flow": {"ok": False, "error": str(exc)[:120], "auto_trade": False},
                 "macro": {"error": str(exc)[:120]},
                 "alerts": {"items": [], "error": str(exc)[:120]},
+                "research_context": {"timeline": [], "error": str(exc)[:120], "display_only": True},
             }
 
 
@@ -4973,6 +4992,18 @@ def api_state():
         "status_only": bool(latest_event and not latest_ticker),
     }
     payload.update(_state_aux_snapshot(cfg, watchlist, focus))
+    payload.setdefault(
+        "research_context",
+        {
+            "ticker": focus,
+            "timeline": [],
+            "digest": [],
+            "alerts": [],
+            "analysis": {"display_only": True},
+            "display_only": True,
+            "refreshing": True,
+        },
+    )
     payload["corrupt_files"] = corrupt_files_status()
     try:
         payload.update(_money_snapshot(cfg))
