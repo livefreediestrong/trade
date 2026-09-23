@@ -105,12 +105,16 @@ def track_record(path: Path, *, ticker: str, verdict: Any, lateness: Any) -> dic
     rows = _read(path)
     key = setup_key(verdict, lateness)
     same_setup = [r for r in rows if r.get("setup") == key][:200]
-    same_ticker = [r for r in rows if r.get("ticker") == str(ticker or "").upper()][:3]
+    same_ticker = [r for r in rows if r.get("ticker") == str(ticker or "").upper()][:8]
+    setup_recent = same_setup[:12]
+    recent_outcomes = _tally(setup_recent)
     return {
         "setup": key,
         "setup_results": _tally(same_setup),
         "setup_count": len(same_setup),
         "ticker_recent": [r.get("text") for r in same_ticker],
+        "recent_setup_results": recent_outcomes,
+        "memory_depth": len(rows),
     }
 
 
@@ -133,6 +137,14 @@ def prompt_note(record: dict[str, Any]) -> str | None:
                 f"This desk's past calls on similar setups ({verdict}, {lateness} timing): "
                 + "; ".join(parts) + "."
             )
+    recent = record.get("recent_setup_results") or {}
+    recent_parts = []
+    for side in ("buy", "sell", "flat"):
+        bucket = recent.get(side) or {}
+        if sum(bucket.values()):
+            recent_parts.append(f"{side}: {bucket.get('helped', 0)} helped/{bucket.get('hurt', 0)} hurt")
+    if recent_parts:
+        lines.append("Most recent similar setups: " + ", ".join(recent_parts) + ".")
     for t in record.get("ticker_recent") or []:
         lines.append("Recent on this ticker: " + t)
     lines.append(

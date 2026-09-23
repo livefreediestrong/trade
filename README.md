@@ -199,6 +199,8 @@ Light mode: the ☀ / ☾ button in the header (defaults to your computer's sett
 ## Trading-bot ideas (from YouTube review, 2026-09-22)
 - **Trailing stop:** "Trailing stop %" in the Approve window — the stop follows the price up (never down).
 - **Lessons memory (`lessons.py`, `data/lessons.json`):** every scored call becomes a one-line lesson; before deciding, the AI sees this desk's own record for the same kind of setup and ticker. `GET /api/lessons`.
+- **Memory health:** setup retrieval includes bounded recent results (last 12 matching lessons), ticker history, and total memory depth so stale aggregate history is not treated as current evidence.
+- **Market-capture funnel:** `/api/state` exposes `market_capture` with actionable-call, fill, horizon-outcome, capture-rate, blocked-call, and missed-favorable-call counts. These are descriptive research measures only; intraday MFE/MAE path capture is intentionally reported as unavailable until high/low path data is persisted.
 - **Midday check:** once a day after 12:00 ET, positions down 7%+ are closed and positions up 3%+ get their stop raised to the price paid (`MIDDAY_CUT_PCT`, `MIDDAY_BREAKEVEN_PCT`; off with `midday_check_enabled: false`).
 - **Report card:** header button — last 7 days, grade A–F, profit after costs, % of AI calls right, worst setups. `GET /api/report/weekly`.
 - **Scanner signals:** 5-minute relative volume (vs. the same time on prior days), VWAP and its slope, distance from VWAP / day's high in ATRs, bid-ask spread vs. ATR (market hours only). They can downgrade PASS → WATCH and are shown to the AI.

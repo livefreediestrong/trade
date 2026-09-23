@@ -44,6 +44,7 @@ import market_radar
 import api_providers
 import news_stream
 import news_intelligence
+import market_capture
 import desk_alerts
 import macro_calendar
 import edgar_client
@@ -4960,6 +4961,10 @@ def api_state():
         "ledger": ledger,
         "daily": daily,
         "journal": journal,
+        "market_capture": market_capture.scorecard(
+            decisions_preview,
+            ledger.get("fills") or [],
+        ),
         "live_locked": False,
         "research_draft": True,
         "broker": _broker_public_status(),

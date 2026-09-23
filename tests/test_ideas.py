@@ -18,6 +18,7 @@ import app as desk  # noqa: E402
 import lessons  # noqa: E402
 import news_stream  # noqa: E402
 import news_intelligence  # noqa: E402
+import market_capture  # noqa: E402
 import paper_loop  # noqa: E402
 import session_track  # noqa: E402
 
@@ -427,3 +428,16 @@ def test_research_link_endpoint_journals_display_only_link(client):
     )
     assert response.status_code == 200
     assert any(entry["action"] == "research_link" for entry in desk.load_journal())
+
+
+def test_market_capture_scorecard_surfaces_coverage_and_missed_calls():
+    decisions = [
+        {"event": "decision", "id": "a", "ticker": "AAPL", "decision": "buy", "outcome": "helped"},
+        {"event": "decision", "id": "b", "ticker": "MSFT", "decision": "sell", "outcome": "hurt"},
+    ]
+    result = market_capture.scorecard(decisions, [{"signal_id": "a"}])
+    assert result["actionable"] == 2
+    assert result["outcome_coverage"] == 1.0
+    assert result["capture_rate"] == 0.5
+    assert result["missed_favorable_calls"] == 0
+    assert result["scope"]["intraday_path_mfe_mae"] is False
