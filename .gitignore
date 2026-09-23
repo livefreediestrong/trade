@@ -12,5 +12,6 @@ data/*.bak
 data/*.corrupt.*
 data/*.txt
 data/*.tmp
+data/*.pid
 *.tmp
 .pytest_cache/

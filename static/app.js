@@ -5655,11 +5655,17 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
     const contradictions = Array.isArray(analysis.contradictions) ? analysis.contradictions.length : 0;
     const reliability = payload && payload.provider_reliability || {};
     const providers = Object.keys(reliability).length;
+    const fidelity = (payload && payload.research_fidelity) || {};
+    const fidelityChip = fidelity.envelope_count != null
+      ? '<span class="intel-chip" title="Evidence envelopes across news/social/SEC/macro/market/fundamental">Evidence ' +
+        escapeHtml(String(fidelity.envelope_count)) + " · conf " + escapeHtml(String(Math.round((fidelity.avg_confidence || 0) * 100))) + "%</span>"
+      : "";
     summary.innerHTML =
       '<span class="intel-chip">Sources ' + escapeHtml(String(providers)) + "</span>" +
       '<span class="intel-chip">Stale ' + escapeHtml(String(freshness.stale_count || 0)) + "</span>" +
       '<span class="intel-chip">' + escapeHtml(String(alerts)) + " multi-source alert" + (alerts === 1 ? "" : "s") + "</span>" +
-      '<span class="intel-chip">' + escapeHtml(String(contradictions)) + " contradiction" + (contradictions === 1 ? "" : "s") + "</span>";
+      '<span class="intel-chip">' + escapeHtml(String(contradictions)) + " contradiction" + (contradictions === 1 ? "" : "s") + "</span>" +
+      fidelityChip;
     const rows = Array.isArray(payload && payload.timeline) ? payload.timeline.slice(0, 8) : [];
     timeline.innerHTML = rows.length ? rows.map((row) => {
       const title = escapeHtml(String(row.title || row.description || row.form || "Research event").slice(0, 150));

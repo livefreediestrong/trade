@@ -20,6 +20,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+import evidence_model
+
 ET = ZoneInfo("America/New_York")
 FRED_BASE = "https://api.stlouisfed.org/fred"
 # High-impact series ids (observations) — free with FRED_API_KEY
@@ -283,6 +285,19 @@ def calendar_snapshot(force: bool = False) -> dict[str, Any]:
             return dict(_cache["payload"])
     release = fred_release_flags()
     obs = fred_latest_observations() if is_fred_configured() else []
+    envelopes = evidence_model.dedupe(
+        [
+            evidence_model.from_macro_event(flag, source=flag.get("source") or "fred")
+            for flag in (release.get("flags") or [])
+        ]
+        + [
+            evidence_model.from_macro_event(
+                {"label": obs_row.get("label"), "date": obs_row.get("date"), "kind": obs_row.get("series_id")},
+                source="fred",
+            )
+            for obs_row in obs
+        ]
+    )
     payload = {
         "ok": True,
         "as_of": datetime.now(timezone.utc).isoformat(),
@@ -290,6 +305,8 @@ def calendar_snapshot(force: bool = False) -> dict[str, Any]:
         "release": release,
         "fred_observations": obs,
         "providers": public_status(),
+        "research_fidelity": evidence_model.research_fidelity_summary(envelopes),
+        "envelopes": evidence_model.envelopes_to_dicts(envelopes),
     }
     with _lock:
         _cache["at"] = time.time()

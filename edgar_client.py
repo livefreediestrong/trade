@@ -20,6 +20,8 @@ from typing import Any, Optional
 
 import requests
 
+import evidence_model
+
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 
@@ -194,6 +196,9 @@ def recent_filings(symbol: str, *, limit: int = 8) -> dict[str, Any]:
             }
         )
 
+    envelopes = evidence_model.dedupe(
+        [evidence_model.from_edgar_filing(f, ticker=sym) for f in filings]
+    )
     payload = {
         "ok": True,
         "configured": True,
@@ -203,6 +208,8 @@ def recent_filings(symbol: str, *, limit: int = 8) -> dict[str, Any]:
         "filings": filings,
         "source": "data.sec.gov",
         "chip_label": f"SEC {filings[0]['form']}" if filings else "SEC filings",
+        "research_fidelity": evidence_model.research_fidelity_summary(envelopes),
+        "envelopes": evidence_model.envelopes_to_dicts(envelopes),
     }
     with _lock:
         _cache[cache_key] = {"at": time.time(), "payload": payload}
