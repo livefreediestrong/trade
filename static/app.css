@@ -5477,3 +5477,4 @@ body[data-phase="decide"] #session-toolbar .start-tool { display: none; }
 .bt-edge { color: var(--gain); border-color: var(--gain); }
 .bt-overfit, .bt-weak, .bt-not_enough { color: var(--warn); border-color: var(--warn); }
 .bt-no_edge { color: var(--loss); border-color: var(--loss); }
+.report-card, .recap-card { max-height: 88vh; overflow-y: auto; }
