@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tomahawk — Simple A+B mock</title>
+  <style>
+    :root {
+      --bg: #0e141c;
+      --panel: #141c26;
+      --panel2: #1a2430;
+      --border: #2a3648;
+      --text: #dce4ee;
+      --muted: #8494a8;
+      --accent: #6aadc8;   /* teal */
+      --gold: #c9a86c;
+      --green: #6fad8a;
+      --red: #c98a8a;
+      --amber: #c9a86c;
+      --radius: 14px;
+      --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+      --ease: cubic-bezier(0.33, 0.1, 0.25, 1);
+      --stage-pad: 1rem 1.15rem;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14.5px/1.55 var(--font);
+      letter-spacing: 0.01em;
+      min-height: 100vh;
+    }
+    button, input, select { font: inherit; color: inherit; }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0,0,0,0); border: 0;
+    }
+
+    /* —— Banner —— */
+    .mock-banner {
+      position: sticky; top: 0; z-index: 100;
+      background: linear-gradient(90deg, #2a3220, #1e2830 40%, #2a2830);
+      color: #c8d0b8;
+      text-align: center;
+      padding: 0.4rem 1rem;
+      font-size: 0.78rem;
+      letter-spacing: 0.03em;
+      border-bottom: 1px solid #3a4438;
+    }
+    .mock-banner strong { color: var(--gold); font-weight: 650; }
+
+    /* —— Paper chrome —— */
+    .paper-chrome {
+      display: flex; align-items: center; gap: 0.65rem;
+      padding: 0.45rem 1.15rem;
+      background: linear-gradient(180deg, rgba(22,34,46,0.92), rgba(14,20,28,0.75));
+      border-bottom: 1px solid var(--border);
+      font-size: 0.78rem;
+    }
+    .chrome-badge {
+      font-size: 0.68rem; font-weight: 700; letter-spacing: 0.06em;
+      text-transform: uppercase; padding: 0.18rem 0.5rem; border-radius: 999px;
+      border: 1px solid var(--border); color: var(--muted);
+    }
+    .chrome-badge.paper { color: var(--gold); border-color: rgba(201,168,108,0.35); background: rgba(201,168,108,0.08); }
+    .chrome-note { color: var(--muted); margin-left: auto; }
+
+    /* —— Header / butler card —— */
+    .topbar {
+      display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.85rem;
+      padding: 0.85rem 1.15rem 0.65rem; align-items: center;
+    }
+    .brand-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+    .brand h1 {
+      margin: 0; font-size: 1.2rem; font-weight: 650; letter-spacing: 0.04em;
+    }
+    .pill {
+      font-size: 0.68rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.04em; padding: 0.18rem 0.5rem; border-radius: 999px;
+      border: 1px solid var(--border); color: var(--muted); background: var(--panel2);
+    }
+    .pill.teal { color: var(--accent); border-color: rgba(106,173,200,0.35); }
+
+    .butler-card {
+      display: flex; align-items: center; gap: 0.7rem;
+      background: linear-gradient(135deg, rgba(106,173,200,0.1), rgba(201,168,108,0.06));
+      border: 1px solid rgba(106,173,200,0.22);
+      border-radius: 12px;
+      padding: 0.45rem 0.75rem 0.45rem 0.5rem;
+      max-width: 28rem;
+    }
+    .butler-mark {
+      width: 2.1rem; height: 2.1rem; border-radius: 50%;
+      background: radial-gradient(circle at 35% 30%, #8ecfe0, #3a7a8c 70%);
+      border: 2px solid rgba(201,168,108,0.45);
+      flex-shrink: 0;
+      box-shadow: 0 0 12px rgba(106,173,200,0.25);
+    }
+    .butler-card-text { min-width: 0; }
+    .butler-card-label {
+      font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--gold); font-weight: 650;
+    }
+    .butler-card-status {
+      margin: 0; font-size: 0.88rem; color: var(--text); line-height: 1.35;
+    }
+
+    .top-tools { display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap; }
+    .btn {
+      appearance: none; border: 1px solid var(--border); background: var(--panel2);
+      color: var(--text); border-radius: 9px; padding: 0.4rem 0.75rem;
+      cursor: pointer; transition: border-color 0.2s, background 0.2s, color 0.2s;
+    }
+    .btn:hover { border-color: var(--accent); color: #e8f4f8; }
+    .btn.ghost {
+      background: transparent; color: var(--muted); border-color: transparent;
+    }
+    .btn.ghost:hover { color: var(--text); border-color: var(--border); background: rgba(26,36,48,0.5); }
+    .btn.sm { padding: 0.32rem 0.6rem; font-size: 0.82rem; }
+    .btn.primary {
+      background: linear-gradient(180deg, rgba(106,173,200,0.35), rgba(106,173,200,0.18));
+      border-color: rgba(106,173,200,0.45); color: #e8f6fa; font-weight: 600;
+    }
+    .btn.primary:hover { border-color: var(--accent); }
+    .btn.gold-outline {
+      border-color: rgba(201,168,108,0.4); color: var(--gold); background: rgba(201,168,108,0.06);
+    }
+    .btn.soft-danger { color: var(--red); border-color: rgba(201,138,138,0.35); background: transparent; }
+    .btn.icon {
+      width: 2.2rem; height: 2.2rem; padding: 0; display: inline-grid; place-items: center;
+      border-radius: 10px; font-size: 1.05rem;
+    }
+
+    /* —— Session strip —— */
+    .session-bar {
+      display: flex; flex-wrap: wrap; gap: 0.75rem 1rem; align-items: flex-end;
+      padding: 0.55rem 1.15rem 0.85rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .tool label {
+      display: block; font-size: 0.65rem; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem;
+    }
+    .inline { display: flex; gap: 0.35rem; align-items: center; }
+    .dollar { color: var(--muted); font-family: var(--mono); font-weight: 700; }
+    .tool input[type="number"] {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      padding: 0.4rem 0.5rem; width: 5.5rem; color: var(--text);
+    }
+    .session-actions { display: flex; gap: 0.4rem; align-items: center; margin-left: auto; }
+    .fill-mode {
+      display: inline-flex; border: 1px solid var(--border); border-radius: 9px; overflow: hidden;
+    }
+    .fill-mode button {
+      border: 0; background: transparent; color: var(--muted); padding: 0.35rem 0.65rem;
+      cursor: pointer; font-size: 0.8rem;
+    }
+    .fill-mode button.active {
+      background: rgba(106,173,200,0.18); color: var(--accent); font-weight: 600;
+    }
+    .hint-quiet {
+      margin: 0; padding: 0.35rem 1.15rem 0.75rem; color: var(--muted); font-size: 0.8rem;
+    }
+    .disclaimer {
+      margin: 0.5rem 1.15rem 1.25rem; padding: 0.55rem 0.75rem;
+      border-radius: 10px; border: 1px dashed rgba(201,168,108,0.3);
+      color: var(--muted); font-size: 0.78rem; background: rgba(201,168,108,0.04);
+    }
+
+    /* —— Sticky stage + ambient —— */
+    .stage-wrap {
+      position: sticky; top: 1.9rem; z-index: 40;
+      margin: 0.35rem 0.85rem 0.65rem;
+      border-radius: 16px;
+      border: 1px solid rgba(106,173,200,0.2);
+      overflow: hidden;
+      background: var(--panel);
+      box-shadow: 0 8px 28px rgba(0,0,0,0.28);
+    }
+    .ambient {
+      position: absolute; inset: 0; pointer-events: none; z-index: 0;
+      background:
+        radial-gradient(ellipse 80% 60% at 20% 30%, rgba(106,173,200,0.14), transparent 55%),
+        radial-gradient(ellipse 70% 50% at 85% 70%, rgba(201,168,108,0.08), transparent 50%),
+        radial-gradient(ellipse 50% 40% at 50% 100%, rgba(111,173,138,0.06), transparent 60%),
+        linear-gradient(165deg, #121a24 0%, #0e141c 55%, #141c26 100%);
+    }
+    .ambient::after {
+      content: "";
+      position: absolute; inset: 0;
+      background:
+        repeating-linear-gradient(90deg, transparent, transparent 48px, rgba(106,173,200,0.03) 48px, rgba(106,173,200,0.03) 49px),
+        repeating-linear-gradient(0deg, transparent, transparent 36px, rgba(201,168,108,0.02) 36px, rgba(201,168,108,0.02) 37px);
+      opacity: 0.7;
+      animation: ambient-drift 18s linear infinite;
+    }
+    @keyframes ambient-drift {
+      from { transform: translateX(0); }
+      to { transform: translateX(-48px); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .ambient::after { animation: none; }
+    }
+
+    .stage {
+      position: relative; z-index: 1;
+      padding: var(--stage-pad);
+      display: flex; flex-direction: column; gap: 0.75rem;
+    }
+
+    /* Thin goal race */
+    .goal-race {
+      display: flex; align-items: center; gap: 0.65rem;
+    }
+    .goal-race .lbl {
+      font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em;
+      color: var(--muted); white-space: nowrap;
+    }
+    .race-track {
+      flex: 1; height: 5px; border-radius: 999px;
+      background: var(--panel2); border: 1px solid var(--border); position: relative; overflow: hidden;
+    }
+    .race-fill {
+      height: 100%; width: 42%;
+      background: linear-gradient(90deg, #3a6a9a, var(--accent));
+      border-radius: 999px;
+      transition: width 0.4s var(--ease);
+    }
+    .race-pace {
+      position: absolute; top: -2px; bottom: -2px; width: 2px;
+      background: var(--gold); left: 68%; opacity: 0.85;
+    }
+    .goal-race .rem { font-size: 0.72rem; color: var(--muted); font-family: var(--mono); white-space: nowrap; }
+
+    /* Call card — spoken tone */
+    .call-spoken {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 1rem 1.15rem;
+      align-items: center;
+      padding: 0.85rem 1rem;
+      border-radius: 14px;
+      background: rgba(20, 28, 38, 0.72);
+      border: 1px solid rgba(106,173,200,0.18);
+      backdrop-filter: blur(6px);
+    }
+    @media (max-width: 560px) {
+      .call-spoken { grid-template-columns: 1fr; text-align: center; justify-items: center; }
+    }
+
+    .conf-ring-wrap {
+      position: relative; width: 5.6rem; height: 5.6rem;
+      display: grid; place-items: center;
+    }
+    .conf-ring {
+      position: absolute; inset: 0;
+      border-radius: 50%;
+      background: conic-gradient(
+        var(--accent) 0deg 198deg,
+        rgba(42,54,72,0.85) 198deg 360deg
+      );
+      mask: radial-gradient(farthest-side, transparent calc(100% - 6px), #000 calc(100% - 5px));
+      -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 6px), #000 calc(100% - 5px));
+      opacity: 0.9;
+    }
+    .conf-ring-core {
+      width: 4.35rem; height: 4.35rem; border-radius: 50%;
+      background: linear-gradient(160deg, #1a2430, #121820);
+      border: 1px solid rgba(106,173,200,0.25);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      z-index: 1;
+    }
+    .action-word {
+      font-size: 1.35rem; font-weight: 750; letter-spacing: 0.02em;
+      line-height: 1.1;
+    }
+    .action-word.hold { color: var(--amber); }
+    .action-word.buy { color: var(--green); }
+    .action-word.sell { color: var(--red); }
+    .conf-label {
+      font-size: 0.62rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em;
+    }
+
+    .spoken-body { min-width: 0; }
+    .spoken-eyebrow {
+      font-size: 0.68rem; color: var(--gold); text-transform: uppercase;
+      letter-spacing: 0.05em; font-weight: 650; margin: 0 0 0.25rem;
+    }
+    .spoken-line {
+      margin: 0; font-size: 1.05rem; line-height: 1.4; color: var(--text);
+      font-weight: 500;
+    }
+    .spoken-line em {
+      font-style: normal; color: var(--accent); font-weight: 650;
+    }
+    .spoken-why {
+      margin: 0.4rem 0 0; font-size: 0.84rem; color: var(--muted); line-height: 1.4;
+    }
+    .spoken-meta {
+      margin: 0.45rem 0 0; font-size: 0.72rem; color: var(--muted);
+      font-family: var(--mono);
+    }
+
+    /* Demo controls strip under stage */
+    .demo-controls {
+      display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center;
+      margin: 0 0.85rem 0.85rem; padding: 0.5rem 0.65rem;
+      border-radius: 10px; border: 1px dashed var(--border);
+      background: rgba(26,36,48,0.4);
+    }
+    .demo-controls .tag {
+      font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em;
+      color: var(--gold); font-weight: 650; margin-right: 0.25rem;
+    }
+
+    /* —— Waiting tray —— */
+    .waiting-tray {
+      margin: 0 0.85rem 0.75rem;
+      border-radius: 14px;
+      border: 1px solid rgba(201,168,108,0.22);
+      background: linear-gradient(180deg, rgba(32,36,40,0.55), rgba(20,28,38,0.4));
+      padding: 0.75rem 0.9rem;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+    }
+    .waiting-tray[hidden],
+    .waiting-tray.is-empty-hidden { display: none !important; }
+    .waiting-tray-head {
+      display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+      margin-bottom: 0.65rem;
+    }
+    .waiting-tray-head h2 {
+      margin: 0; font-size: 0.92rem; font-weight: 600; color: var(--text);
+    }
+    .waiting-tray-head .count {
+      font-size: 0.72rem; font-weight: 700; color: var(--gold);
+      background: rgba(201,168,108,0.12); border: 1px solid rgba(201,168,108,0.3);
+      padding: 0.12rem 0.45rem; border-radius: 999px;
+    }
+    .tray-card {
+      display: flex; flex-wrap: wrap; gap: 0.65rem; align-items: center;
+      padding: 0.75rem 0.85rem;
+      border-radius: 12px;
+      background: rgba(14,20,28,0.65);
+      border: 1px solid rgba(201,168,108,0.18);
+    }
+    .tray-sym {
+      font-family: var(--mono); font-weight: 750; font-size: 1.05rem; color: var(--accent);
+      min-width: 3.2rem;
+    }
+    .tray-call {
+      font-weight: 650; color: var(--green);
+    }
+    .tray-call.sell { color: var(--red); }
+    .tray-why { flex: 1; min-width: 10rem; font-size: 0.84rem; color: var(--muted); }
+    .tray-actions { display: flex; gap: 0.4rem; margin-left: auto; }
+
+    /* Empty-state CSS (present in DOM when count=0 path shown via toggle) */
+    .waiting-empty {
+      margin: 0 0.85rem 0.75rem;
+      padding: 1rem;
+      text-align: center;
+      border-radius: 14px;
+      border: 1px dashed transparent;
+      color: var(--muted);
+      display: none;
+    }
+    .waiting-empty.is-shown {
+      display: block;
+      border-color: rgba(42,54,72,0.6);
+      background: rgba(20,28,38,0.25);
+    }
+    .waiting-empty .ico { font-size: 1.25rem; opacity: 0.45; margin: 0 0 0.35rem; }
+    .waiting-empty p { margin: 0.15rem 0; font-size: 0.88rem; }
+    .waiting-empty .sub { font-size: 0.78rem; opacity: 0.85; }
+
+    /* —— Day curve strip —— */
+    .curve-strip {
+      margin: 0 0.85rem 0.65rem;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      overflow: hidden;
+    }
+    .curve-toggle {
+      width: 100%; display: flex; align-items: center; gap: 0.65rem;
+      padding: 0.55rem 0.85rem; background: transparent; border: 0;
+      color: var(--text); cursor: pointer; text-align: left;
+    }
+    .curve-toggle:hover { background: rgba(106,173,200,0.06); }
+    .curve-toggle .chev {
+      color: var(--muted); font-size: 0.75rem; transition: transform 0.25s var(--ease);
+    }
+    .curve-strip.is-open .curve-toggle .chev { transform: rotate(90deg); }
+    .spark {
+      flex: 1; height: 28px; display: block;
+    }
+    .curve-meta { font-size: 0.72rem; color: var(--muted); font-family: var(--mono); white-space: nowrap; }
+    .curve-body {
+      display: none; padding: 0 0.85rem 0.85rem;
+      border-top: 1px solid var(--border);
+    }
+    .curve-strip.is-open .curve-body { display: block; padding-top: 0.65rem; }
+    .curve-big {
+      width: 100%; height: 110px; display: block; border-radius: 8px;
+      background: var(--panel2);
+    }
+    .curve-caption { margin: 0.45rem 0 0; font-size: 0.78rem; color: var(--muted); }
+
+    /* —— Positions chips —— */
+    .pos-row {
+      margin: 0 0.85rem 1rem;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      overflow: hidden;
+    }
+    .pos-toggle {
+      width: 100%; display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.6rem 0.85rem; background: transparent; border: 0;
+      color: var(--text); cursor: pointer; text-align: left;
+    }
+    .pos-toggle:hover { background: rgba(106,173,200,0.06); }
+    .pos-chip {
+      font-size: 0.75rem; font-weight: 650; padding: 0.2rem 0.55rem;
+      border-radius: 999px; border: 1px solid rgba(106,173,200,0.3);
+      background: rgba(106,173,200,0.1); color: var(--accent);
+    }
+    .pos-hint { margin-left: auto; font-size: 0.75rem; color: var(--muted); }
+    .pos-body {
+      display: none; padding: 0 0.85rem 0.85rem;
+      border-top: 1px solid var(--border);
+    }
+    .pos-row.is-open .pos-body { display: block; padding-top: 0.65rem; }
+    .pos-item {
+      display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: baseline;
+      padding: 0.45rem 0; border-bottom: 1px solid rgba(42,54,72,0.6);
+      font-size: 0.88rem;
+    }
+    .pos-item:last-child { border-bottom: 0; }
+    .pos-item .sym { font-family: var(--mono); font-weight: 700; color: var(--accent); min-width: 3rem; }
+    .pos-item .side { color: var(--green); font-weight: 600; }
+    .pos-item .pnl.pos { color: var(--green); font-family: var(--mono); }
+    .pos-item .pnl.neg { color: var(--red); font-family: var(--mono); }
+    .pos-item .meta { color: var(--muted); font-size: 0.78rem; }
+
+    /* —— Settings sheet —— */
+    .sheet-backdrop {
+      position: fixed; inset: 0; background: rgba(6,10,14,0.62);
+      z-index: 200; opacity: 0; pointer-events: none; transition: opacity 0.25s;
+    }
+    .sheet-backdrop.is-open { opacity: 1; pointer-events: auto; }
+    .sheet {
+      position: fixed; right: 0; top: 0; bottom: 0; width: min(22rem, 92vw);
+      background: var(--panel); border-left: 1px solid var(--border);
+      z-index: 210; transform: translateX(100%);
+      transition: transform 0.3s var(--ease);
+      display: flex; flex-direction: column;
+      box-shadow: -12px 0 40px rgba(0,0,0,0.35);
+    }
+    .sheet.is-open { transform: translateX(0); }
+    .sheet-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 1rem 1.1rem; border-bottom: 1px solid var(--border);
+    }
+    .sheet-head h2 { margin: 0; font-size: 1.05rem; }
+    .sheet-body { padding: 1rem 1.1rem; overflow: auto; flex: 1; }
+    .sheet-section { margin-bottom: 1.25rem; }
+    .sheet-section h3 {
+      margin: 0 0 0.55rem; font-size: 0.72rem; text-transform: uppercase;
+      letter-spacing: 0.06em; color: var(--gold); font-weight: 650;
+    }
+    .sheet-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
+      padding: 0.55rem 0; border-bottom: 1px solid rgba(42,54,72,0.5);
+      font-size: 0.88rem;
+    }
+    .sheet-row:last-child { border-bottom: 0; }
+    .sheet-row span { color: var(--muted); font-size: 0.78rem; display: block; margin-top: 0.15rem; }
+    .toggle {
+      width: 2.4rem; height: 1.3rem; border-radius: 999px; border: 1px solid var(--border);
+      background: var(--panel2); position: relative; cursor: pointer; flex-shrink: 0;
+    }
+    .toggle.on { background: rgba(106,173,200,0.35); border-color: var(--accent); }
+    .toggle::after {
+      content: ""; position: absolute; top: 2px; left: 2px; width: 1rem; height: 1rem;
+      border-radius: 50%; background: var(--text); transition: left 0.2s;
+    }
+    .toggle.on::after { left: calc(100% - 1.1rem); }
+
+    .back-link {
+      display: inline-flex; align-items: center; gap: 0.35rem;
+      margin: 0 0.85rem 1.5rem; color: var(--muted); font-size: 0.84rem;
+      text-decoration: none;
+    }
+    .back-link:hover { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="mock-banner" role="status">
+    <strong>MOCK</strong> — Simple A+B preview · not wired to live loop
+  </div>
+
+  <div class="paper-chrome">
+    <span class="chrome-badge paper">PAPER ONLY</span>
+    <span class="chrome-badge">RTH open</span>
+    <span class="chrome-note">Educational desk · fake money</span>
+  </div>
+
+  <header class="topbar">
+    <div class="brand-row">
+      <div class="brand"><h1>Tomahawk</h1></div>
+      <span class="pill teal">Brain · Mock</span>
+      <div class="butler-card" aria-label="Butler status">
+        <div class="butler-mark" aria-hidden="true"></div>
+        <div class="butler-card-text">
+          <div class="butler-card-label">Butler</div>
+          <p class="butler-card-status" id="butler-header-status">Session on — watching the tape for you, Master.</p>
+        </div>
+      </div>
+    </div>
+    <div class="top-tools">
+      <button type="button" class="btn ghost sm" title="How to (mock)">How to</button>
+      <button type="button" class="btn icon ghost" id="btn-settings" title="Settings — friction &amp; alerts" aria-label="Open settings">⚙</button>
+    </div>
+  </header>
+
+  <div class="session-bar">
+    <div class="tool">
+      <label for="mock-goal">Goal</label>
+      <div class="inline"><span class="dollar">$</span><input id="mock-goal" type="number" value="250" readonly /></div>
+    </div>
+    <div class="tool">
+      <label for="mock-cash">Cash</label>
+      <div class="inline"><span class="dollar">$</span><input id="mock-cash" type="number" value="10000" readonly /></div>
+    </div>
+    <div class="session-actions">
+      <div class="fill-mode" role="group" aria-label="Fill mode">
+        <button type="button" data-fill="auto">Auto fill</button>
+        <button type="button" class="active" data-fill="ask">Ask me first</button>
+      </div>
+      <button type="button" class="btn soft-danger sm" title="Stop session (mock)">Stop</button>
+    </div>
+  </div>
+  <p class="hint-quiet">One job while Start is on: see the latest call and act if needed. Everything else collapses.</p>
+
+  <!-- A1 sticky stage + A4 ambient -->
+  <div class="stage-wrap" id="stage">
+    <div class="ambient" aria-hidden="true"></div>
+    <div class="stage">
+      <div class="goal-race" aria-label="Goal race">
+        <span class="lbl">Goal</span>
+        <div class="race-track">
+          <div class="race-fill" id="race-fill"></div>
+          <div class="race-pace" title="Pace through RTH (informational)"></div>
+        </div>
+        <span class="rem">$105 · 42%</span>
+      </div>
+
+      <div class="call-spoken" role="status" aria-live="polite">
+        <div class="conf-ring-wrap" title="Confidence medium">
+          <div class="conf-ring" aria-hidden="true"></div>
+          <div class="conf-ring-core">
+            <span class="action-word hold" id="action-word">Hold</span>
+            <span class="conf-label">medium</span>
+          </div>
+        </div>
+        <div class="spoken-body">
+          <p class="spoken-eyebrow">Latest call</p>
+          <p class="spoken-line" id="spoken-line">
+            I would <em>Hold AAPL</em> — confidence medium…
+          </p>
+          <p class="spoken-why">
+            Tape is orderly; no clean edge for a paper entry yet. I am content to wait rather than force a trade.
+          </p>
+          <p class="spoken-meta">AAPL · 14:22 ET · paper research only</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="demo-controls" aria-label="Mock demo controls">
+    <span class="tag">Demo</span>
+    <button type="button" class="btn sm gold-outline" id="btn-toggle-waiting">Waiting: 1 card</button>
+    <button type="button" class="btn sm ghost" id="btn-cycle-call">Cycle Hold / Buy / Sell</button>
+    <button type="button" class="btn sm ghost" id="btn-open-settings-demo">Open Settings</button>
+  </div>
+
+  <!-- A2 Waiting — only when count > 0; empty-state CSS when 0 -->
+  <section class="waiting-tray" id="waiting-tray" aria-label="Waiting tray">
+    <div class="waiting-tray-head">
+      <h2>Waiting for you</h2>
+      <span class="count" id="waiting-count">1</span>
+    </div>
+    <div class="tray-card" id="tray-sample">
+      <span class="tray-sym">NVDA</span>
+      <span class="tray-call">Buy</span>
+      <span class="tray-why">Quiet breakout on the 5‑minute — size kept small for paper. Shall I place it?</span>
+      <div class="tray-actions">
+        <button type="button" class="btn primary sm">Approve</button>
+        <button type="button" class="btn ghost sm">Skip</button>
+      </div>
+    </div>
+  </section>
+
+  <div class="waiting-empty" id="waiting-empty" aria-live="polite">
+    <p class="ico" aria-hidden="true">❚❚</p>
+    <p>Nothing waiting.</p>
+    <p class="sub">When an idea needs you, it lands here as a calm tray card.</p>
+  </div>
+
+  <!-- A3 Day curve collapsed -->
+  <div class="curve-strip" id="curve-strip">
+    <button type="button" class="curve-toggle" id="btn-curve" aria-expanded="false">
+      <span class="chev" aria-hidden="true">▸</span>
+      <span>Day curve</span>
+      <svg class="spark" viewBox="0 0 120 28" aria-hidden="true">
+        <polyline fill="none" stroke="#6aadc8" stroke-width="1.6"
+          points="2,22 14,20 26,18 38,19 50,14 62,15 74,10 86,12 98,8 110,9 118,6" />
+      </svg>
+      <span class="curve-meta">+$105</span>
+    </button>
+    <div class="curve-body" id="curve-body">
+      <svg class="curve-big" viewBox="0 0 320 110" preserveAspectRatio="none" aria-label="Expanded day P&amp;L curve">
+        <defs>
+          <linearGradient id="eqFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#6aadc8" stop-opacity="0.28"/>
+            <stop offset="100%" stop-color="#6aadc8" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <line x1="0" y1="70" x2="320" y2="70" stroke="#2a3648" stroke-width="1"/>
+        <polygon fill="url(#eqFill)"
+          points="0,90 40,85 80,78 120,82 160,60 200,64 240,42 280,48 320,28 320,110 0,110"/>
+        <polyline fill="none" stroke="#6aadc8" stroke-width="2"
+          points="0,90 40,85 80,78 120,82 160,60 200,64 240,42 280,48 320,28"/>
+        <circle cx="320" cy="28" r="3.5" fill="#c9a86c"/>
+      </svg>
+      <p class="curve-caption">Today’s paper P&amp;L so far. Tap the strip again to collapse. Not a broker statement.</p>
+    </div>
+  </div>
+
+  <!-- A5 Positions chip row -->
+  <div class="pos-row" id="pos-row">
+    <button type="button" class="pos-toggle" id="btn-pos" aria-expanded="false">
+      <span class="pos-chip" id="pos-chip">2 open</span>
+      <span>Positions</span>
+      <span class="pos-hint">tap to expand</span>
+    </button>
+    <div class="pos-body" id="pos-body">
+      <div class="pos-item">
+        <span class="sym">AAPL</span>
+        <span class="side">Long 8</span>
+        <span class="pnl pos">+$42.10</span>
+        <span class="meta">entry 188.20 · paper</span>
+      </div>
+      <div class="pos-item">
+        <span class="sym">MSFT</span>
+        <span class="side">Long 3</span>
+        <span class="pnl neg">−$8.40</span>
+        <span class="meta">entry 412.05 · paper</span>
+      </div>
+    </div>
+  </div>
+
+  <p class="disclaimer">
+    Paper-only educational desk. Calls are research suggestions for fake money — not live brokerage advice, not an order ticket, and not a promise of profit.
+  </p>
+
+  <a class="back-link" href="/">← Back to live Simple</a>
+
+  <!-- A6 Settings sheet -->
+  <div class="sheet-backdrop" id="sheet-backdrop" hidden></div>
+  <aside class="sheet" id="settings-sheet" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+    <div class="sheet-head">
+      <h2 id="settings-title">Settings</h2>
+      <button type="button" class="btn ghost sm" id="btn-sheet-close">Close</button>
+    </div>
+    <div class="sheet-body">
+      <div class="sheet-section">
+        <h3>Friction</h3>
+        <div class="sheet-row">
+          <div>Confirm larger paper size<span>Ask once when size exceeds comfort</span></div>
+          <button type="button" class="toggle on" data-toggle aria-pressed="true" title="Toggle"></button>
+        </div>
+        <div class="sheet-row">
+          <div>Slow down after a loss<span>Brief pause before the next idea</span></div>
+          <button type="button" class="toggle" data-toggle aria-pressed="false" title="Toggle"></button>
+        </div>
+      </div>
+      <div class="sheet-section">
+        <h3>Alerts</h3>
+        <div class="sheet-row">
+          <div>Soft alert sound<span>Quiet chime when Waiting needs you</span></div>
+          <button type="button" class="toggle on" data-toggle aria-pressed="true" title="Toggle"></button>
+        </div>
+        <div class="sheet-row">
+          <div>Desktop alerts<span>Browser notification when allowed</span></div>
+          <button type="button" class="toggle" data-toggle aria-pressed="false" title="Toggle"></button>
+        </div>
+      </div>
+      <p class="hint-quiet" style="padding:0">Moved off the main scroll so Simple stays one job. Live wiring later — this sheet is mock chrome only.</p>
+    </div>
+  </aside>
+
+  <script>
+    (function () {
+      const waitingTray = document.getElementById("waiting-tray");
+      const waitingEmpty = document.getElementById("waiting-empty");
+      const waitingBtn = document.getElementById("btn-toggle-waiting");
+      const waitingCount = document.getElementById("waiting-count");
+      let waitingFull = true;
+
+      function syncWaiting() {
+        if (waitingFull) {
+          waitingTray.hidden = false;
+          waitingTray.classList.remove("is-empty-hidden");
+          waitingEmpty.classList.remove("is-shown");
+          waitingCount.textContent = "1";
+          waitingBtn.textContent = "Waiting: 1 card";
+        } else {
+          waitingTray.hidden = true;
+          waitingTray.classList.add("is-empty-hidden");
+          waitingEmpty.classList.add("is-shown");
+          waitingBtn.textContent = "Waiting: empty (0)";
+        }
+      }
+      waitingBtn.addEventListener("click", function () {
+        waitingFull = !waitingFull;
+        syncWaiting();
+      });
+
+      /* Curve expand */
+      const curveStrip = document.getElementById("curve-strip");
+      const curveBtn = document.getElementById("btn-curve");
+      curveBtn.addEventListener("click", function () {
+        const open = curveStrip.classList.toggle("is-open");
+        curveBtn.setAttribute("aria-expanded", open ? "true" : "false");
+      });
+
+      /* Positions expand */
+      const posRow = document.getElementById("pos-row");
+      const posBtn = document.getElementById("btn-pos");
+      posBtn.addEventListener("click", function () {
+        const open = posRow.classList.toggle("is-open");
+        posBtn.setAttribute("aria-expanded", open ? "true" : "false");
+        posBtn.querySelector(".pos-hint").textContent = open ? "tap to collapse" : "tap to expand";
+      });
+
+      /* Settings sheet */
+      const sheet = document.getElementById("settings-sheet");
+      const backdrop = document.getElementById("sheet-backdrop");
+      function openSheet() {
+        sheet.hidden = false;
+        backdrop.hidden = false;
+        requestAnimationFrame(function () {
+          sheet.classList.add("is-open");
+          backdrop.classList.add("is-open");
+        });
+      }
+      function closeSheet() {
+        sheet.classList.remove("is-open");
+        backdrop.classList.remove("is-open");
+        setTimeout(function () {
+          sheet.hidden = true;
+          backdrop.hidden = true;
+        }, 280);
+      }
+      document.getElementById("btn-settings").addEventListener("click", openSheet);
+      document.getElementById("btn-open-settings-demo").addEventListener("click", openSheet);
+      document.getElementById("btn-sheet-close").addEventListener("click", closeSheet);
+      backdrop.addEventListener("click", closeSheet);
+      document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape" && sheet.classList.contains("is-open")) closeSheet();
+      });
+
+      document.querySelectorAll("[data-toggle]").forEach(function (el) {
+        el.addEventListener("click", function () {
+          const on = el.classList.toggle("on");
+          el.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+      });
+
+      document.querySelectorAll(".fill-mode button").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          document.querySelectorAll(".fill-mode button").forEach(function (b) { b.classList.remove("active"); });
+          btn.classList.add("active");
+        });
+      });
+
+      /* Cycle call for polish demo */
+      const calls = [
+        {
+          word: "Hold", cls: "hold",
+          line: 'I would <em>Hold AAPL</em> — confidence medium…',
+          why: "Tape is orderly; no clean edge for a paper entry yet. I am content to wait rather than force a trade.",
+          deg: 198
+        },
+        {
+          word: "Buy", cls: "buy",
+          line: 'I would <em>Buy MSFT</em> — confidence medium…',
+          why: "A quiet lift off VWAP with room for a small paper size. Only if you are comfortable, Master.",
+          deg: 240
+        },
+        {
+          word: "Sell", cls: "sell",
+          line: 'I would <em>Sell NVDA</em> — confidence low…',
+          why: "Momentum fading into resistance. A paper trim keeps risk tidy; no need to rush.",
+          deg: 120
+        }
+      ];
+      let callIdx = 0;
+      const wordEl = document.getElementById("action-word");
+      const lineEl = document.getElementById("spoken-line");
+      const whyEl = document.querySelector(".spoken-why");
+      const ringEl = document.querySelector(".conf-ring");
+      document.getElementById("btn-cycle-call").addEventListener("click", function () {
+        callIdx = (callIdx + 1) % calls.length;
+        const c = calls[callIdx];
+        wordEl.textContent = c.word;
+        wordEl.className = "action-word " + c.cls;
+        lineEl.innerHTML = c.line;
+        whyEl.textContent = c.why;
+        ringEl.style.background = "conic-gradient(var(--accent) 0deg " + c.deg + "deg, rgba(42,54,72,0.85) " + c.deg + "deg 360deg)";
+      });
+
+      syncWaiting();
+    })();
+  </script>
+</body>
+</html>

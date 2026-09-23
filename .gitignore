@@ -1,0 +1,16 @@
+venv/
+__pycache__/
+*.pyc
+.env
+data/*.json
+!data/.gitkeep
+*.log
+.DS_Store
+.venv/
+_backup_*/
+data/*.bak
+data/*.corrupt.*
+data/*.txt
+data/*.tmp
+*.tmp
+.pytest_cache/
