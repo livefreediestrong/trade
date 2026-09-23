@@ -78,6 +78,7 @@ def record_outcome(path: Path, ev: dict[str, Any]) -> dict[str, Any] | None:
         "outcome": ev.get("outcome"),
         "brain": ev.get("brain_mode"),
         "claude_outcome": ev.get("shadow_claude_outcome"),
+        "confidence": ev.get("confidence"),
         "move_bps": ev.get("outcome_move_bps"),
         "text": lesson_text(ev),
     }
@@ -127,6 +128,21 @@ def track_record(path: Path, *, ticker: str, verdict: Any, lateness: Any) -> dic
             "helped_rate": round(helped / (helped + hurt), 3) if helped + hurt else None,
             "avg_move_bps": round(sum(moves) / len(moves), 2) if moves else None,
         }
+    confidence_bands: dict[str, dict[str, Any]] = {}
+    for row in same_setup:
+        try:
+            confidence = max(0.0, min(1.0, float(row.get("confidence"))))
+        except (TypeError, ValueError):
+            continue
+        band = f"{int(confidence * 10) * 10:02d}-{int(confidence * 10) * 10 + 9:02d}"
+        bucket = confidence_bands.setdefault(band, {"samples": 0, "helped": 0, "hurt": 0, "flat": 0})
+        bucket["samples"] += 1
+        outcome = row.get("outcome")
+        if outcome in ("helped", "hurt", "flat"):
+            bucket[outcome] += 1
+    for bucket in confidence_bands.values():
+        decided = bucket["helped"] + bucket["hurt"]
+        bucket["observed_helped_rate"] = round(bucket["helped"] / decided, 3) if decided else None
     return {
         "setup": key,
         "setup_results": _tally(same_setup),
@@ -134,6 +150,7 @@ def track_record(path: Path, *, ticker: str, verdict: Any, lateness: Any) -> dic
         "ticker_recent": [r.get("text") for r in same_ticker],
         "recent_setup_results": recent_outcomes,
         "side_stats": side_stats,
+        "confidence_bands": confidence_bands,
         "memory_depth": len(rows),
     }
 
@@ -175,6 +192,16 @@ def prompt_note(record: dict[str, Any]) -> str | None:
             )
     if warnings:
         lines.append("Learning warning: " + "; ".join(warnings) + " — prefer Hold unless today's evidence is unusually strong.")
+    calibration = record.get("confidence_bands") or {}
+    calibration_lines = []
+    for band, bucket in sorted(calibration.items()):
+        observed = bucket.get("observed_helped_rate")
+        if bucket.get("samples", 0) >= 5 and observed is not None:
+            stated = (int(band.split("-", 1)[0]) + 5) / 100
+            if stated - observed >= 0.15:
+                calibration_lines.append(f"{band}% confidence produced only {observed:.0%} helped")
+    if calibration_lines:
+        lines.append("Confidence calibration warning: " + "; ".join(calibration_lines) + ". Discount similar confidence.")
     for t in record.get("ticker_recent") or []:
         lines.append("Recent on this ticker: " + t)
     lines.append(

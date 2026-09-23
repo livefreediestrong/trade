@@ -110,6 +110,14 @@ def test_lessons_reach_the_prompt(isolated_data):
     assert "learning_context" in a
 
 
+def test_lessons_warn_when_confidence_is_overstated(isolated_data):
+    for i in range(5):
+        lessons.record_outcome(desk.LESSONS_PATH, _ev(i, "hurt"))
+    rec = lessons.track_record(desk.LESSONS_PATH, ticker="AAPL", verdict="WATCH", lateness="fair")
+    assert rec["confidence_bands"]["70-79"]["observed_helped_rate"] == 0.0
+    assert "Confidence calibration warning" in (lessons.prompt_note(rec) or "")
+
+
 def test_no_history_means_no_note():
     a = desk._with_lessons({"ticker": "AAPL", "verdict": "PASS"})
     assert "past_results_for_similar_setups" not in a
