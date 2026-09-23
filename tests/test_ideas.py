@@ -96,8 +96,9 @@ def test_lessons_record_and_prompt_note(isolated_data):
     assert lessons.record_outcome(p, _ev(0, "hurt")) is None  # idempotent
     rec = lessons.track_record(p, ticker="AAPL", verdict="WATCH", lateness="fair")
     assert rec["setup_results"]["buy"] == {"helped": 1, "hurt": 4, "flat": 0}
+    assert rec["side_stats"]["buy"]["samples"] == 5
     note = lessons.prompt_note(rec)
-    assert "1 helped, 4 hurt" in note and "AAPL" in note
+    assert "1 helped, 4 hurt" in note and "AAPL" in note and "Learning warning" in note
 
 
 def test_lessons_reach_the_prompt(isolated_data):
@@ -106,6 +107,7 @@ def test_lessons_reach_the_prompt(isolated_data):
     a = desk._with_lessons({"ticker": "AAPL", "verdict": "WATCH", "entry_quality": {"label": "fair"}})
     import llm_trader
     assert "past_results_for_similar_setups" in llm_trader._analysis_context_blob(a)
+    assert "learning_context" in a
 
 
 def test_no_history_means_no_note():
@@ -468,4 +470,4 @@ def test_market_capture_scorecard_surfaces_coverage_and_missed_calls():
     assert result["outcome_coverage"] == 1.0
     assert result["capture_rate"] == 0.5
     assert result["missed_favorable_calls"] == 0
-    assert result["scope"]["intraday_path_mfe_mae"] is False
+    assert result["scope"]["intraday_path_mfe_mae"] == "conditional_quote_path"

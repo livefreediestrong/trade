@@ -108,12 +108,32 @@ def track_record(path: Path, *, ticker: str, verdict: Any, lateness: Any) -> dic
     same_ticker = [r for r in rows if r.get("ticker") == str(ticker or "").upper()][:8]
     setup_recent = same_setup[:12]
     recent_outcomes = _tally(setup_recent)
+    side_stats: dict[str, dict[str, Any]] = {}
+    for side in ("buy", "sell", "flat"):
+        samples = [r for r in same_setup if r.get("side") == side]
+        moves = []
+        for row in samples:
+            try:
+                moves.append(float(row.get("move_bps")))
+            except (TypeError, ValueError):
+                continue
+        helped = sum(1 for r in samples if r.get("outcome") == "helped")
+        hurt = sum(1 for r in samples if r.get("outcome") == "hurt")
+        side_stats[side] = {
+            "samples": len(samples),
+            "helped": helped,
+            "hurt": hurt,
+            "flat": len(samples) - helped - hurt,
+            "helped_rate": round(helped / (helped + hurt), 3) if helped + hurt else None,
+            "avg_move_bps": round(sum(moves) / len(moves), 2) if moves else None,
+        }
     return {
         "setup": key,
         "setup_results": _tally(same_setup),
         "setup_count": len(same_setup),
         "ticker_recent": [r.get("text") for r in same_ticker],
         "recent_setup_results": recent_outcomes,
+        "side_stats": side_stats,
         "memory_depth": len(rows),
     }
 
@@ -145,6 +165,16 @@ def prompt_note(record: dict[str, Any]) -> str | None:
             recent_parts.append(f"{side}: {bucket.get('helped', 0)} helped/{bucket.get('hurt', 0)} hurt")
     if recent_parts:
         lines.append("Most recent similar setups: " + ", ".join(recent_parts) + ".")
+    stats = record.get("side_stats") or {}
+    warnings = []
+    for side in ("buy", "sell"):
+        s = stats.get(side) or {}
+        if (s.get("samples") or 0) >= 5 and (s.get("helped_rate") or 0) < 0.45:
+            warnings.append(
+                f"{side} has only {s.get('helped_rate', 0):.0%} helped ({s.get('samples')} samples)"
+            )
+    if warnings:
+        lines.append("Learning warning: " + "; ".join(warnings) + " — prefer Hold unless today's evidence is unusually strong.")
     for t in record.get("ticker_recent") or []:
         lines.append("Recent on this ticker: " + t)
     lines.append(

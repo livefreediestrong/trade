@@ -3794,6 +3794,14 @@ def _with_lessons(analysis: dict) -> dict:
         return analysis
     out = dict(analysis)
     out["past_results_for_similar_setups"] = note
+    # Keep the numeric evidence available to the decision engine; prose alone
+    # can be misunderstood and cannot be audited after a decision.
+    out["learning_context"] = {
+        "setup": rec.get("setup"),
+        "sample_count": rec.get("setup_count", 0),
+        "side_stats": rec.get("side_stats", {}),
+        "instruction": "Use this as prior evidence, not as a guarantee. Abstain when the matching side has persistent negative results.",
+    }
     return out
 
 
