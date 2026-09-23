@@ -60,6 +60,27 @@ def test_signal_uses_atr_stop_distance(monkeypatch):
     assert sig["spread_atr"] == 0.02
 
 
+def test_scan_downgrades_wide_spread_pass(monkeypatch):
+    import screener_logic
+
+    cfg = desk.load_config()
+    cfg.update(watchlist=["AAPL"], llm_on_scan=False)
+    monkeypatch.setattr(screener_logic, "analyze_ticker", lambda _: {
+        "ticker": "AAPL",
+        "price": 100.0,
+        "verdict": "PASS",
+        "verdict_text": "volume and structure",
+        "entry_quality": {"label": "early"},
+        "intraday": {"atr_usd": 2.0, "spread_atr": 0.12},
+        "volume": {"rel_vol": 2.0, "session_is_today": True},
+        "checks": {},
+        "sources": [],
+    })
+    sig = desk.generate_scan_signal(cfg, force=True)
+    assert sig["verdict"] == "WATCH"
+    assert "execution_quality_block" in sig["research_flags"]
+
+
 def test_promotion_requires_net_expectancy_and_profit_factor():
     now = datetime.now().astimezone().isoformat()
     cfg = {

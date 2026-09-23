@@ -1750,7 +1750,7 @@ def _analysis_to_signal(
     lateness_label = entry.get("label") if isinstance(entry, dict) else None
     vol = analysis.get("volume") or {}
 
-    research_flags: list[str] = []
+    research_flags: list[str] = list(analysis.get("research_flags") or [])
 
     # Tag sector dying as AVOID research candidate (still queue buy-side).
     if checks.get("sector_dying") and verdict != "AVOID":
@@ -2107,6 +2107,22 @@ def generate_scan_signal(
 
         entry = analysis.get("entry_quality") or {}
         lateness = (entry.get("label") if isinstance(entry, dict) else None) or "fair"
+        intraday = analysis.get("intraday") or {}
+        spread_atr = _finite_float(intraday.get("spread_atr"))
+        execution_blocked = (
+            (spread_atr is not None and spread_atr > 0.08)
+            or lateness.lower() in ("late", "chasing")
+        )
+        if execution_blocked and verdict == "PASS":
+            analysis = dict(analysis)
+            analysis["verdict"] = "WATCH"
+            analysis["verdict_text"] = (
+                analysis.get("verdict_text") or "Setup found."
+            ) + " Entry blocked: execution quality is poor (wide spread or late/chasing price)."
+            analysis["research_flags"] = list(analysis.get("research_flags") or []) + [
+                "execution_quality_block"
+            ]
+            verdict = "WATCH"
 
         if verdict == "PASS":
             sig = _analysis_to_signal(analysis, cfg, preset, force=force)
