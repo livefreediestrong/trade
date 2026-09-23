@@ -12,9 +12,9 @@ Companion-style app for a Windows PC beside `holdings-options-monitor`.
 - **Draft research tool** — no practical-use capability filters; AVOID / late / chasing / low confidence are **annotations** (`research_flags`), not hard rejects.
 - **Alpaca optional** via `broker_alpaca.py` (`ALPACA_API_KEY` / `ALPACA_API_SECRET`). Default `ALPACA_PAPER=true` → `paper-api.alpaca.markets`.
 - Raw `/api/broker/*`, `/api/orders`, `/api/alpaca/*`, `/api/ibkr/*`, `/api/tos/*` stay **403** (use desk approve / auto_live).
-- **auto_live / approve (when mode=auto_live):** `can_take_trade` + size/loss caps **first**, then broker submit. Successful broker submit is **broker-only** (no dual local `paper_fill`). Broker fail → local paper fallback with clear status.
+- **auto_live / approve (when mode=auto_live):** `can_take_trade` + size/loss caps **first**, then broker submit. Successful broker submit is **broker-only** (no dual local `paper_fill`). Broker fail → **no trade** (never booked as paper).
 - UI masthead: **PAPER ONLY** unless `ALPACA_PAPER=false` and keys set → **LIVE ENDPOINT**.
-- **No** `ENABLE LIVE AUTO` unlock phrase. Optional kill-switch limits only.
+- Switching to real money requires typing REAL in the confirm prompt.
 
 Kill-switch / daily profit target remain **optional** research controls; they do not block mode entry by default.
 
@@ -45,7 +45,7 @@ Config toggles (also via `POST /api/config`): `llm_enabled` (default true), `llm
 |------|----------|
 | **manual** (default) | Signals land in a **pending** queue. User must **Approve** or **Reject**. Approve → paper fill into ledger. |
 | **auto_paper** | Signals are approved automatically into the **paper** ledger (simulated fills at signal/last price ± slip). No broker. |
-| **auto_live** | Gate `can_take_trade` first; if Alpaca keys set, submit to Alpaca (paper-api unless `ALPACA_PAPER=false`). Success = broker-only book. Fail = local paper fallback. No unlock phrase. Optional kill-switch may still be set. |
+| **auto_live** | Gate `can_take_trade` first; if Alpaca keys set, submit to Alpaca (paper-api unless `ALPACA_PAPER=false`). Success = broker-only book. Fail = no trade. Switching to real money asks you to type REAL. |
 
 ## Risk presets
 
@@ -86,11 +86,9 @@ Flask + Jinja + vanilla JS + yfinance/pandas/requests. Dark desk UI (`--bg #0b0f
 
 ## Windows quick start
 
-```bat
-Launch.bat
-```
+Double-click the **Tomahawk** desktop shortcut (runs `Start-Tomahawk.ps1`: starts the desk if needed, then opens the browser). First-time setup: `python -m venv .venv` then `.venv\Scripts\pip install -r requirements.txt`.
 
-Creates `venv`, installs `requirements.txt`, runs on **5056**.
+(`Launch.bat` is legacy — it builds a separate `venv` folder.)
 
 Or after first setup:
 
@@ -120,7 +118,7 @@ Open `http://127.0.0.1:5056`
 
 - `GET /api/state` — config, signals by status, ledger, journal
 - `POST /api/config` — mode / preset / watchlist / optional kill-switch
-- `POST /api/signals/generate` — force one watchlist scan (optional `{"ticker": "AAPL"}`)
+- `POST /api/signals/generate` — force one watchlist scan (optional `{"ticker": "AAPL"}`); the idea always waits for Approve
 - `POST /api/signals/<id>/approve` — paper fill; if mode=auto_live → gate then broker-or-paper (no dual-book)
 - `POST /api/signals/<id>/reject`
 - `POST /api/ledger/reset`
@@ -132,9 +130,9 @@ Open `http://127.0.0.1:5056`
 ## Broker adapter summary (Alpaca optional)
 
 1. Default mode is **manual**; fills are local paper unless auto_live + keys.
-2. **auto_live** needs **no** unlock phrase (no `ENABLE LIVE AUTO` ceremony). Optional kill-switch still available.
+2. **auto_live** on a real-money endpoint asks you to type REAL; on Alpaca paper a confirm dialog.
 3. `live_broker_place_order` posts to Alpaca when keys are set; journals every attempt. Missing keys → `live_not_configured`.
-4. Desk **never** dual-books: broker success skips local `paper_fill`; broker fail falls back to local paper with `book=local_paper_fallback`.
+4. Desk **never** dual-books: broker success skips local `paper_fill`; broker fail is reported as a failure (no paper fallback).
 5. `ALPACA_PAPER` defaults **true**. `false` → live money endpoint; UI shows **LIVE ENDPOINT**.
 6. Force flatten closes local paper **and** cancel/close Alpaca when configured (else clearly not broker-complete).
 7. Raw broker HTTP routes return 403; banner always visible.
