@@ -39,6 +39,10 @@ import claude_brain
 import backtest
 import paper_loop as paper_loop_mod
 import session_track
+try:
+    import storage as _storage
+except Exception:  # pragma: no cover - SQLite mirroring is optional/best-effort
+    _storage = None
 import buzz_sources
 import market_radar
 import api_providers
@@ -642,6 +646,8 @@ def load_config() -> dict[str, Any]:
 
 def save_config(cfg: dict[str, Any]) -> None:
     _save_json(CONFIG_PATH, cfg)
+    if _storage is not None:
+        _storage.mirror_config(cfg)
 
 
 def load_signals() -> list[dict[str, Any]]:
@@ -666,6 +672,8 @@ def save_signals(signals: list[dict[str, Any]]) -> None:
         if i < SIGNALS_KEEP or (isinstance(s, dict) and s.get("status") in ("pending", "approving"))
     ]
     _save_json(SIGNALS_PATH, kept)
+    if _storage is not None:
+        _storage.mirror_signals(kept)
 
 
 def _signal_ui_projection(signal: dict[str, Any]) -> dict[str, Any]:
@@ -732,6 +740,8 @@ def save_ledger(ledger: dict[str, Any]) -> None:
     """Persist ledger; callers should hold `_lock` for RMW, but we re-enter safely."""
     with _lock:
         _save_json(LEDGER_PATH, ledger)
+        if _storage is not None:
+            _storage.mirror_ledger(ledger)
 
 
 def load_journal() -> list[dict[str, Any]]:
@@ -759,6 +769,8 @@ def append_journal(action: str, detail: dict[str, Any] | None = None) -> None:
 
 def save_journal(journal: list[dict[str, Any]]) -> None:
     _save_json(JOURNAL_PATH, journal)
+    if _storage is not None:
+        _storage.mirror_journal(journal)
 
 
 def get_preset(name: str | None = None) -> dict[str, Any]:

@@ -94,6 +94,37 @@ All under `./data/*.json`:
 - `signals.json` — signal queue
 - `ledger.json` — paper cash, positions, fills, daily stats
 - `journal.json` — action log
+- `decisions.json` — paper-loop decision ring buffer
+
+### SQLite persistence foundation (opt-in, staged)
+
+JSON stays authoritative by default — nothing below changes any existing
+behavior unless you opt in. A schema-versioned SQLite store
+(`data/tomahawk.sqlite3`, WAL mode, `PRAGMA foreign_keys=ON`) lives
+alongside the JSON files as a foundation for a future cutover:
+
+- `storage/` — connection/migration management (`storage.db`), one
+  repository class per domain (config, signals, decisions, orders, fills,
+  positions, journal, market cache — `storage.repositories`), and a JSON
+  import/export/parity bridge (`storage.json_bridge`).
+- `TOMAHAWK_STORAGE_BACKEND` env var controls mirroring:
+  - `json` (default) — SQLite is never touched.
+  - `dual` / `sqlite` — every JSON save is *also* best-effort mirrored into
+    SQLite; a mirror failure is logged and never blocks or corrupts the
+    JSON write that already succeeded.
+- `tools/db_admin.py` — CLI for `status`, `import` (JSON → SQLite, JSON is
+  read-only), `export` (SQLite → JSON), `verify` (diff JSON vs SQLite with
+  no writes — the pre-cutover parity check), `backup`, and `restore`.
+  Honors `TOMAHAWK_DATA_DIR` so it can be dry-run against a scratch copy of
+  `data/` first.
+- Backups are self-contained SQLite files (via the `sqlite3` backup API,
+  WAL-checkpointed) written to `data/backups/`; `restore` validates the
+  backup (`PRAGMA integrity_check`) before swapping it in and clears stale
+  `-wal`/`-shm` sidecars.
+- See `tests/test_sqlite_storage.py` for the safety proof: migrations are
+  idempotent, imports never mutate the JSON files, import→export round
+  trips are lossless, and mirroring in `dual` mode never raises even when
+  the SQLite write fails.
 
 ## Stack
 
