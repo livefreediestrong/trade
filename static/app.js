@@ -2741,6 +2741,11 @@
     if (simpleUi && lineEl) {
       if (!last) {
         lineEl.innerHTML = "Standing by — press <em>Start</em> when you wish";
+      } else if (!ticker) {
+        lineEl.innerHTML = "<em>No fresh call right now.</em> " +
+          (loop.outside_rth || loop.last_skip === "outside_rth" || last.event === "loop_skip_rth"
+            ? "The market is closed."
+            : "The loop is paused.");
       } else {
         const sym = ticker ? escapeHtml(String(ticker).toUpperCase()) : "this stock";
         const sure = surePhrase(conf);
@@ -2990,6 +2995,15 @@
         else probs = { flat: Math.max(conf, 0.5), buy: (1 - conf) * 0.5, sell: (1 - conf) * 0.5 };
       }
     }
+    // Non-ticker loop events (for example loop_skip_rth) are status events, not
+    // calls. Never borrow the first watchlist symbol and present it as a call.
+    const statusOnly = !!last && !String(last.ticker || "").trim();
+    if (statusOnly) {
+      decision = "hold";
+      conf = 0;
+      ticker = "";
+      probs = { buy: 0, sell: 0, flat: 1 };
+    }
     if (big && word) {
       const simpleUi = getUiMode() === "simple" || document.body.classList.contains("ui-simple");
       const pol = String((last && (last.policy_label || last.verdict || last.advisory_label)) || "").toUpperCase();
@@ -3105,7 +3119,10 @@
         } else {
           const bits = [];
           if (ticker) bits.push(ticker);
-          if (last.ts) bits.push(fmtTimeShort(last.ts));
+          if (statusOnly) {
+            const closed = loop.outside_rth || loop.last_skip === "outside_rth" || last.event === "loop_skip_rth";
+            bits.push(closed ? "market closed" : "loop paused");
+          } else if (last.ts) bits.push(fmtTimeShort(last.ts));
           else if (conf > 0) bits.push(`${Math.round(conf * 100)}%`);
           if (last?.late) bits.push("late");
           meta.textContent = bits.join(" · ") || (simpleUi ? "" : "Latest call");

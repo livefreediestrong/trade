@@ -4932,6 +4932,15 @@ def api_state():
         payload["focus_ticker"] = focus
     except Exception:
         focus = None
+    # Keep the auxiliary research focus separate from the latest-call identity.
+    # A tickerless loop event is a status update, not a call for watchlist[0].
+    latest_event = decisions_preview[0] if decisions_preview and isinstance(decisions_preview[0], dict) else None
+    latest_ticker = str(latest_event.get("ticker") or "").upper() if latest_event else ""
+    payload["latest_call"] = {
+        "ticker": latest_ticker or None,
+        "event": latest_event.get("event") if latest_event else None,
+        "status_only": bool(latest_event and not latest_ticker),
+    }
     payload.update(_state_aux_snapshot(cfg, watchlist, focus))
     payload["corrupt_files"] = corrupt_files_status()
     try:
