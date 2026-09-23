@@ -247,6 +247,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "radar_enabled": False,
     "radar_top_n": 20,
     "radar_refresh_sec": 300,
+    # Optional broad-market filter. Disabled by default until live data coverage is proven.
+    "market_regime_gate_enabled": False,
     # API pack — macro calendar gates (Fed/CPI/earnings); degrade when keys missing
     "macro_gates_enabled": True,
     "macro_size_mult": 0.5,
@@ -1095,6 +1097,48 @@ def _money_snapshot(cfg: dict[str, Any]) -> dict[str, Any]:
     if cfg.get("mode") in ("auto_live", "live_manual") or _broker_trades_today(ledger):
         out["broker_book"] = _broker_book_cached()
     return out
+
+
+def market_regime_status(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Classify broad-market tone from fresh SPY/QQQ radar snapshots.
+
+    Missing or stale benchmark data is explicitly unknown, never bullish or bearish.
+    The optional gate can therefore fail closed when enabled without fabricating a
+    regime from an unrelated mover.
+    """
+    cfg = cfg or {}
+    cached = market_radar.get_cached()
+    age = _finite_float(cached.get("age_sec"))
+    rows = {
+        str(row.get("ticker") or "").upper(): row
+        for row in cached.get("movers") or []
+        if isinstance(row, dict)
+    }
+    benchmarks = {}
+    for ticker in ("SPY", "QQQ"):
+        row = rows.get(ticker)
+        pct = _finite_float(row.get("pct_change")) if row else None
+        if pct is not None:
+            benchmarks[ticker] = round(pct, 3)
+    fresh = age is not None and age <= 900
+    if not fresh or len(benchmarks) < 2:
+        regime = "unknown"
+    elif all(value <= -0.5 for value in benchmarks.values()) or any(
+        value <= -1.0 for value in benchmarks.values()
+    ):
+        regime = "weak"
+    elif all(value >= 0.5 for value in benchmarks.values()):
+        regime = "strong"
+    else:
+        regime = "mixed"
+    return {
+        "enabled": bool(cfg.get("market_regime_gate_enabled", False)),
+        "regime": regime,
+        "benchmarks": benchmarks,
+        "fresh": fresh,
+        "age_sec": age,
+        "action": "downgrade_long_pass" if regime == "weak" else "none",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2121,6 +2165,22 @@ def generate_scan_signal(
             ) + " Entry blocked: execution quality is poor (wide spread or late/chasing price)."
             analysis["research_flags"] = list(analysis.get("research_flags") or []) + [
                 "execution_quality_block"
+            ]
+            verdict = "WATCH"
+
+        regime = market_regime_status(cfg)
+        if (
+            bool(cfg.get("market_regime_gate_enabled"))
+            and regime.get("regime") == "weak"
+            and verdict == "PASS"
+        ):
+            analysis = dict(analysis)
+            analysis["verdict"] = "WATCH"
+            analysis["verdict_text"] = (
+                analysis.get("verdict_text") or "Setup found."
+            ) + " Entry blocked: broad-market regime is weak."
+            analysis["research_flags"] = list(analysis.get("research_flags") or []) + [
+                "weak_market_regime"
             ]
             verdict = "WATCH"
 

@@ -81,6 +81,34 @@ def test_scan_downgrades_wide_spread_pass(monkeypatch):
     assert "execution_quality_block" in sig["research_flags"]
 
 
+def test_scan_downgrades_pass_in_weak_market_regime(monkeypatch):
+    import screener_logic
+
+    cfg = desk.load_config()
+    cfg.update(watchlist=["AAPL"], llm_on_scan=False, market_regime_gate_enabled=True)
+    monkeypatch.setattr(desk.market_radar, "get_cached", lambda: {
+        "age_sec": 30,
+        "movers": [
+            {"ticker": "SPY", "pct_change": -1.2},
+            {"ticker": "QQQ", "pct_change": -0.8},
+        ],
+    })
+    monkeypatch.setattr(screener_logic, "analyze_ticker", lambda _: {
+        "ticker": "AAPL",
+        "price": 100.0,
+        "verdict": "PASS",
+        "verdict_text": "volume and structure",
+        "entry_quality": {"label": "early"},
+        "intraday": {"atr_usd": 2.0, "spread_atr": 0.02},
+        "volume": {"rel_vol": 2.0, "session_is_today": True},
+        "checks": {},
+        "sources": [],
+    })
+    sig = desk.generate_scan_signal(cfg, force=True)
+    assert sig["verdict"] == "WATCH"
+    assert "weak_market_regime" in sig["research_flags"]
+
+
 def test_promotion_requires_net_expectancy_and_profit_factor():
     now = datetime.now().astimezone().isoformat()
     cfg = {
