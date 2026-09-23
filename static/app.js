@@ -741,7 +741,12 @@
     panel.classList.remove("hidden");
     const kind = $("#broker-book-kind");
     const provider = String((window.__brokerStatus || {}).broker || "broker").toUpperCase();
-    if (kind) kind.textContent = book.paper_mode === false ? `(${provider} — REAL money)` : `(${provider} paper)`;
+    if (kind) {
+      const account = book.account_id ? ` · ${book.account_id}` : "";
+      kind.textContent = book.paper_mode === false
+        ? `(${provider} — REAL money${account})`
+        : `(${provider} paper${account})`;
+    }
     panel.classList.toggle("is-live", book.paper_mode === false);
     const day = $("#broker-book-day");
     if (day) {
@@ -762,7 +767,7 @@
           <div class="bb-row">
             <strong>${escapeHtml(p.ticker)}</strong>
             <span>${escapeHtml(String(p.shares))} shares${p.side === "short" ? " (short)" : ""} @ ${fmtMoney(p.avg_price)}</span>
-            <span class="money ${Number(p.open_pnl_usd) >= 0 ? "pos" : "neg"}">${fmtSigned(p.open_pnl_usd)}</span>
+            <span>${p.last != null ? `last ${fmtMoney(p.last)} · ` : ""}<span class="money ${Number(p.open_pnl_usd) >= 0 ? "pos" : "neg"}">${p.open_pnl_usd != null ? fmtSigned(p.open_pnl_usd) : "P&L unavailable"}</span></span>
           </div>`).join("")
       : `<div class="empty">No positions at the broker.</div>`;
   }
@@ -2410,6 +2415,11 @@
         ? `<div class="row"><span class="k">After</span><span>Leaves about ${fmtMoney(Math.max(0, cash - total))} of your ${fmtMoney(cash)} paper cash</span></div>`
         : "";
       const brokerName = String(window.__brokerStatus?.broker || "broker").toUpperCase();
+      const brokerBook = state?.broker_book || {};
+      const brokerAccount = brokerBook.account_id ? escapeHtml(String(brokerBook.account_id)) : "Not available";
+      const brokerFunds = brokerBook.buying_power != null
+        ? `Buying power ${fmtMoney(brokerBook.buying_power)}`
+        : brokerBook.equity != null ? `Equity ${fmtMoney(brokerBook.equity)}` : "Funds not available";
       const ks = cfg.kill_switch || {};
       const tradesUsed = Number(state?.loop?.session_totals?.intents || state?.daily?.trades || 0);
       const maxTrades = Number(ks.max_trades_per_day || state?.preset?.max_trades_per_day || 0);
@@ -2427,6 +2437,7 @@
           : "";
       el.innerHTML = `
         ${warn}
+        ${live || broker ? `<div class="row"><span class="k">Account</span><span>${brokerAccount} · ${escapeHtml(brokerFunds)}</span></div>` : ""}
         <div class="row"><span class="k">Stock</span><span>${escapeHtml(s.ticker)}</span></div>
         <div class="row"><span class="k">Trade</span><span>${maths}</span></div>
         <div class="row"><span class="k">Data</span><span>${escapeHtml(freshness)}</span></div>
@@ -4168,9 +4179,10 @@
 
   $("#btn-force-flatten")?.addEventListener("click", async () => {
     const b = window.__brokerStatus || {};
+    const brokerName = String(b.provider || b.broker || "broker").toUpperCase();
     const warn =
       b.configured
-        ? "Force flatten local paper AND cancel/close Alpaca positions?"
+        ? `Force flatten local paper AND cancel/close ${brokerName} positions?`
         : "Force flatten ALL paper positions at last price?";
     if (!confirm(warn)) return;
     try {
@@ -4180,8 +4192,8 @@
       let msg = `Flattened ${n} local paper position(s)`;
       if (bf.attempted) {
         msg += bf.ok
-          ? " + Alpaca cancel/close OK"
-          : " — Alpaca flatten FAILED (not complete for broker book)";
+          ? ` + ${brokerName} cancel/close OK`
+          : ` — ${brokerName} flatten FAILED (not complete for broker book)`;
       }
       toast(msg, !!(data.refuse_flatten_as_complete || (bf.attempted && !bf.ok)));
       await refresh();

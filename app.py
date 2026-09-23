@@ -1,14 +1,14 @@
 """
 Day-trade SIGNAL DESK — DRAFT RESEARCH TOOL
 -------------------------------------------
-Modes: manual (default) | auto_paper | auto_live
+Modes: manual (default) | auto_paper | auto_live | live_manual
 
 Research draft: full playbook visible.
 Alpaca broker optional via broker_alpaca (ALPACA_API_KEY/SECRET).
 ALPACA_PAPER defaults true (paper-api). ALPACA_PAPER=false → live money endpoint.
 When Alpaca is configured, auto_live / approve submit to broker only on success
 (no dual local paper_fill). On broker fail, no local paper fill is recorded.
-IBKR not wired. No ENABLE LIVE AUTO unlock ceremony.
+Broker routing supports Alpaca and Interactive Brokers Gateway.
 """
 
 from __future__ import annotations
@@ -998,7 +998,7 @@ _BROKER_BOOK_TTL = 15.0
 
 
 def _broker_book_cached() -> dict[str, Any] | None:
-    """Alpaca positions + today's P&L for the UI (15 s cache). None when no keys.
+    """Configured-broker positions + today's P&L for the UI (15 s cache).
 
     Broker fills never touch the paper ledger, so without this the screen showed
     'no positions' right after a real order.
@@ -1016,7 +1016,7 @@ def _broker_book_cached() -> dict[str, Any] | None:
         acct = alpaca.get_account()
         pos = alpaca.get_positions()
     except Exception as exc:  # noqa: BLE001
-        val = {"ok": False, "error": str(exc)[:120]}
+        val = {"ok": False, "error": str(exc)[:120], "account_id": None}
     else:
         a = (acct or {}).get("account") or {}
         rows = []
@@ -1027,8 +1027,8 @@ def _broker_book_cached() -> dict[str, Any] | None:
                     "side": str(p.get("side") or "long").lower(),
                     "shares": abs(float(p.get("qty") or 0)),
                     "avg_price": float(p.get("avg_entry_price") or 0),
-                    "last": float(p.get("current_price") or 0),
-                    "open_pnl_usd": float(p.get("unrealized_pl") or 0),
+                    "last": _safe_money(p.get("current_price")),
+                    "open_pnl_usd": _safe_money(p.get("unrealized_pl")),
                 })
             except (TypeError, ValueError):
                 continue
@@ -1041,9 +1041,11 @@ def _broker_book_cached() -> dict[str, Any] | None:
             "paper_mode": alpaca.paper_mode(),
             "equity": _safe_money(a.get("equity")),
             "cash": _safe_money(a.get("cash")),
+            "buying_power": _safe_money(a.get("buying_power")),
             "day_pnl_usd": day_pnl,
             "positions": rows,
-            "error": None if (acct.get("ok") and pos.get("ok")) else "Couldn't reach Alpaca",
+            "account_id": acct.get("account_id"),
+            "error": None if (acct.get("ok") and pos.get("ok")) else "Couldn't reach configured broker",
         }
     _BROKER_BOOK_CACHE.update(at=now, val=val)
     return val
@@ -1067,7 +1069,7 @@ def _money_snapshot(cfg: dict[str, Any]) -> dict[str, Any]:
         "fees_today_usd": round(float((ledger.get("daily") or {}).get(_today_str(), {}).get("fees") or 0), 2),
         "broker_trades_today": _broker_trades_today(ledger),
     }
-    if cfg.get("mode") == "auto_live" or _broker_trades_today(ledger):
+    if cfg.get("mode") in ("auto_live", "live_manual") or _broker_trades_today(ledger):
         out["broker_book"] = _broker_book_cached()
     return out
 

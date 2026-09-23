@@ -7,7 +7,12 @@ from __future__ import annotations
 
 import os
 import time
+import threading
+from itertools import count
 from typing import Any
+
+_CLIENT_IDS = count(0)
+_CLIENT_IDS_LOCK = threading.Lock()
 
 
 def _ib():
@@ -18,7 +23,10 @@ def _ib():
     client = IB()
     host = os.environ.get("IB_GATEWAY_HOST", "127.0.0.1")
     port = int(os.environ.get("IB_GATEWAY_PORT", "4002"))
-    client.connect(host, port, clientId=int(os.environ.get("IB_CLIENT_ID", "37")), timeout=5)
+    base_id = int(os.environ.get("IB_CLIENT_ID", "37"))
+    with _CLIENT_IDS_LOCK:
+        client_id = base_id + (next(_CLIENT_IDS) % 100)
+    client.connect(host, port, clientId=client_id, timeout=5)
     return client
 
 
@@ -53,8 +61,9 @@ def get_account() -> dict[str, Any]:
     try:
         ib = _ib()
         values = {str(x.tag): x.value for x in ib.accountSummary()}
+        accounts = list(ib.managedAccounts() or [])
         ib.disconnect()
-        return {"ok": True, "account": values}
+        return {"ok": True, "account": values, "account_id": accounts[0] if accounts else None}
     except Exception as exc:
         return {"ok": False, "error": str(exc)[:200], "account": {}}
 
@@ -69,6 +78,8 @@ def get_positions() -> dict[str, Any]:
                 "qty": float(p.position),
                 "side": "long" if float(p.position) >= 0 else "short",
                 "avg_entry_price": float(p.avgCost or 0),
+                "current_price": None,
+                "unrealized_pl": None,
             })
         ib.disconnect()
         return {"ok": True, "positions": rows}
@@ -84,9 +95,8 @@ def place_from_desk_order(order: dict[str, Any]) -> dict[str, Any]:
         ib.qualifyContracts(contract)
         action = "BUY" if str(order.get("side") or "").lower() == "buy" else "SELL"
         trade = ib.placeOrder(contract, MarketOrder(action, int(order.get("shares") or 0)))
-        ib.sleep(0.2)
+        ib.sleep(0.5)
         order_id = str(trade.order.orderId)
-        ib.disconnect()
         return {
             "ok": True,
             "status": "live_submitted" if _live() else "paper_submitted",
@@ -101,24 +111,52 @@ def place_from_desk_order(order: dict[str, Any]) -> dict[str, Any]:
 
 
 def wait_for_fill(order_id: str, timeout: float = 20, interval: float = 0.25) -> dict[str, Any]:
-    # Gateway order state is queried through open trades; an absent trade is
-    # intentionally uncertain rather than reported as a successful fill.
+    # Reconnect and ask for open orders plus completed orders. A missing order
+    # remains uncertain; never interpret absence as a fill or cancellation.
     try:
         ib = _ib()
+        ib.reqAllOpenOrders()
+        ib.sleep(0.5)
         deadline = time.monotonic() + timeout
+        last_partial = None
         while time.monotonic() < deadline:
-            for trade in ib.openTrades():
+            trades = list(ib.openTrades())
+            try:
+                trades += list(ib.reqCompletedOrders(apiOnly=False) or [])
+            except Exception:
+                pass
+            for trade in trades:
                 if str(trade.order.orderId) == str(order_id):
                     status = str(trade.orderStatus.status or "").lower()
+                    filled_qty = float(trade.orderStatus.filled or 0)
+                    avg_price = trade.orderStatus.avgFillPrice
                     if status == "filled":
                         ib.disconnect()
-                        return {"state": "filled", "filled_qty": trade.orderStatus.filled, "filled_avg_price": trade.orderStatus.avgFillPrice, "alpaca_status": status}
-                    if status in ("cancelled", "inactive"):
+                        return {"state": "filled", "filled_qty": filled_qty, "filled_avg_price": avg_price, "broker_status": status, "alpaca_status": status, "order_id": order_id}
+                    if status in ("cancelled", "inactive", "apicancelled"):
                         ib.disconnect()
-                        return {"state": "failed", "alpaca_status": status}
+                        return {
+                            "state": "partially_filled" if filled_qty > 0 else "failed",
+                            "filled_qty": filled_qty,
+                            "filled_avg_price": avg_price,
+                            "broker_status": status,
+                            "alpaca_status": status,
+                            "order_id": order_id,
+                        }
+                    if filled_qty > 0:
+                        last_partial = {
+                            "state": "partially_filled",
+                            "filled_qty": filled_qty,
+                            "filled_avg_price": avg_price,
+                            "broker_status": status,
+                            "alpaca_status": status,
+                            "order_id": order_id,
+                        }
+                    else:
+                        last_partial = None
             ib.sleep(interval)
         ib.disconnect()
-        return {"state": "pending", "alpaca_status": "pending"}
+        return last_partial or {"state": "pending", "broker_status": "pending", "alpaca_status": "pending", "order_id": order_id}
     except Exception as exc:
         return {"state": "unknown", "error": str(exc)[:200]}
 
