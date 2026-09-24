@@ -85,6 +85,23 @@ function Find-Gateway {
     }
     return ($candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName)
 }
+function Get-GatewayStampPath { Join-Path (Get-LaunchDataRoot) 'gateway_launch.json' }
+function Test-RecentGatewayLaunch([int]$CooldownSec = 180) {
+    # Shared with broker_ibkr.ensure_gateway so no two components launch Gateway back to back.
+    try {
+        $stamp = Get-Content -LiteralPath (Get-GatewayStampPath) -Raw -ErrorAction Stop | ConvertFrom-Json
+        $age = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [double]$stamp.at
+        return ($age -ge 0 -and $age -lt $CooldownSec)
+    } catch { return $false }
+}
+function Set-GatewayLaunchStamp([string]$Exe) {
+    try {
+        $path = Get-GatewayStampPath
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
+        @{ at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); exe = $Exe; source = 'launcher' } |
+            ConvertTo-Json -Compress | Set-Content -LiteralPath $path -Encoding ASCII
+    } catch {}
+}
 function Start-ConfiguredBroker {
     if ($NoBroker -or (Get-LaunchSetting 'BROKER_PROVIDER' 'alpaca') -ne 'ibkr') {
         return @{ state = 'not_needed'; message = 'Desk ready.' }
@@ -101,9 +118,13 @@ function Start-ConfiguredBroker {
     if (-not $gateway) {
         return @{ state = 'not_installed'; message = 'Desk ready. Install IB Gateway from Interactive Brokers, or set IB_GATEWAY_EXE to its installed path.' }
     }
-    $existing = @(Get-CimInstance Win32_Process -Filter "Name='ibgateway.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -eq $gateway })
-    if ($existing.Count -eq 0) {
+    # Any running Gateway/TWS (any version or path) counts: its API port stays closed
+    # until sign-in, so a closed port must never stack another login window.
+    $existing = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -in @('ibgateway.exe', 'tws.exe') })
+    if ($existing.Count -eq 0 -and -not (Test-RecentGatewayLaunch)) {
         # Interactive sign-in window: the user completes login and 2FA.
+        Set-GatewayLaunchStamp $gateway
         Start-Process -FilePath $gateway -WorkingDirectory (Split-Path -Parent $gateway) -WindowStyle Normal | Out-Null
     }
     return @{ state = 'sign_in_required'; message = "Desk ready. Complete sign-in in IB Gateway. If already signed in, enable its API on port $port. Broker execution stays blocked until the account is verified." }

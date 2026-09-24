@@ -394,3 +394,33 @@ def test_ensure_gateway_ok_when_port_open(monkeypatch):
     result = broker.ensure_gateway(launch_if_down=True)
     assert result["ok"] and result["port_open"] and not result["launched"]
 
+
+
+def _gateway_env(monkeypatch, tmp_path, launched):
+    monkeypatch.setenv("IB_GATEWAY_HOST", "127.0.0.1")
+    monkeypatch.setenv("IB_GATEWAY_PORT", "4001")
+    monkeypatch.setenv("TOMAHAWK_DATA_DIR", str(tmp_path))
+    exe = tmp_path / "ibgateway.exe"
+    exe.write_text("")
+    monkeypatch.setattr(broker, "_port_open", lambda host, port, timeout=0.6: False)
+    monkeypatch.setattr(broker, "_gateway_exe_candidates", lambda: [str(exe)])
+    monkeypatch.setattr(broker, "_launch_gateway", lambda exe, host, port, result: launched.append(exe) or dict(result, launched=True))
+    return exe
+
+
+def test_ensure_gateway_never_stacks_a_second_gateway(monkeypatch, tmp_path):
+    launched = []
+    _gateway_env(monkeypatch, tmp_path, launched)
+    monkeypatch.setattr(broker, "_running_gateway_processes", lambda: ["ibgateway.exe"])
+    result = broker.ensure_gateway(launch_if_down=True)
+    assert not launched and not result["launched"] and "already running" in result["note"]
+
+
+def test_ensure_gateway_cooldown_blocks_back_to_back_launches(monkeypatch, tmp_path):
+    launched = []
+    _gateway_env(monkeypatch, tmp_path, launched)
+    monkeypatch.setattr(broker, "_running_gateway_processes", lambda: [])
+    first = broker.ensure_gateway(launch_if_down=True)
+    second = broker.ensure_gateway(launch_if_down=True)
+    assert len(launched) == 1 and first["launched"] and not second["launched"]
+    assert "waiting for sign-in" in second["note"]

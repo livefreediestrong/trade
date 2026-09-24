@@ -125,7 +125,7 @@ function Get-LaunchSetting($Name,$Default) {
 function Test-BrokerPort { return $false }
 function Find-Gateway { return 'C:\Installed\ibgateway.exe' }
 $script:started=0
-function Get-CimInstance { if ($script:started) { return @{ExecutablePath='C:\Installed\ibgateway.exe'} } }
+function Get-CimInstance { if ($script:started) { return [pscustomobject]@{Name='ibgateway.exe';ExecutablePath='C:\Installed\ibgateway.exe'} } }
 function Start-Process { $script:started++ }
 $first=Start-ConfiguredBroker
 $second=Start-ConfiguredBroker
@@ -212,3 +212,30 @@ function Invoke-SetupCommand($Executable,$Arguments,$LogPath) {
 Ensure-DeskPython $Root | Out-Null
 if ($script:calls.Count -ne 3 -or $script:calls[0] -notlike '*pydantic.VERSION*' -or $script:calls[0] -notlike '*sys.version_info*' -or $script:calls[2] -ne $script:calls[0]) { throw 'Dependency versions not rechecked' }
 ''')
+
+
+def test_gateway_other_version_or_tws_running_is_not_relaunched(tmp_path):
+    run_ps(tmp_path, r"""
+function Get-LaunchSetting($Name,$Default) { if ($Name -eq 'BROKER_PROVIDER') { return 'ibkr' }; return $Default }
+function Test-BrokerPort { return $false }
+function Find-Gateway { return 'C:\Jts\ibgateway\1040\ibgateway.exe' }
+function Start-Process { throw 'Gateway already running: must not stack a second login window' }
+function Get-CimInstance { return [pscustomobject]@{Name='ibgateway.exe';ExecutablePath='C:\Jts\ibgateway\1037\ibgateway.exe'} }
+if ((Start-ConfiguredBroker).state -ne 'sign_in_required') { throw 'Login not reported' }
+function Get-CimInstance { return [pscustomobject]@{Name='tws.exe';ExecutablePath='C:\Jts\tws.exe'} }
+if ((Start-ConfiguredBroker).state -ne 'sign_in_required') { throw 'Login not reported' }
+""")
+
+
+def test_gateway_launch_cooldown_is_shared_across_launcher_runs(tmp_path):
+    run_ps(tmp_path, r"""
+function Get-LaunchSetting($Name,$Default) { if ($Name -eq 'BROKER_PROVIDER') { return 'ibkr' }; return $Default }
+function Test-BrokerPort { return $false }
+function Find-Gateway { return 'C:\Installed\ibgateway.exe' }
+function Get-CimInstance { return @() }  # process not visible yet (still starting)
+$script:started=0
+function Start-Process { $script:started++ }
+Start-ConfiguredBroker | Out-Null
+Start-ConfiguredBroker | Out-Null
+if ($script:started -ne 1) { throw "Launched $($script:started) Gateways inside the cooldown" }
+""")
