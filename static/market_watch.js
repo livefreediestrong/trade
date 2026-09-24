@@ -11,7 +11,7 @@
   const a=el('a',text);a.href=url;a.target='_blank';a.rel='noopener noreferrer';return a;
  }
  const when=v=>{if(v==null||v==='')return 'time unknown';const d=typeof v==='number'?new Date(v*1000):new Date(v);return isNaN(d)?'time unknown':d.toLocaleString();};
- const SOURCE_LABEL={reddit:'Reddit',stocktwits:'Stocktwits',yahoo:'Yahoo trending',google_trends:'Google search trends',google_news:'Google News',x:'X'};
+ const SOURCE_LABEL={wsb:'WSB threads (live)',reddit:'Reddit',stocktwits:'Stocktwits',yahoo:'Yahoo trending',google_trends:'Google search trends',google_news:'Google News',x:'X'};
  function headline(r){const a=el('article');a.append(link(r.title,r.link),el('small',`${r.publisher||r.source||'source'} · ${when(r.published_ts)}${r.feed?' · '+r.feed:''}`));return a;}
  function post(r){
   const a=el('article');
@@ -54,6 +54,17 @@
    const tr=el('tr');tr.append(el('td','$'+p.ticker),el('td',p.mentions),el('td',(p.sources||[]).join(', ')),el('td',`${p.bullish} / ${p.bearish}`));return tr;
   })));
  }
+ function renderWsb(w){
+  if(!$('mw-wsb'))return;
+  const threads=w.threads||[];
+  $('mw-wsb-status').textContent=!w.configured?'Reddit is not connected: set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET to read the WSB threads.':
+   `${(w.comments_read||0).toLocaleString()} comments read${w.fresh?'':' · not read in the last 15 minutes'}${w.error?' · '+w.error:''}`;
+  $('mw-wsb-threads').replaceChildren(...threads.map(t=>link(`${t.label}: ${t.title||''}`,t.url)));
+  const rows=(w.top||[]).map(r=>{const tr=el('tr');const lean=r.bull_share==null?'—':r.bull_share>=.5?Math.round(r.bull_share*100)+'% bullish':Math.round((1-r.bull_share)*100)+'% bearish';
+   tr.append(el('td','$'+r.ticker),el('td',r.mentions_15m),el('td',r.mentions_60m+(r.live_chat_pasted?' (+'+r.live_chat_pasted+' pasted chat)':'')),el('td',r.velocity==null?'building history':r.velocity+'×'),el('td',r.authors_60m),el('td',lean));return tr;});
+  $('mw-wsb').replaceChildren(...(rows.length?rows:[(()=>{const tr=el('tr'),td=el('td',w.configured?'No ticker mentions in the last hour.':'Not connected.');td.colSpan=6;tr.append(td);return tr;})()]));
+  $('mw-wsb-note').textContent=[w.stats_note,w.live_chat_note].filter(Boolean).join(' ');
+ }
  function statusRows(d){
   const out=[];
   const add=(name,st)=>{if(st)out.push([name,st]);};
@@ -71,7 +82,7 @@
   const heads=d.headlines||[];
   $('mw-headlines').replaceChildren(...(heads.length?heads.slice(0,16).map(headline):[el('p','No market headlines available right now. See Source status below; missing headlines do not mean no news.','hint-line')]));
   const custom=d.custom_headlines||[];$('mw-custom').hidden=!custom.length;$('mw-custom').replaceChildren(...custom.slice(0,12).map(headline));
-  renderX(d.x||{});renderSocial(d.social||{});
+  renderX(d.x||{});renderSocial(d.social||{});renderWsb(d.wsb||{});
   $('mw-watchlist').replaceChildren(...(d.watchlist||[]).map(w=>link(w.symbol,w.google_finance_url)));
   $('mw-sources').replaceChildren(...statusRows(d).map(([name,st])=>{const tr=el('tr');tr.append(el('td',name),el('td',st.ok?'connected':('unavailable'+(st.error?' · '+st.error:''))));return tr;}));
  }

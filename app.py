@@ -49,6 +49,8 @@ import social_intelligence
 import market_capture
 import desk_alerts
 import macro_calendar
+import market_events
+import wsb_monitor
 import edgar_client
 import options_flow
 import order_terms
@@ -289,6 +291,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "evidence_min_samples": 12,
     # Pause new broker risk after giving back this % of the day's peak gain; 0 disables.
     "giveback_stop_pct": 50.0,
+    # Scheduled high-impact events (FOMC, Fed Chair, CPI/jobs, presidential addresses, your own):
+    # the broker agent opens nothing new this many minutes before/after; exits continue.
+    "event_guard_enabled": True,
+    "event_guard_before_min": 15,
+    "event_guard_after_min": 15,
+    "custom_market_events": [],
+    # WSB crowding on a new buy idea: "half" size, "skip", "note" only, or "off". Never adds risk.
+    "wsb_crowding_action": "half",
+    "wsb_crowd_min_mentions": 25,
 }
 
 _lock = threading.RLock()
@@ -606,6 +617,9 @@ _NUMERIC_CFG_LIMITS: dict[str, tuple[float, float]] = {
     "min_net_reward_risk": (0.0, 10.0),
     "evidence_min_samples": (3.0, 10000.0),
     "giveback_stop_pct": (0.0, 100.0),
+    "event_guard_before_min": (0.0, 240.0),
+    "event_guard_after_min": (0.0, 240.0),
+    "wsb_crowd_min_mentions": (5.0, 10000.0),
 }
 
 
@@ -2490,6 +2504,31 @@ def _evidence_block(sig: dict[str, Any], cfg: dict[str, Any]) -> str | None:
     return None
 
 
+def _apply_wsb_caution(sig: dict[str, Any], cfg: dict[str, Any]) -> None:
+    """A buy idea on a ticker crowded on WSB gets the configured caution. Only ever reduces risk."""
+    action = cfg.get("wsb_crowding_action", "half")
+    if action == "off" or str(sig.get("side") or "").lower() != "buy":
+        return
+    try:
+        crowd = wsb_monitor.crowding(str(sig.get("ticker") or ""), cfg)
+    except Exception:  # noqa: BLE001 - WSB problems never block or size a trade
+        return
+    if not crowd.get("crowded"):
+        return
+    sig["wsb_crowding"] = crowd
+    sig["research_flags"] = list(sig.get("research_flags") or []) + ["wsb_crowded"]
+    note = crowd.get("reason") or "Crowded on WSB"
+    if action == "skip":
+        sig["execution_block"] = sig.get("execution_block") or f"wsb_crowded: {note}; skipped by your WSB setting"
+    elif action == "half":
+        shares = _finite_float(sig.get("suggested_shares"), 0.0) or 0.0
+        sig["suggested_shares"] = int(shares // 2) if shares >= 1 else shares / 2
+        sig["advisory_size_mult"] = min(_finite_float(sig.get("advisory_size_mult"), 1.0) or 1.0, 0.5)
+        if sig["suggested_shares"] < 1 and shares >= 1:
+            sig["execution_block"] = sig.get("execution_block") or f"wsb_crowded: {note}; half size is under one share"
+    sig["reason"] = (str(sig.get("reason") or "") + f" · {note} ({action}).").strip(" ·")
+
+
 def _suggested_size_cut(lateness_label: str | None) -> float:
     """Suggested size multiplier for late/chasing (FYI + allow_late sizing)."""
     label = (lateness_label or "").lower()
@@ -2958,6 +2997,7 @@ def generate_scan_signal(
                 if block and not sig.get("execution_block"):
                     sig["execution_block"] = block
                     sig["research_flags"] = list(sig.get("research_flags") or []) + ["setup_losing_record"]
+                _apply_wsb_caution(sig, cfg)
                 append_journal(
                     "scan_hit",
                     {"ticker": sym, "verdict": verdict, "lateness": lateness, "force": force},
@@ -6857,14 +6897,26 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
             "promotion_max_drawdown_pct",
             "promotion_window_days",
             "min_net_reward_risk", "evidence_min_samples", "giveback_stop_pct",
+            "event_guard_before_min", "event_guard_after_min", "wsb_crowd_min_mentions",
         ):
             if key in body:
                 lo, hi = _NUMERIC_CFG_LIMITS[key]
                 cfg[key] = _num(body[key], key, lo=lo, hi=hi)
-        if "evidence_min_samples" in body:
-            cfg["evidence_min_samples"] = int(cfg["evidence_min_samples"])
-        if "evidence_gate_enabled" in body:
-            cfg["evidence_gate_enabled"] = body["evidence_gate_enabled"] is True
+        for key in ("evidence_min_samples", "event_guard_before_min", "event_guard_after_min", "wsb_crowd_min_mentions"):
+            if key in body:
+                cfg[key] = int(cfg[key])
+        for key in ("evidence_gate_enabled", "event_guard_enabled"):
+            if key in body:
+                cfg[key] = body[key] is True
+        if "wsb_crowding_action" in body:
+            if body["wsb_crowding_action"] not in ("off", "note", "half", "skip"):
+                return jsonify({"ok": False, "error": "wsb_crowding_action must be off, note, half or skip"}), 400
+            cfg["wsb_crowding_action"] = body["wsb_crowding_action"]
+        if "custom_market_events" in body:
+            try:
+                cfg["custom_market_events"] = market_events.validate_custom_events(body["custom_market_events"])
+            except ValueError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
 
         if "heat_enabled" in body:
             cfg["heat_enabled"] = bool(body["heat_enabled"])
@@ -9100,6 +9152,11 @@ import market_universe
 market_radar.configure_discovery(lambda: market_universe.radar_candidates(__import__("sys").modules[__name__]))
 import market_watch
 market_watch.register(app, __import__("sys").modules[__name__])
+market_events.configure(DATA_DIR)
+market_events.start_background()
+wsb_monitor.register(__import__("sys").modules[__name__])
+import desk_day
+desk_day.register(app, __import__("sys").modules[__name__])
 
 # Claim the instance before starting any background work.
 if __name__ == "__main__":

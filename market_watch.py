@@ -42,7 +42,7 @@ YAHOO_TRENDING = "https://query1.finance.yahoo.com/v1/finance/trending/US"
 # Nasdaq directory "Listing Exchange" codes -> Google Finance exchange suffixes.
 GOOGLE_FINANCE_EXCHANGES = {"Q": "NASDAQ", "N": "NYSE", "A": "NYSEAMERICAN", "P": "NYSEARCA", "Z": "BATS"}
 # Source weights for the trend scan: breadth across sources matters more than any one list.
-TREND_WEIGHTS = {"reddit": 1.0, "stocktwits": 0.9, "yahoo": 1.0, "google_trends": 1.2, "google_news": 1.1, "x": 0.9}
+TREND_WEIGHTS = {"reddit": 1.0, "wsb": 1.0, "stocktwits": 0.9, "yahoo": 1.0, "google_trends": 1.2, "google_news": 1.1, "x": 0.9}
 _CASHTAG_RE = re.compile(r"(?<![A-Za-z0-9])\$([A-Z]{1,5})(?![A-Za-z0-9])")
 _EXCHANGE_RE = re.compile(r"\b(?:NASDAQ|NYSE|NYSEARCA|NYSE American|AMEX|Nasdaq)\s*:\s*([A-Z]{1,5}(?:\.[A-Z])?)\b")
 _CORP_WORDS = re.compile(
@@ -280,15 +280,30 @@ def _reddit_trend(watchlist: list[str]) -> tuple[list[dict[str, Any]], dict[str,
         buzz_sources.kick_background_refresh(watchlist)  # non-blocking; next scan sees it
     if not buzz:
         return [], _status(False, "Reddit buzz is refreshing; it appears on the next scan")
+    import wsb_monitor
+    live_wsb = wsb_monitor.fresh()  # the live WSB reader is its own source; do not count WSB twice
     rows = []
     for row in buzz.get("tickers") or []:
-        subs = [s for s in (row.get("subreddits") or []) if s != "stocktwits"]
+        subs = [s for s in (row.get("subreddits") or []) if s != "stocktwits" and not (live_wsb and s == "wallstreetbets")]
         if subs and row.get("ticker"):
             rows.append({"ticker": str(row["ticker"]).upper(), "metric": row.get("mentions"),
                          "detail": f"{row.get('mentions')} mentions in r/{', r/'.join(subs[:3])}"})
     errors = buzz.get("errors") or []
     return rows[:25], _status(bool(rows), None if rows else (str(errors[0]) if errors else "No Reddit mentions"),
                              age_sec=buzz.get("cache_age_sec"), stale=bool(buzz.get("stale")))
+
+
+def _wsb_trend() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    import wsb_monitor
+    if not wsb_monitor.configured():
+        return [], _status(False, "Reddit is not connected")
+    if not wsb_monitor.fresh():
+        return [], _status(False, "WSB threads not read in the last 15 minutes")
+    rows = [{"ticker": r["ticker"], "metric": r["mentions_60m"],
+             "detail": f"{r['mentions_60m']} mentions in WSB threads this hour"
+                       + (f" ({r['velocity']}x the hour before)" if r.get("velocity") is not None else "")}
+            for r in wsb_monitor.ticker_stats() if r["mentions_60m"] >= 3][:25]
+    return rows, _status(bool(rows), None if rows else "No WSB ticker mentions this hour")
 
 
 def _stocktwits_trend() -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -433,6 +448,7 @@ def trend_scan(desk, watchlist: list[str], headlines: list[dict[str, Any]]) -> d
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix="trend-scan") as pool:
         jobs = {
             "reddit": pool.submit(run, "reddit", lambda: _reddit_trend(watchlist)),
+            "wsb": pool.submit(run, "wsb", _wsb_trend),
             "stocktwits": pool.submit(run, "stocktwits", _stocktwits_trend),
             "yahoo": pool.submit(run, "yahoo", _yahoo_trend),
             "google_trends": pool.submit(run, "google_trends", lambda: _google_trends(index)),
@@ -489,6 +505,13 @@ def snapshot(desk, cfg: dict[str, Any], *, force: bool = False) -> dict[str, Any
         _refresh_lock.release()
 
 
+def wsb_snapshot() -> dict[str, Any]:
+    import wsb_monitor
+    snap = wsb_monitor.snapshot(limit=12)
+    return {k: snap.get(k) for k in ("configured", "fresh", "threads", "top", "error", "comments_read",
+                                     "history_minutes", "live_chat_note", "stats_note")}
+
+
 def _build(desk, cfg: dict[str, Any], watchlist: list[str], now: float) -> dict[str, Any]:
     import social_intelligence
     import x_watcher
@@ -518,6 +541,7 @@ def _build(desk, cfg: dict[str, Any], watchlist: list[str], now: float) -> dict[
         "custom_headlines": custom[:30],
         "custom_feeds": configured_feeds(),
         "trends": trends,
+        "wsb": wsb_snapshot(),
         "x": {"status": x_watcher.status(),
               "accounts": [r for r in x_rows if r.get("kind") == "account"][:20],
               "cashtags": [r for r in x_rows if r.get("kind") == "cashtag"][:20]},

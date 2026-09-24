@@ -634,8 +634,10 @@ def fetch_post_comments(
     *,
     limit: int = 200,
     article_id: str | None = None,
+    sort: str = "confidence",
+    depth: int = 4,
 ) -> tuple[list[dict], str | None]:
-    """Fetch comment bodies for a post. Fail soft."""
+    """Fetch comment bodies for a post. Fail soft. sort="new" reads the live flow."""
     aid = _article_id_from_permalink(permalink, article_id)
     if not aid and not permalink:
         return [], "no permalink"
@@ -651,7 +653,7 @@ def fetch_post_comments(
             path = path.rstrip("/") + ".json"
     data, err = _reddit_get(
         path,
-        params={"limit": limit, "raw_json": 1, "depth": 4, "sort": "confidence"},
+        params={"limit": limit, "raw_json": 1, "depth": depth, "sort": sort},
     )
     if err or not isinstance(data, list) or len(data) < 2:
         return [], err or "bad comments json"
@@ -659,7 +661,9 @@ def fetch_post_comments(
     children = (comments_listing.get("data") or {}).get("children") or []
     out: list[dict] = []
 
-    def walk(nodes: list, depth: int = 0) -> None:
+    max_depth = depth
+
+    def walk(nodes: list, level: int = 0) -> None:
         for n in nodes:
             if not isinstance(n, dict):
                 continue
@@ -674,11 +678,13 @@ def fetch_post_comments(
                             "score": d.get("score") or 0,
                             "author": d.get("author"),
                             "id": d.get("id"),
+                            "created_utc": d.get("created_utc"),
+                            "permalink": d.get("permalink"),
                         }
                     )
                 replies = d.get("replies")
-                if isinstance(replies, dict) and depth < 4:
-                    walk((replies.get("data") or {}).get("children") or [], depth + 1)
+                if isinstance(replies, dict) and level < max_depth:
+                    walk((replies.get("data") or {}).get("children") or [], level + 1)
             elif kind == "more":
                 continue
 

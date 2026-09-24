@@ -85,4 +85,21 @@ h.nodes['moss-speech-enabled'].checked=true;h.nodes['moss-speech-enabled'].chang
 h.resize(300,340);h.events['desk:attention']({detail:{quiet:true}});assert.equal(h.nodes['moss-speech'].hidden,true);assert.equal(h.timers.size,0);
 h.events.pagehide();assert.equal(h.nodes['moss-speech'].hidden,true);h.resize(300,1000);assert.equal(h.timers.size,0);h.events.pageshow();assert.equal(h.timers.size,1);assert.equal(h.nodes['moss-speech'].hidden,true,'quiet setting survives page lifecycle');
 console.log('Changing Woman news: attribution, external source link, expiry, cooldown, woman-only ownership, quiet/speech-off/typing/dialog/guidance suppression and reduced motion passed.');
+const daySnap={fox:{state:'watching',headline:'Fox is on watch.',latest_trade:{id:'t1',text:'Bought 2 NVDA at $100.00.'}},
+ woman:{headline:'Changing Woman has the chores done.',reasoning:[{key:'event_soon:x',level:'caution',text:'FOMC Press Conference (2:30 PM ET) is in 40 min.'}]}};
+h=harness();h.events['desk:day']({detail:daySnap});
+assert.equal(h.nodes['moss-speech-text'].textContent,'Bought 2 NVDA at $100.00.');assert.equal(h.nodes['moss-destination'].textContent,'Fox · broker agent');
+assert.equal(h.nodes['moss-speech'].dataset.topic,'trade');assert.equal(h.nodes['moss-speech'].dataset.speaker,'fox');
+h.events['desk:day']({detail:daySnap});assert.equal(h.nodes['moss-speech'].dataset.topic,'trade','her note waits for his trade bubble');
+h.advance(21000);h.events['desk:day']({detail:daySnap});
+assert.equal(h.nodes['moss-speech'].dataset.topic,'reasoning');assert.equal(h.nodes['moss-speech'].dataset.speaker,'woman');assert.match(h.nodes['moss-speech-text'].textContent,/FOMC/);
+h.advance(31000);assert.equal(h.nodes['moss-speech'].dataset.topic,'day','between announcements they narrate the day');
+assert.ok(['Fox is on watch.',daySnap.woman.reasoning[0].text].includes(h.nodes['moss-speech-text'].textContent));
+assert.equal(h.nodes['moss-speech-link'].href,'/desk/overview#desk-day');assert.equal(h.nodes['moss-speech-link'].textContent,'Today at the desk');
+h.events['desk:day']({detail:daySnap});assert.equal(h.nodes['moss-speech'].dataset.topic,'day','a trade is announced once');
+assert.equal(h.nodes['moss-fox'].attrs['aria-label'],'Fox, your broker agent · Fox is on watch.');
+h=harness();h.events['desk:day']({detail:{fox:{state:'off',headline:'Fox is off duty.'},woman:{reasoning:[]}}});h.advance(1000);assert.equal(h.nodes['moss-speech'].dataset.topic,'guide','off duty keeps section guidance');
+h=harness();h.events['desk:attention']({detail:{quiet:true}});h.events['desk:day']({detail:daySnap});assert.notEqual(h.nodes['moss-speech'].dataset.topic,'trade','quiet desk stays quiet');
+h=harness({saved:{habitatVersion:3,avatar:'woman'}});h.events['desk:day']({detail:daySnap});assert.notEqual(h.nodes['moss-speech'].dataset.topic,'trade','trades belong to Fox');
+console.log('Desk day: Fox announces each trade once, Changing Woman raises cautions after him, day narration alternates, quiet and hidden companions stay silent passed.');
 console.log('Cozy perches: stationary top/bottom through task changes, occasional expressions, pause/dock/reduced motion, dismissal, preferences migration, hidden/narrow lifecycle, and no animation loop or network actions passed.');

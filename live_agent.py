@@ -12,7 +12,7 @@ import json
 import re
 import threading
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 
 from flask import Blueprint, jsonify, request
@@ -21,6 +21,7 @@ import paper_loop
 from order_terms import canonical_order
 from trade_planner import number
 import auto_live_options
+import market_events
 
 DEFAULTS = {
     # `symbols` is a saved UI hint; live AUTO-ORDERS follow research_universe()
@@ -264,6 +265,38 @@ def _exit_terms(signal, policy, price):
     return canonical_order(dict(signal, suggested_shares=int(shares)), options)
 
 
+def _event_window(cfg):
+    """The scheduled high-impact event pausing new agent entries now, if any. Calendar faults never block."""
+    try:
+        return market_events.active_window(cfg)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def earnings_block(signal, cfg, policy, now=None):
+    """No new agent buy in a stock reporting today, or before the next open when held overnight."""
+    if not cfg.get("event_guard_enabled", True) or signal.get("side") != "buy" or signal.get("agent_exit"):
+        return None
+    earn = signal.get("earnings")
+    if not isinstance(earn, dict) or not earn.get("date"):
+        return None
+    try:
+        day = date.fromisoformat(str(earn["date"])[:10])
+    except ValueError:
+        return None
+    today = (now or now_utc()).astimezone(paper_loop.NY_TZ).date() if paper_loop.NY_TZ else (now or now_utc()).date()
+    ticker = signal.get("ticker")
+    if day == today:
+        return f"{ticker} reports earnings today; Fox opens nothing new in it"
+    following = today + timedelta(days=1)
+    while following.weekday() >= 5:
+        following += timedelta(days=1)
+    holds_overnight = not (policy.get("protective_exits") and int(policy.get("flatten_before_close_min") or 0) > 0)
+    if day == following and holds_overnight:
+        return f"{ticker} reports earnings before the next session and Fox is set to hold overnight"
+    return None
+
+
 def _minutes_to_close(now):
     et = now.astimezone(paper_loop.NY_TZ) if paper_loop.NY_TZ else now
     close = paper_loop.session_close_time(et.date())
@@ -480,7 +513,7 @@ class LiveAgent:
             else:
                 self._update_managed(ticker, {"retry_after": (now + timedelta(seconds=60)).isoformat()})
             self.record("exit_" + reason, result.get("reject_reason") or result.get("error") or
-                        (f"Protective {reason.replace('_', ' ')} exit sent for {shares} {ticker}"), signal)
+                        (f"Protective {reason.replace('_', ' ')} exit sent for {shares} {ticker}"), signal, fill)
             return True
         return False
 
@@ -494,12 +527,19 @@ class LiveAgent:
                 managed[ticker].update(updates)
             self.save(raw)
 
-    def record(self, status, message, signal=None):
+    def record(self, status, message, signal=None, fill=None):
         self.phase, self.message = status, message
+        event = {"at": now_utc().isoformat(), "status": status, "message": message,
+                 "signal_id": (signal or {}).get("id"), "ticker": (signal or {}).get("ticker")}
+        if (signal or {}).get("side") in ("buy", "sell"):
+            event["side"] = signal["side"]
+        if (signal or {}).get("agent_exit"):
+            event["exit_reason"] = signal["agent_exit"]
+        if isinstance(fill, dict):
+            event["fill"] = {"shares": fill.get("shares"), "price": fill.get("price")}
         with self.desk._lock:
             raw = self.load()
-            raw["events"].insert(0, {"at": now_utc().isoformat(), "status": status, "message": message,
-                                      "signal_id": (signal or {}).get("id"), "ticker": (signal or {}).get("ticker")})
+            raw["events"].insert(0, event)
             raw["events"] = raw["events"][:200]
             self.save(raw)
 
@@ -517,6 +557,13 @@ class LiveAgent:
                 return "Live agent reached its daily broker-attempt limit"
         if not reducing and (day_pnl is None or day_pnl <= -policy["max_daily_loss_usd"]):
             return "Live agent daily loss limit reached or daily P&L unavailable"
+        if not reducing:
+            window = _event_window(cfg)
+            if window:
+                return market_events.window_message(window)
+            earnings = earnings_block(signal, cfg, policy)
+            if earnings:
+                return earnings
         return None
 
     def reserve(self, signal, cfg):
@@ -586,6 +633,10 @@ class LiveAgent:
         policy = validate(saved["policy"])
         if policy["protective_exits"] and self._manage_exits(cfg, policy):
             return  # an exit went out this tick; new research waits for the next one
+        window = _event_window(cfg)
+        if window:
+            self.phase, self.message = "event_window", market_events.window_message(window)
+            return  # no research spend while new entries are paused; exits ran above
         with self.desk._lock:
             raw = self.load()
             if self.desk._CORRUPT_PATHS:
@@ -687,7 +738,7 @@ class LiveAgent:
             return
         stamp = datetime.fromisoformat(signal["quote"]["market_time"].replace("Z", "+00:00"))
         signal["expires_at"] = (stamp+timedelta(seconds=policy["max_quote_age_sec"])).isoformat()
-        error = self.desk.signal_execution_block(signal, broker=True)
+        error = self.desk.signal_execution_block(signal, broker=True) or earnings_block(signal, cfg, policy)
         if error:
             self.record("hold", error, signal)
             return
@@ -713,8 +764,13 @@ class LiveAgent:
             self.record("broker_pending", "Partial fill; remainder unresolved" if result.get("fill") else
                         "Broker submission unresolved; reconciliation continues", result)
             return
-        self.record(result.get("status", "unknown"), result.get("reject_reason") or
-                    ("Broker execution recorded" if result.get("fill") else "Decision retained"), result)
+        fill = result.get("fill") if isinstance(result.get("fill"), dict) else None
+        if fill:
+            verb = "Bought" if signal.get("side") == "buy" else "Sold"
+            message = f"{verb} {float(fill.get('shares') or 0):g} {signal.get('ticker')} at ${float(fill.get('price') or 0):,.2f}"
+        else:
+            message = result.get("reject_reason") or "Decision retained"
+        self.record(result.get("status", "unknown"), message, dict(signal, id=result.get("id") or signal.get("id")), fill)
 
 
     def _maybe_convert_to_option(self, signal, cfg, auto_cfg, context):

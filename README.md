@@ -25,6 +25,8 @@ Useful feature references:
 - [Automation debugging and scheduler boundaries](docs/AUTOMATION_DEBUG.md)
 - [Moss broker agent: policy, activation, execution and limits](docs/LIVE_AGENT.md)
 - [Market watch, X watcher and internet-wide trend scanner](docs/MARKET_WATCH.md)
+- [Today at the desk: Fox, Changing Woman, scheduled events and WSB](docs/MARKET_DAY.md)
+- [Research capabilities review](docs/RESEARCH_CAPABILITIES.md)
 
 The detailed implementation notes below use the legacy Tomahawk name.
 
@@ -371,6 +373,21 @@ or in the live agent policy for the exit rules.
   within a band), so the live agent's minimum-confidence gate is repeatable.
 - **Live agent protective exits**: stop, target, breakeven stop, optional maximum hold and a sell before
   the close for stocks the agent bought. See `docs/LIVE_AGENT.md`.
+
+### Fox, Changing Woman, events and WSB
+
+- **Fox is the broker agent.** His speech bubble and the **Today at the desk** panel (Overview and Auto) say what the
+  agent is researching, what it bought or sold, the positions it protects and why it waits.
+- **Changing Woman keeps the chores and reasons with Fox.** Her chores are reconciling orders, the calendars, the WSB
+  threads, the news, the trade journal, upkeep and readable ledgers. Her notes cover upcoming speeches and releases,
+  WSB crowding, the cost edge of his latest idea, the give-back guard and the close.
+- **Scheduled events** come from the Fed calendar (FOMC, Chair, speeches, testimony), the BLS release calendar, the
+  President's public schedule and your own entries. The agent opens nothing new from 15 minutes before to 15 minutes
+  after a high-impact event; exits continue.
+- **WSB threads** (Daily Discussion, What Are Your Moves Tomorrow, Weekend, stickies) are read every two minutes
+  during the trading day. A buy idea on a crowded ticker is halved by default (or skipped, noted, or ignored).
+  WSB never adds risk.
+- See [Today at the desk](docs/MARKET_DAY.md).
 
 ### Alerts and crash reports
 

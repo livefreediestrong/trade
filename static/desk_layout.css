@@ -242,3 +242,37 @@
 #market-watch .mw-links{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:12px}
 #market-watch .mw-topics p{margin:6px 0;font-size:12px}
 #market-watch .mw-topics small{color:var(--muted);margin-left:4px}
+/* Today at the desk: Fox (broker agent) and Changing Woman (chores and reasoning) */
+.desk-day .desk-day-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:14px;margin-top:10px}
+.desk-day .dd-col{min-width:0;border:1px solid var(--border);border-radius:var(--radius,10px);padding:10px 12px}
+.desk-day h4{margin:0 0 6px;font-size:15px}
+.desk-day h5{margin:12px 0 4px;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.desk-day .dd-headline{margin:0;font-size:14px;line-height:1.45;overflow-wrap:anywhere}
+.desk-day .dd-list{margin:0;padding-left:18px;display:grid;gap:5px;font-size:13px;line-height:1.4;overflow-wrap:anywhere}
+.desk-day .dd-list time{color:var(--muted);font-variant-numeric:tabular-nums;margin-right:2px}
+.desk-day .dd-empty{color:var(--muted);list-style:none;margin-left:-18px}
+.desk-day .dd-trade,.desk-day .dd-exit{font-weight:600}
+.desk-day .dd-note.is-block{color:var(--red);font-weight:600}
+.desk-day .dd-note.is-caution{color:var(--amber)}
+.desk-day .dd-chores{list-style:none;margin:0;padding:0;display:grid;gap:7px;font-size:13px}
+.desk-day .dd-chore{display:grid;grid-template-columns:20px minmax(0,1fr);column-gap:6px;overflow-wrap:anywhere}
+.desk-day .dd-chore small{grid-column:2;color:var(--muted);line-height:1.35}
+.desk-day .dd-mark{grid-row:span 2;text-align:center;font-weight:700}
+.desk-day .dd-chore.is-done .dd-mark{color:var(--green)}
+.desk-day .dd-chore.is-attention .dd-mark,.desk-day .dd-chore.is-working .dd-mark{color:var(--amber)}
+.desk-day .dd-chore.is-off{opacity:.75}
+.desk-day .dd-scroll{overflow-x:auto;max-width:100%}
+.desk-day .dd-table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+.desk-day .dd-table th,.desk-day .dd-table td{padding:4px 6px;text-align:left;border-bottom:1px solid var(--border);white-space:nowrap}
+.desk-day .dd-table caption{text-align:left;color:var(--muted);font-size:12px;padding-bottom:4px}
+.desk-day .dd-event small{color:var(--muted)}
+.desk-day .dd-impact{display:inline-block;min-width:54px;font-size:11px;text-transform:uppercase;text-align:center;border-radius:6px;padding:1px 6px;border:1px solid var(--border)}
+.desk-day .dd-event.is-high .dd-impact{border-color:var(--red);color:var(--red)}
+.desk-day .dd-event.is-medium .dd-impact{border-color:var(--amber);color:var(--amber)}
+#dd-state[data-state="holding"],#dd-state[data-state="blocked"]{border-color:var(--amber);color:var(--amber)}
+#dd-state[data-state="researching"],#dd-state[data-state="watching"]{border-color:var(--green);color:var(--green)}
+#trade-guards .tg-group{border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin:10px 0;min-width:0}
+#trade-guards .tg-wide{grid-column:1/-1}
+#trade-guards .tg-wide textarea{width:100%;box-sizing:border-box;font-family:var(--mono);font-size:12px}
+#trade-guards .compact-form .chk{max-width:none;white-space:normal}
+#trade-guards .compact-form input[type=checkbox]{width:16px;height:16px;flex:0 0 16px}
