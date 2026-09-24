@@ -1382,8 +1382,9 @@ def _place_option_from_desk(ib, order, identity, ref):
     """Live options: single-leg OPT (BTO/STC/STO/BTC). Calls and puts.
 
     Covered STO (calls): requires long underlying shares >= contracts*100.
-    Naked STO: requires allow_naked on the order plus buying_power >= premium*100*contracts
-    (honest floor — not full IBKR margin). BTC verifies short OPT by con_id.
+    Covered STO (calls) also subtracts shares already pledged to short or working calls.
+    Naked STO: requires allow_naked on the order plus buying_power >= worst-case loss
+    (strike-based floor — not full IBKR margin). BTC verifies short OPT by con_id.
     """
     intent = str(order.get("option_intent") or order.get("position_intent") or "").upper()
     if order.get("asset_type") == "BAG" or order.get("legs"):
@@ -1467,22 +1468,42 @@ def _place_option_from_desk(ib, order, identity, ref):
         covered = bool(order.get("covered"))
         allow_naked = bool(order.get("allow_naked") or order.get("allow_naked_short"))
         if covered and right == "C":
-            stock_held = sum(_number(p.position) for p in ib.positions(account)
-                             if p.account == account and p.contract.secType == "STK"
+            positions = [p for p in ib.positions(account) if p.account == account]
+            stock_held = sum(_number(p.position) for p in positions
+                             if p.contract.secType == "STK"
                              and p.contract.symbol == symbol and p.contract.currency == "USD")
+            # Shares already pledged to short calls (held or working) cannot cover
+            # another one; otherwise repeated covered calls become naked calls.
+            short_calls = sum(-_number(p.position) for p in positions
+                              if p.contract.secType == "OPT" and p.contract.symbol == symbol
+                              and p.contract.right == "C" and _number(p.position) < 0)
+            working_calls = 0.0
+            for trade in ib.openTrades():
+                c = trade.contract
+                if (trade.order.account != account or c.secType != "OPT" or c.symbol != symbol
+                        or c.right != "C" or trade.order.action.upper() != "SELL"):
+                    continue
+                working_calls += max(0.0, _number(trade.order.totalQuantity) - _number(trade.orderStatus.filled))
+            pledged = (short_calls + working_calls) * 100
             need = int(qty) * 100
-            if stock_held < need:
-                raise ValueError(f"Covered short call needs {need} long {symbol} shares; broker holds {stock_held}")
+            if stock_held - pledged < need:
+                raise ValueError(
+                    f"Covered short call needs {need} unpledged long {symbol} shares; broker holds {stock_held}, "
+                    f"{pledged:.0f} already cover short or working calls"
+                )
         elif not allow_naked:
             raise ValueError("STO refused: set covered=True with long shares (calls) or allow_naked=True")
         else:
-            from order_terms import option_notional
-            if order.get("limit") is not None:
-                floor = option_notional(int(qty), float(order["limit"]), 100)
-            elif order.get("option_notional") is not None:
-                floor = float(order["option_notional"])
-            else:
+            from order_terms import option_max_loss
+            premium = order.get("limit")
+            if premium is None and order.get("option_notional") is not None:
+                premium = float(order["option_notional"]) / (int(qty) * 100)
+            if premium is None:
                 raise ValueError("Naked STO requires a limit premium or option_notional for buying-power check")
+            # Worst-case loss (cash-secured strike for puts, strike floor for calls),
+            # not the premium received.
+            floor = option_max_loss({"contracts": int(qty), "option_intent": "STO", "right": right,
+                                     "strike": float(strike), "covered": False}, float(premium))
             values = {v.tag: v.value for v in ib.accountSummary(account)}
             try:
                 bp = float(values.get("BuyingPower") or values.get("AvailableFunds") or 0)
@@ -1490,7 +1511,7 @@ def _place_option_from_desk(ib, order, identity, ref):
                 bp = 0.0
             if bp < floor:
                 raise ValueError(
-                    f"Naked STO blocked: buying_power/available_funds {bp:.2f} < notional floor {floor:.2f}. "
+                    f"Naked STO blocked: buying_power/available_funds {bp:.2f} < worst-case loss floor {floor:.2f}. "
                     "This is not a full IBKR margin calc."
                 )
         if held > 0:
@@ -1558,6 +1579,16 @@ def _place_bag_from_desk(ib, order, identity, ref):
         cl.exchange = "SMART"
         combo_legs.append(cl)
     bag.comboLegs = combo_legs
+    if canonical["option_intent"] == "CLOSE":
+        # A CLOSE is authorized as risk-reducing, so it must unwind a spread that
+        # is actually held: +qty on the bought strike, -qty on the sold strike.
+        held = {}
+        for p in ib.positions(account):
+            if p.account == account and p.contract.secType == "OPT":
+                held[int(p.contract.conId)] = held.get(int(p.contract.conId), 0.0) + _number(p.position)
+        (long_c, _), (short_c, _) = qualified
+        if held.get(int(long_c.conId), 0.0) < qty or held.get(int(short_c.conId), 0.0) > -qty:
+            raise ValueError("BAG CLOSE refused: the account does not hold this spread in that quantity")
     from broker_router import submission_window_error
     expiry_error = submission_window_error(order)
     if expiry_error:

@@ -2008,9 +2008,18 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
             reviewed_order = sig.get("review_order")
             contracts = int((reviewed_order or {}).get("contracts") or (reviewed_order or {}).get("shares") or sig.get("suggested_shares") or 0)
             premium = float((reviewed_order or {}).get("limit") or sig.get("signal_price") or 0)
-            from order_terms import option_notional
+            from order_terms import option_max_loss, option_notional
             try:
                 notional = option_notional(contracts, premium, 100)
+                # Opening shorts and credit spreads risk far more than the
+                # premium; size caps must see the worst-case loss.
+                terms = dict((manual or {}).get("order") or {})
+                terms.update(reviewed_order or {})
+                for key in ("option_strategy", "right", "strike", "long_strike", "short_strike", "covered", "asset_type"):
+                    if terms.get(key) is None and sig.get(key) is not None:
+                        terms[key] = sig.get(key)
+                terms.update(contracts=contracts, option_intent=opt_intent or terms.get("option_intent"))
+                risk_notional = notional if reducing else option_max_loss(terms, premium)
             except ValueError as exc:
                 return blocked(str(exc))
             shares = contracts  # quantity field carried as contracts
@@ -2019,7 +2028,7 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                 if reviewed_order and shares != int(reviewed_order.get("contracts") or reviewed_order.get("shares") or 0):
                     return blocked("Risk limits changed the reviewed quantity; open a fresh review")
                 sig["suggested_shares"] = shares
-                ok, reason = _broker_session_gate(cfg, notional, reducing=reducing)
+                ok, reason = _broker_session_gate(cfg, risk_notional, reducing=reducing)
                 if ok and not reducing:
                     ok, reason = _broker_risk_gate(cfg, ledger, day_pnl, equity)
                 if not ok:
@@ -2045,7 +2054,7 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                      "covered": (reviewed_order or {}).get("covered") or sig.get("covered"),
                      "contract_identity": copy.deepcopy(sig.get("review_contract")),
                      "position_intent": opt_intent,
-                     "option_notional": notional}
+                     "option_notional": notional, "option_max_loss": risk_notional}
             if reviewed_order:
                 order.update({k: v for k, v in reviewed_order.items() if k not in order})
             # Jump to submission by replacing the stock path with OPT order already built.

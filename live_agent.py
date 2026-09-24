@@ -572,6 +572,7 @@ class LiveAgent:
             leg = quotes["legs"][0]
             if not leg.get("con_id") or int(leg.get("multiplier") or 0) != 100:
                 raise ValueError("Only standard 100-share options can auto-trade")
+            _require_live_option_data([leg])
             raw_premium = leg.get("ask") if action == "BUY" else leg.get("bid")
             try:
                 premium = float(raw_premium or 0)
@@ -593,7 +594,7 @@ class LiveAgent:
                 "market_time": quotes.get("received_at") or signal.get("quote", {}).get("market_time"),
                 "bid": leg.get("bid"), "ask": leg.get("ask"), "fresh": True,
                 "local_symbol": leg.get("local_symbol"), "con_id": int(leg["con_id"]), "multiplier": 100,
-                # Provenance only (never a block): 1=live, 3/4=delayed.
+                # 1=live; delayed/frozen legs were refused above.
                 "market_data_type": leg.get("market_data_type"),
                 "delayed": leg.get("market_data_type") in (3, 4),
             }
@@ -615,6 +616,7 @@ class LiveAgent:
         # options_desk.legs order is [long BUY, short SELL]; verify rather than assume.
         if rows[0].get("action") != "BUY" or rows[1].get("action") != "SELL":
             raise ValueError("BAG leg quotes returned in an unexpected order")
+        _require_live_option_data(rows)
         try:
             debit = float(rows[0]["ask"]) - float(rows[1]["bid"])
         except (TypeError, ValueError, KeyError):
@@ -646,6 +648,26 @@ class LiveAgent:
         signal["broker_book"] = book
         return signal
 
+
+
+def _require_live_option_data(legs):
+    """Auto options price limits and size risk from this quote, so it must be live.
+
+    Stock tickets tolerate delayed IBKR data by owner decision, but option
+    premiums move far faster than the underlying and the quote's receipt time
+    would otherwise pass the freshness window on 15-minute-old prices.
+    Types: 1=live, 2=frozen, 3=delayed, 4=delayed-frozen.
+    """
+    for leg in legs:
+        try:
+            kind = int(leg.get("market_data_type"))
+        except (TypeError, ValueError):
+            kind = None
+        if kind != 1:
+            raise ValueError(
+                f"Option quote is not live market data (type {leg.get('market_data_type')}); "
+                "auto options need a live options data subscription"
+            )
 
 
 def register(app, desk):

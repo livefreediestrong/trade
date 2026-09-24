@@ -89,6 +89,63 @@ def option_notional(contracts, premium, multiplier=100):
     return float(qty * px * mult)
 
 
+OPTION_MIN_TICK = Decimal("0.01")
+
+
+def option_tick(price, *, combo=False):
+    """Conservative IBKR option price increment for an order at ``price``.
+
+    Single-leg US equity options trade in $0.05 steps at $3 and above for most
+    classes (penny-pilot names allow $0.01 below $3). Combos trade in cents.
+    The broker's contract rules stay authoritative.
+    """
+    if combo:
+        return OPTION_MIN_TICK
+    return Decimal("0.05") if Decimal(str(price)) >= 3 else OPTION_MIN_TICK
+
+
+def round_option_price(price, *, buying, combo=False):
+    """Round a premium onto its tick, never past the intended bound.
+
+    Buys round down (never pay above the computed limit); sells round up.
+    """
+    from decimal import ROUND_CEILING, ROUND_FLOOR
+    value = Decimal(str(price))
+    tick = option_tick(value, combo=combo)
+    steps = (value / tick).to_integral_value(rounding=ROUND_FLOOR if buying else ROUND_CEILING)
+    return steps * tick
+
+
+def option_max_loss(order, premium=None):
+    """Worst-case USD loss for an option/BAG order at entry, for risk caps.
+
+    Premium-based notional understates short and credit risk, so:
+      long single leg / debit spread -> premium x 100 x contracts
+      credit spread                  -> (width - credit) x 100 x contracts
+      short put                      -> (strike - premium) x 100 x contracts
+      short call (naked)             -> strike x 100 x contracts (unbounded; strike is a floor)
+      covered short call             -> premium x 100 x contracts (stock already held)
+    Closing intents (STC/BTC/CLOSE) return the premium notional.
+    """
+    qty = positive(order.get("contracts", order.get("shares")), "Contracts")
+    px = Decimal(str(abs(float(premium if premium is not None else order.get("limit") or 0))))
+    if px <= 0:
+        raise ValueError("Premium must be a positive finite number")
+    intent = str(order.get("option_intent") or "").upper()
+    strategy = str(order.get("option_strategy") or "")
+    per = px
+    if order.get("asset_type") == "BAG" or strategy in ("call_credit", "put_credit", "call_debit", "put_debit"):
+        if intent != "CLOSE" and "credit" in strategy:
+            width = abs(positive(order.get("long_strike"), "Buy-leg strike")
+                        - positive(order.get("short_strike"), "Sell-leg strike"))
+            per = max(width - px, Decimal("0"))
+    elif intent == "STO" and not order.get("covered"):
+        strike = positive(order.get("strike"), "Strike")
+        right = str(order.get("right") or "").upper()
+        per = max(strike - px, Decimal("0")) if right in ("P", "PUT") else strike
+    return float(per * qty * 100)
+
+
 def _normalize_right(right):
     right = str(right or "").upper()
     if right not in ("C", "P", "CALL", "PUT"):
@@ -161,9 +218,8 @@ def canonical_option_order(signal, options=None):
     }
     if kind == "limit":
         price = positive(options.get("limit_price"), "Limit price")
-        quantum = Decimal("0.01") if price >= 1 else Decimal("0.0001")
-        if price != price.quantize(quantum):
-            raise ValueError("Limit premium precision: cents above $1; four decimals below $1")
+        if price != price.quantize(OPTION_MIN_TICK):
+            raise ValueError("Option limit premiums trade in whole cents (IBKR rejects sub-penny prices)")
         order.update(limit=float(price), notional_bound=option_notional(int(qty), float(price), 100))
     if options.get("max_total") not in (None, ""):
         positive(options["max_total"], "Maximum total")
@@ -213,36 +269,34 @@ def canonical_bag_order(signal, options=None):
     if intent not in ("OPEN", "CLOSE"):
         raise ValueError("BAG intent must be OPEN or CLOSE")
     side = "buy" if (intent == "OPEN" and kind_spread == "debit") or (intent == "CLOSE" and kind_spread == "credit") else "sell"
-    # Net debit OPEN buys the combo; net credit OPEN sells the combo.
-    if intent == "OPEN":
-        combo_side = "BUY" if kind_spread == "debit" else "SELL"
-    else:
-        combo_side = "SELL" if kind_spread == "debit" else "BUY"
     if signal.get("side") not in (None, side):
         raise ValueError("BAG intent does not match order side")
+    # The combo definition is fixed per spread kind so its natural price is a
+    # positive net premium: debit = [BUY long, SELL short], credit = [BUY short,
+    # SELL long] (written below as SELL long / BUY short). OPEN trades the combo
+    # in its opening direction and CLOSE trades the same combo the other way.
+    # IBKR reverses every leg of a SOLD combo, so only combo_action may flip;
+    # flipping the legs too would make CLOSE identical to OPEN.
+    open_action = "BUY" if kind_spread == "debit" else "SELL"
     legs = [
-        {"action": "BUY" if combo_side == "BUY" else "SELL", "right": right, "expiry": expiry,
+        {"action": open_action, "right": right, "expiry": expiry,
          "strike": float(long_strike), "ratio": 1},
-        {"action": "SELL" if combo_side == "BUY" else "BUY", "right": right, "expiry": expiry,
+        {"action": "SELL" if open_action == "BUY" else "BUY", "right": right, "expiry": expiry,
          "strike": float(short_strike), "ratio": 1},
     ]
-    # For CLOSE, reverse both legs relative to the open plan.
-    if intent == "CLOSE":
-        for leg in legs:
-            leg["action"] = "SELL" if leg["action"] == "BUY" else "BUY"
+    combo_action = open_action if intent == "OPEN" else ("SELL" if open_action == "BUY" else "BUY")
     order = {
         "type": kind, "shares": int(qty), "contracts": int(qty), "time_in_force": "day",
         "asset_type": "BAG", "right": right, "expiry": expiry,
         "long_strike": float(long_strike), "short_strike": float(short_strike),
         "option_intent": intent, "option_strategy": strategy, "multiplier": 100,
-        "legs": legs, "combo_action": combo_side if intent == "OPEN" else ("SELL" if combo_side == "BUY" else "BUY"),
+        "legs": legs, "combo_action": combo_action,
     }
     if kind == "limit":
         price = positive(options.get("limit_price"), "Limit price")
         # Net premium per share; notional uses |net| x contracts x 100.
-        quantum = Decimal("0.01") if abs(price) >= 1 else Decimal("0.0001")
-        if abs(price) != abs(price).quantize(quantum):
-            raise ValueError("Limit premium precision: cents above $1; four decimals below $1")
+        if abs(price) != abs(price).quantize(OPTION_MIN_TICK):
+            raise ValueError("Combo limit premiums trade in whole cents (IBKR rejects sub-penny prices)")
         order.update(limit=float(price), notional_bound=option_notional(int(qty), abs(float(price)), 100))
     if options.get("max_total") not in (None, ""):
         positive(options["max_total"], "Maximum total")
