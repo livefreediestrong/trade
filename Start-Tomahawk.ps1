@@ -55,9 +55,36 @@ function Test-DeskResponse($Response, [int]$Port) {
                 [string]::Equals($data, $expectedData, [StringComparison]::OrdinalIgnoreCase))
     } catch { return $false }
 }
-function Test-Desk([string]$Url, [int]$Port) {
-    try { return Test-DeskResponse (Invoke-RestMethod "${Url}api/health" -TimeoutSec 3) $Port }
-    catch { return $false }
+function Get-DeskHealth([string]$Url, [int]$Port) {
+    # Health of THIS checkout's desk, or $null (unreachable or another installation).
+    try { $response = Invoke-RestMethod "${Url}api/health" -TimeoutSec 3 } catch { return $null }
+    if (Test-DeskResponse $response $Port) { return $response }
+    return $null
+}
+function Test-Desk([string]$Url, [int]$Port) { return ($null -ne (Get-DeskHealth $Url $Port)) }
+function Confirm-DeskRestart([string]$Message) {
+    # Headless runs (watchdog, -NoDialogs) never restart a running desk.
+    if ($NoDialogs) { return $false }
+    Add-Type -AssemblyName PresentationFramework
+    return ([System.Windows.MessageBox]::Show($Message, 'Daytrade Signal Desk', 'YesNo', 'Question') -eq 'Yes')
+}
+function Request-DeskRestart([string]$Url, [int]$Port) {
+    # The desk refuses while a broker order is unresolved; otherwise it exits and frees the port.
+    try {
+        Invoke-RestMethod "${Url}api/desk/shutdown" -Method Post -ContentType 'application/json' `
+            -Body (@{ confirm = 'RESTART' } | ConvertTo-Json -Compress) -TimeoutSec 10 | Out-Null
+    } catch {
+        $detail = $null
+        try { $detail = ($_.ErrorDetails.Message | ConvertFrom-Json).error } catch {}
+        if (-not $detail) { $detail = $_.Exception.Message }
+        return @{ ok = $false; message = "The desk kept running the previous version: $detail" }
+    }
+    $deadline = (Get-Date).AddSeconds(20)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)) { return @{ ok = $true } }
+        Start-Sleep -Milliseconds 500
+    }
+    return @{ ok = $false; message = 'The desk accepted the restart but was still running after 20 seconds.' }
 }
 function Test-BrokerPort([string]$Server, [int]$Port) {
     $socket = New-Object Net.Sockets.TcpClient
@@ -174,6 +201,25 @@ function Invoke-DeskLauncher {
     try {
         try { $owned = $mutex.WaitOne(60000) } catch [Threading.AbandonedMutexException] { $owned = $true }
         if (-not $owned) { throw 'Another launch is still starting the desk. Wait a moment and reopen the shortcut.' }
+        # A desk started before an update keeps serving the old code; offer to restart it.
+        $updateNote = $null
+        $health = Get-DeskHealth $url $port
+        if ($health -and $health.code -and $health.code.stale) {
+            $question = "This folder has updated desk code, but the running desk started before the update and still serves the old version.`n`n" +
+                "Restart the desk now to load it? Orders already at the broker are not affected, and the desk will not stop while a broker order is unresolved."
+            if (Confirm-DeskRestart $question) {
+                $restart = Request-DeskRestart $url $port
+                if (-not $restart.ok) {
+                    $updateNote = $restart.message
+                    if (-not $NoDialogs) {
+                        Add-Type -AssemblyName PresentationFramework
+                        [System.Windows.MessageBox]::Show($updateNote, 'Daytrade Signal Desk') | Out-Null
+                    }
+                }
+            } else {
+                $updateNote = 'Updated desk code is waiting. Reopen the shortcut and choose Yes to restart the desk and load it.'
+            }
+        }
         if (-not (Test-Desk $url $port)) {
             if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) {
                 throw "Port $port belongs to another application or a different Tomahawk installation. It was left running. Set a different TOMAHAWK_PORT or close that application."
@@ -194,10 +240,11 @@ function Invoke-DeskLauncher {
         }
         try { $broker = Start-ConfiguredBroker }
         catch { $broker = @{ state = 'startup_error'; message = "Desk ready; Gateway needs attention: $($_.Exception.Message)" } }
-        @{ checked_at = [DateTime]::UtcNow.ToString('o'); gateway = $broker.state; message = $broker.message } |
+        $message = if ($updateNote) { "$($broker.message) $updateNote" } else { $broker.message }
+        @{ checked_at = [DateTime]::UtcNow.ToString('o'); gateway = $broker.state; message = $message } |
             ConvertTo-Json | Set-Content -LiteralPath (Join-Path $data 'launcher-status.json') -Encoding UTF8
         if (-not $NoBrowser) { Start-Process $url | Out-Null }
-        Write-Output $broker.message
+        Write-Output $message
     } finally {
         if ($owned) { $mutex.ReleaseMutex() }
         $mutex.Dispose()

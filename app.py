@@ -52,7 +52,11 @@ import macro_calendar
 import edgar_client
 import options_flow
 import order_terms
+import code_version
 from risk_policy import RISK_PRESETS
+
+# Fingerprint the source this process loaded, before anything can change on disk.
+code_version.mark_started()
 
 APP_DIR = Path(__file__).resolve().parent
 # TOMAHAWK_DATA_DIR overrides (tests use a temp dir so they never touch real data)
@@ -5880,9 +5884,15 @@ def _latest_desk_call(cfg: dict, signals: list, loop: dict) -> dict | None:
 def _startup_status() -> dict:
     try:
         status = json.loads((DATA_DIR / "launcher-status.json").read_text(encoding="utf-8-sig"))
-        return {k: status.get(k) for k in ("checked_at", "gateway", "message")}
+        out = {k: status.get(k) for k in ("checked_at", "gateway", "message")}
     except (OSError, ValueError, AttributeError):
-        return {}
+        out = {}
+    try:
+        code = code_version.status()
+        out.update(code_stale=code["stale"], code_message=code["message"])
+    except Exception:  # noqa: BLE001 - never block state on a file scan
+        pass
+    return out
 
 
 def _build_state_lite() -> dict[str, Any]:
@@ -8856,6 +8866,8 @@ def api_health():
             "app_id": "tomahawk-desk",
             "instance": {"source_root": str(APP_DIR.resolve()), "data_root": str(DATA_DIR.resolve())},
             "startup": _startup_status(),
+            "code": code_version.status(),
+            "pid": os.getpid(),
             "banner": BANNER,
             "port": DESK_PORT,
             "corrupt_files": corrupt_files_status(),
@@ -8868,6 +8880,38 @@ def api_health():
             "api_pack": providers.get("configured") or {},
         }
     )
+
+
+# True only in the process that serves the desk (set in __main__); the shutdown
+# endpoint must never stop a test runner or an importing tool.
+_SERVING = False
+
+
+def _exit_desk_process() -> None:
+    """Stop the desk once no ledger write is in progress; the launcher restarts it."""
+    time.sleep(0.8)  # let the HTTP response reach the launcher
+    with _lock:  # held until exit: no new ledger write can begin
+        append_journal("app_stop", {"reason": "restart_requested", "pid": os.getpid()})
+        release_instance_lock()
+        os._exit(0)
+
+
+@app.route("/api/desk/shutdown", methods=["POST"])
+def api_desk_shutdown():
+    """Stop this desk so the launcher can start updated code. Never while a broker order is unresolved."""
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict) or body.get("confirm") != "RESTART":
+        return jsonify(ok=False, error="Send confirm=RESTART to stop the desk for a restart"), 400
+    if not _is_loopback_request():
+        return jsonify(ok=False, error="Only this computer can restart the desk"), 403
+    if not _SERVING:
+        return jsonify(ok=False, error="This process is not the running desk server"), 409
+    with _lock:
+        pending = load_ledger().get("pending_broker_orders") or []
+    if pending:
+        return jsonify(ok=False, error=f"{len(pending)} broker order(s) still unresolved; restart after reconciliation"), 409
+    threading.Thread(target=_exit_desk_process, name="desk-shutdown", daemon=True).start()
+    return jsonify(ok=True, stopping=True, pid=os.getpid())
 
 
 def recover_interrupted_approvals():
@@ -8915,6 +8959,8 @@ import research_studio
 research_studio.register(app, __import__("sys").modules[__name__], _research_companion)
 import market_universe
 market_radar.configure_discovery(lambda: market_universe.radar_candidates(__import__("sys").modules[__name__]))
+import market_watch
+market_watch.register(app, __import__("sys").modules[__name__])
 
 # Claim the instance before starting any background work.
 if __name__ == "__main__":
@@ -8934,7 +8980,9 @@ if __name__ == "__main__":
     load_ledger()
     load_signals()
     load_journal()
-    append_journal("app_start", {"banner": BANNER, "port": DESK_PORT, "host": DESK_HOST})
+    append_journal("app_start", {"banner": BANNER, "port": DESK_PORT, "host": DESK_HOST,
+                                 "code": code_version.mark_started()})
+    _SERVING = True
     if os.environ.get("TOMAHAWK_DEV_SERVER", "").lower() in ("1", "true", "yes"):
         app.run(host=DESK_HOST, port=DESK_PORT, debug=False, use_reloader=False, threaded=True)
     else:

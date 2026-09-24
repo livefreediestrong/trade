@@ -24,6 +24,7 @@ Useful feature references:
 - [Direct stock tickets and position closing](docs/LIVE_STOCK_TICKETS.md)
 - [Automation debugging and scheduler boundaries](docs/AUTOMATION_DEBUG.md)
 - [Moss broker agent: policy, activation, execution and limits](docs/LIVE_AGENT.md)
+- [Market watch, X watcher and internet-wide trend scanner](docs/MARKET_WATCH.md)
 
 The detailed implementation notes below use the legacy Tomahawk name.
 
@@ -48,7 +49,7 @@ If daily P&L stays unavailable, check **Configure → Settings → API → Setti
 
 Gateway is discovered under `C:\Jts\ibgateway` or your user `Jts\ibgateway` directory. For another location, set `IB_GATEWAY_EXE` in `.env`. `Launch.bat` and the older start/restart scripts delegate to the same launcher; none blindly terminates a port owner. For diagnostics, run `Launch.bat -NoBrowser -NoDialogs`.
 
-The launcher reuses a running desk only when its health response identifies this checkout and the configured data directory. Another checkout on the same port is reported as a conflict. Process environment settings override `.env`; inline comments are supported, and quote values that contain a literal `#` after whitespace. Jev request budgets use `JEV_RPM=30` and `JEV_DAILY=500` by default and are reserved before provider requests.
+The launcher reuses a running desk only when its health response identifies this checkout and the configured data directory. If the code in this folder changed after that desk started (for example after `git pull`), the launcher asks whether to restart it; the desk refuses to stop while a broker order is unresolved, and headless runs (`-NoDialogs`, the watchdog) never restart it. The page also shows a notice until the desk is restarted. `Launch.vbs` and `Launch.bat` run the launcher with a process-scoped `-ExecutionPolicy Bypass`, so Windows' default script policy does not block the shortcut. Another checkout on the same port is reported as a conflict. Process environment settings override `.env`; inline comments are supported, and quote values that contain a literal `#` after whitespace. Jev request budgets use `JEV_RPM=30` and `JEV_DAILY=500` by default and are reserved before provider requests.
 
 ## Market-hours data and decision handling
 

@@ -1467,6 +1467,10 @@
         : book?.ok === false ? `Broker account identified; account data unavailable: ${book.error || "check Gateway"}`
         : book?.risk_error ? `Broker account connected. ${book.risk_error}`
         : "Broker account identified. Each order still passes account and risk checks.";
+      // Updated code on disk that this running desk has not loaded yet.
+      if (data.startup?.code_stale && data.startup?.code_message) {
+        startup.textContent = `${data.startup.code_message} ${startup.textContent}`.trim();
+      }
       startup.hidden = !startup.textContent;
     }
   }

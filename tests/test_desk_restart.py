@@ -1,0 +1,77 @@
+"""A running desk detects updated code on disk and stops only when it is safe to restart."""
+from __future__ import annotations
+
+import pytest
+
+import app as desk
+import code_version
+
+BASE = "http://127.0.0.1:5056"
+
+
+def test_fingerprint_changes_when_source_changes(tmp_path, monkeypatch):
+    (tmp_path / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "static").mkdir()
+    (tmp_path / "static" / "ui.js").write_text("let a=1;", encoding="utf-8")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "state.py").write_text("ignored", encoding="utf-8")
+    monkeypatch.setattr(code_version, "_digests", {})
+    first = code_version.fingerprint(tmp_path)
+    (tmp_path / "data" / "state.py").write_text("still ignored", encoding="utf-8")
+    assert code_version.fingerprint(tmp_path) == first
+    (tmp_path / "static" / "ui.js").write_text("let a=2;", encoding="utf-8")
+    assert code_version.fingerprint(tmp_path) != first
+
+
+def test_status_reports_stale_code(monkeypatch):
+    monkeypatch.setattr(code_version, "_state", {"started": "aaa", "current": "aaa", "checked": 0.0})
+    monkeypatch.setattr(code_version, "fingerprint", lambda root=code_version.ROOT: "bbb")
+    status = code_version.status(force=True)
+    assert status["stale"] is True and "Reopen the desktop shortcut" in status["message"]
+    assert desk._startup_status()["code_stale"] is True
+
+
+@pytest.fixture
+def shutdown(monkeypatch, tmp_path):
+    for name in ("CONFIG", "LEDGER", "SIGNALS", "JOURNAL"):
+        monkeypatch.setattr(desk, name + "_PATH", tmp_path / (name.lower() + ".json"))
+    started = []
+    monkeypatch.setattr(desk.threading, "Thread", lambda target, name=None, daemon=None: type(
+        "T", (), {"start": lambda self: started.append(target)})())
+    return started
+
+
+def test_shutdown_requires_confirmation_and_the_serving_process(shutdown, monkeypatch):
+    client = desk.app.test_client()
+    assert client.post("/api/desk/shutdown", base_url=BASE, json={}).status_code == 400
+    monkeypatch.setattr(desk, "_SERVING", False)
+    reply = client.post("/api/desk/shutdown", base_url=BASE, json={"confirm": "RESTART"})
+    assert reply.status_code == 409 and not shutdown
+
+
+def test_shutdown_refuses_while_a_broker_order_is_unresolved(shutdown, monkeypatch):
+    monkeypatch.setattr(desk, "_SERVING", True)
+    ledger = desk.load_ledger()
+    ledger["pending_broker_orders"] = [{"signal": {"id": "s1"}}]
+    desk.save_ledger(ledger)
+    reply = desk.app.test_client().post("/api/desk/shutdown", base_url=BASE, json={"confirm": "RESTART"})
+    assert reply.status_code == 409 and "unresolved" in reply.get_json()["error"] and not shutdown
+
+
+def test_shutdown_stops_the_idle_serving_desk(shutdown, monkeypatch):
+    monkeypatch.setattr(desk, "_SERVING", True)
+    reply = desk.app.test_client().post("/api/desk/shutdown", base_url=BASE, json={"confirm": "RESTART"})
+    assert reply.status_code == 200 and reply.get_json()["stopping"] is True
+    assert shutdown == [desk._exit_desk_process]
+
+
+def test_shutdown_rejects_cross_site_requests(shutdown, monkeypatch):
+    monkeypatch.setattr(desk, "_SERVING", True)
+    reply = desk.app.test_client().post("/api/desk/shutdown", base_url=BASE, json={"confirm": "RESTART"},
+                                        headers={"Origin": "https://evil.example", "Sec-Fetch-Site": "cross-site"})
+    assert reply.status_code == 403 and not shutdown
+
+
+def test_health_reports_code_status():
+    body = desk.app.test_client().get("/api/health", base_url=BASE).get_json()
+    assert set(body["code"]) >= {"started", "on_disk", "stale"}

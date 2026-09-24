@@ -239,3 +239,34 @@ Start-ConfiguredBroker | Out-Null
 Start-ConfiguredBroker | Out-Null
 if ($script:started -ne 1) { throw "Launched $($script:started) Gateways inside the cooldown" }
 """)
+
+
+def test_stale_desk_is_never_restarted_headless(tmp_path):
+    run_ps(tmp_path, r"""
+$NoBrowser = $true; $NoDialogs = $true
+function Get-LaunchSetting($Name,$Default) { if ($Name -eq 'TOMAHAWK_PORT') { return '59441' }; return $Default }
+function Invoke-RestMethod { param($Uri) if ("$Uri" -like '*shutdown*') { throw 'Headless run must not stop the desk' }
+  return @{app_id='tomahawk-desk';port=59441;instance=@{source_root=$Root;data_root=(Join-Path $Root 'data')};code=@{stale=$true}} }
+function Ensure-DeskPython { throw 'Running desk is reused' }
+function Start-ConfiguredBroker { return @{state='port_ready';message='ready.'} }
+Invoke-DeskLauncher | Out-Null
+$status = Get-Content -Raw (Join-Path $Root 'data\launcher-status.json') | ConvertFrom-Json
+if ($status.message -notlike '*Updated desk code is waiting*') { throw "Update not reported: $($status.message)" }
+""")
+
+
+def test_stale_desk_restart_refusal_keeps_desk_and_reports_reason(tmp_path):
+    run_ps(tmp_path, r"""
+$NoBrowser = $true; $NoDialogs = $true
+function Get-LaunchSetting($Name,$Default) { if ($Name -eq 'TOMAHAWK_PORT') { return '59442' }; return $Default }
+function Invoke-RestMethod { return @{app_id='tomahawk-desk';port=59442;instance=@{source_root=$Root;data_root=(Join-Path $Root 'data')};code=@{stale=$true}} }
+function Confirm-DeskRestart { return $true }
+$script:asked = 0
+function Request-DeskRestart { $script:asked++; return @{ok=$false;message='1 broker order(s) still unresolved'} }
+function Ensure-DeskPython { throw 'Running desk is reused' }
+function Start-ConfiguredBroker { return @{state='port_ready';message='ready.'} }
+Invoke-DeskLauncher | Out-Null
+if ($script:asked -ne 1) { throw 'Restart not requested' }
+$status = Get-Content -Raw (Join-Path $Root 'data\launcher-status.json') | ConvertFrom-Json
+if ($status.message -notlike '*still unresolved*') { throw "Refusal not reported: $($status.message)" }
+""")

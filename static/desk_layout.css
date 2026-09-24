@@ -234,3 +234,9 @@
   font-size: 13px;
   padding: 4px 0;
 }
+/* Market watch panel */
+#market-watch .mw-actions{margin:6px 0 10px}
+#market-watch td small{display:block;color:var(--muted);font-size:10px;line-height:1.5}
+#market-watch .mw-links{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:12px}
+#market-watch .mw-topics p{margin:6px 0;font-size:12px}
+#market-watch .mw-topics small{color:var(--muted);margin-left:4px}
