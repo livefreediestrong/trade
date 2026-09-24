@@ -1,0 +1,236 @@
+/* Compact working desk. Decorative atmosphere stays behind functional surfaces. */
+.utilitarian-desk{--radius:12px}
+.utilitarian-desk .page-nav .nav-brand{grid-template-columns:88px 1fr;gap:12px;padding:0 8px 8px;min-height:96px;align-items:center}
+.utilitarian-desk .nav-brand .wordmark{font-size:28px;letter-spacing:-.7px;animation:none}
+.logo-medallion{position:relative;display:grid;place-items:center;width:88px;height:88px;isolation:isolate;animation:logo-soft-breath 90s ease-in-out infinite}
+.logo-medallion::before{content:'';position:absolute;inset:-8px;z-index:-1;border-radius:50%;background:radial-gradient(circle,#d7bdd539 0,#e6a39115 43%,transparent 70%)}
+.logo-medallion #scene-mark{width:80px;height:80px;grid-row:auto;filter:drop-shadow(0 0 7px #c4b5e035);transform-origin:50% 50%;animation:logo-calm-cycle 180s ease-in-out infinite}
+/* Original swirl geometry, with a feathered light band moving from the inner
+   blocks to the tips and back. Calm from first paint; no acceleration or flash. */
+.logo-flow{transform-origin:50px 50px;animation:logo-light-flow 28s ease-in-out infinite,logo-light-presence 180s ease-in-out infinite;transform:scale(.32)}
+/* Always turning: 90 seconds clockwise, 90 back, easing only at reversals.
+   Both endpoints are the original pose, so resetting creates no snap. */
+@keyframes logo-calm-cycle{0%,100%{transform:rotate(0)}50%{transform:rotate(360deg)}}
+@keyframes logo-soft-breath{0%,33.333%,66.667%,100%{transform:scale(1)}16.667%,83.333%{transform:scale(1.015)}50%{transform:scale(1.025)}}
+@keyframes logo-light-flow{0%,100%{transform:scale(.32)}50%{transform:scale(1.08)}}
+@keyframes logo-light-presence{0%,20%,100%{opacity:.95}30%,45%{opacity:.5}55%,70%{opacity:.65}80%,90%{opacity:.75}}
+:root[data-scene-motion=off] .logo-medallion,:root[data-scene-motion=off] #scene-mark,:root[data-scene-motion=off] #scene-mark *,:root[data-desk-quiet=true] .logo-medallion,:root[data-desk-quiet=true] #scene-mark,:root[data-desk-quiet=true] #scene-mark *{animation-play-state:paused!important}
+.utilitarian-desk .has-companion-habitat .sidebar-scroll{gap:2px;top:223px}
+.utilitarian-desk .sidebar-scroll>a{padding:6px 11px;line-height:1.5}
+.utilitarian-desk .nav-caption{padding:12px 10px 3px;letter-spacing:.13em;font-size:9px}
+.utilitarian-desk .nav-caption:first-child{padding-top:0}
+.utilitarian-desk .nav-bottom{padding:8px 8px 14px}
+.utilitarian-desk #desk-clock{display:block;margin-top:12px;font-size:10px}
+.utilitarian-desk .paper-chrome{padding:10px 0 8px;gap:7px}
+.utilitarian-desk .chrome-note{font-size:10px;line-height:1.4}
+.utilitarian-desk .execution-summary{padding:8px 12px;gap:6px 12px;min-height:0;border-radius:8px;font-size:11px}
+.utilitarian-desk .execution-summary-label{display:none}
+.utilitarian-desk .startup-status{padding:9px 12px;margin:8px 0;line-height:1.5}
+.utilitarian-desk .topbar{padding:8px 0;margin-bottom:10px;gap:10px}
+.utilitarian-desk .topbar .brand h1{font:500 19px/1.3 var(--serif)}
+.utilitarian-desk .attention-bar{padding:9px 12px;gap:9px;margin-bottom:14px;border-radius:10px}
+.utilitarian-desk .attention-bar label{font-size:12px}.utilitarian-desk .attention-bar select{max-width:230px;min-height:34px}
+.utilitarian-desk .attention-bar .btn{min-height:34px;padding:5px 12px}
+.utilitarian-desk .desk-overview{padding:0 0 18px}
+.utilitarian-desk .overview-heading{align-items:center;gap:16px;margin-bottom:10px}
+.utilitarian-desk .overview-heading h2{font:500 18px/1.4 var(--serif);margin:0}
+.utilitarian-desk #overview-session{font:10px var(--mono);color:var(--muted)}
+.utilitarian-desk .overview-grid{gap:10px}
+.utilitarian-desk .overview-card{padding:14px 16px;border-radius:11px;background:var(--panel);display:flex;flex-direction:column;align-items:flex-start}
+.utilitarian-desk .overview-number{font-size:27px;margin:6px 0;line-height:1.25}
+.utilitarian-desk .overview-card p{font-size:11px;line-height:1.5;margin:3px 0 8px}
+.utilitarian-desk .overview-card a{font-size:11px;margin-top:auto}
+.utilitarian-desk .overview-intention h3{font:500 19px/1.35 var(--serif);margin:8px 0 4px}
+.utilitarian-desk .panel{padding:16px 18px;background:var(--panel);box-shadow:none}
+.utilitarian-desk .section-heading{margin:8px 0 12px}.utilitarian-desk .section-heading h2{font-size:23px;margin:0}
+.utilitarian-desk .section-heading p{font-size:11px;margin:4px 0}
+.utilitarian-desk .section-grid{gap:12px}
+.utilitarian-desk .panel-head{margin-bottom:10px}
+.utilitarian-desk .compact-guide{padding:11px 16px}
+.utilitarian-desk .compact-guide>summary{cursor:pointer;font-size:13px;min-height:26px;line-height:26px}
+.utilitarian-desk .compact-guide[open]>summary{margin-bottom:12px}
+.utilitarian-desk .trade-guide .guide-steps{gap:12px}.utilitarian-desk .trade-guide .guide-steps li{padding:12px}
+.utilitarian-desk .companion-intro h2{font-size:23px;margin:0}.utilitarian-desk .companion-intro{margin-bottom:12px}
+.utilitarian-desk .companion-intro .eyebrow{display:none}
+.utilitarian-desk .automation-card{margin:16px 0;padding:15px}.utilitarian-desk .automation-facts{margin:12px 0}
+.utilitarian-desk .trade-sky{margin:10px 0;padding:9px 14px}
+.utilitarian-desk .trade-sky>summary{font-size:14px}
+/* Uncanny moonlit air, without adding symbols or invented stars. */
+.scene-veil{position:absolute;inset:25% -15% 0;pointer-events:none;opacity:.24;filter:blur(16px);background:radial-gradient(ellipse at 28% 52%,#c7acd329,transparent 38%),radial-gradient(ellipse at 78% 67%,#8aaec01b,transparent 34%);animation:veil-drift 110s ease-in-out infinite alternate}
+.scene-veil.veil-far{inset:8% -20% 25%;opacity:.17;animation-duration:160s;animation-direction:alternate-reverse}
+@keyframes veil-drift{from{transform:translate3d(-2%,-1%,0)}to{transform:translate3d(3%,3%,0)}}
+.utilitarian-desk .mesa-distant{stroke:#cab4e223;stroke-width:.8;vector-effect:non-scaling-stroke}
+.utilitarian-desk .scene-moon i{width:290px;height:290px;background:radial-gradient(circle,#e0cfff3b,transparent 65%)}
+.scene-fauna{position:absolute;inset:0;opacity:0;transition:opacity 4s ease;pointer-events:none;color:#c5b4b3}
+.scene-fauna svg{position:absolute;fill:currentColor;overflow:visible}
+.scene-fauna *{animation-play-state:paused!important}
+:root[data-sky=dawn] .fauna-dawn,:root[data-sky=day] .fauna-day,:root[data-sky=dusk] .fauna-dusk,:root[data-sky=night] .fauna-night{opacity:.30}
+:root[data-scene-motion=on][data-sky=dawn] .fauna-dawn *,:root[data-scene-motion=on][data-sky=day] .fauna-day *,:root[data-scene-motion=on][data-sky=dusk] .fauna-dusk *,:root[data-scene-motion=on][data-sky=night] .fauna-night *{animation-play-state:running!important}
+.quail-covey{width:100px;bottom:1.2%;left:38%;animation:quail-walk 95s linear infinite}
+.desert-hawk{width:77px;top:18%;left:52%;animation:hawk-circle 120s linear infinite}
+.desert-jackrabbit{width:57px;bottom:1.6%;left:77%;animation:rabbit-forage 100s ease-in-out infinite}
+.desert-bat{width:39px;top:30%;left:77%;animation:bat-forage 80s ease-in-out infinite}
+.bat-wings{transform-origin:50px 25px;animation:bat-flap 1.3s ease-in-out infinite}
+@keyframes quail-walk{0%,12%{transform:translateX(-20px);opacity:0}18%{opacity:1}28%{transform:translateX(20px)}33%{transform:translateX(20px)}47%{transform:translateX(70px)}55%{opacity:1}62%,100%{transform:translateX(100px);opacity:0}}
+@keyframes hawk-circle{0%,8%{transform:translate(-8vw,4vh) scale(.8);opacity:0}15%{opacity:1}40%{transform:translate(13vw,-1vh) rotate(8deg) scale(.95)}65%{transform:translate(23vw,7vh) rotate(15deg) scale(.7);opacity:1}76%,100%{transform:translate(28vw,9vh) scale(.6);opacity:0}}
+@keyframes rabbit-forage{0%,12%{opacity:0;transform:translateX(-20px)}20%{opacity:1;transform:translateX(0)}25%,40%{transform:translateX(0) rotate(0)}43%,48%{transform:translateX(0) rotate(3deg)}54%{transform:translateX(20px)}62%{opacity:1}70%,100%{opacity:0;transform:translateX(48px)}}
+@keyframes bat-forage{0%,15%{opacity:0;transform:translate(0,0) scale(.8)}22%{opacity:1}38%{transform:translate(-10vw,4vh) rotate(-8deg)}52%{transform:translate(-19vw,-2vh) rotate(7deg)}64%{opacity:1}73%,100%{opacity:0;transform:translate(-29vw,3vh) scale(.65)}}
+@keyframes bat-flap{0%,100%{transform:scaleY(1)}50%{transform:scaleY(.55)}}
+:root[data-scene-motion=off] .scene-fauna *,:root[data-desk-quiet=true] .scene-fauna *{animation-play-state:paused!important}
+:root[data-theme=light] .logo-medallion{background:#26273e;border-radius:50%;box-shadow:0 0 20px #89749622}
+@media(min-width:801px) and (max-height:650px){.utilitarian-desk .has-companion-habitat .sidebar-scroll{top:200px}}
+@media(max-width:800px){
+ .utilitarian-desk .page-nav.has-companion-habitat{padding:9px 10px;margin-bottom:12px}
+ .utilitarian-desk .page-nav .nav-brand{display:grid;grid-template-columns:56px 1fr;min-height:56px;padding:0;gap:10px;width:auto}
+ .utilitarian-desk .logo-medallion{width:56px;height:56px}.utilitarian-desk .logo-medallion #scene-mark{width:50px;height:50px}
+ .utilitarian-desk .nav-brand .wordmark{font-size:21px}
+ .utilitarian-desk .sidebar-scroll>a{font-size:11px;padding:5px 7px}
+ .utilitarian-desk .nav-bottom{padding:0;display:block}.utilitarian-desk .scene-controls summary{padding:5px 0}
+ .utilitarian-desk #desk-clock{display:none}.utilitarian-desk .nav-caption{display:none}
+ .utilitarian-desk .topbar{flex-wrap:wrap}.utilitarian-desk .attention-bar{gap:7px}.utilitarian-desk .attention-bar select{max-width:none;flex:1 1 140px}
+ .utilitarian-desk .attention-bar .btn{flex:0 0 auto}.utilitarian-desk .overview-card{padding:12px 14px}.utilitarian-desk .panel{padding:14px}
+ .scene-veil{filter:none;opacity:.16}
+}
+@media(prefers-reduced-motion:reduce){.logo-medallion,#scene-mark,#scene-mark *,.scene-veil{animation:none!important}.logo-flow{transform:scale(.7)}.scene-fauna *{animation:none!important}.scene-fauna{transition:none}}
+@media print{.logo-medallion,.scene-veil{display:none}}
+
+/* Persistent modules: location and a quiet edge replace accordion controls. */
+.utilitarian-desk .desk-module{min-width:0;margin:12px 0;padding:14px;border:1px solid var(--border);border-left:2px solid color-mix(in srgb,var(--accent) 45%,var(--border));border-radius:9px;background:color-mix(in srgb,var(--panel2) 44%,var(--panel))}
+.utilitarian-desk .desk-module>.module-title,.utilitarian-desk .desk-module>.panel-head>.module-title{font:600 14px/1.45 var(--sans,system-ui);letter-spacing:.01em;margin:0 0 10px;color:var(--text)}
+.utilitarian-desk .desk-module .desk-module{background:transparent;border:0;border-top:1px solid var(--border);border-radius:0;padding:12px 0 0;margin:12px 0 0}
+.utilitarian-desk .desk-module p{font-size:12px;line-height:1.55;margin:7px 0}
+.utilitarian-desk .desk-module .hint-line{font-size:11px}
+.utilitarian-desk #research-studio{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
+.utilitarian-desk #research-studio>.panel-head,.utilitarian-desk #research-studio>.research-tabs,.utilitarian-desk #research-studio>#studio-status,.utilitarian-desk #math-evidence-context,.utilitarian-desk #source-library{grid-column:1/-1;margin:0}
+.utilitarian-desk #research-studio>.desk-module{margin:0}
+.utilitarian-desk #studio-status:empty{display:none}
+.utilitarian-desk .compact-form{gap:9px;align-items:end}
+.utilitarian-desk .studio-fields{gap:9px}
+.utilitarian-desk .studio-fields textarea{min-height:65px}
+.utilitarian-desk .source-results{gap:9px}
+.utilitarian-desk #source-results{max-height:420px;overflow:auto;overscroll-behavior:contain}
+.utilitarian-desk .research-card{padding:12px}
+.utilitarian-desk .source-meta{font:10px/1.6 var(--mono);color:var(--muted);overflow-wrap:anywhere}
+.utilitarian-desk .studio-result pre{max-height:280px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+.utilitarian-desk .desk-module.trade-sky>.module-title{display:flex;align-items:center;gap:10px}
+.utilitarian-desk .trade-sky>.module-title small{margin-left:auto;color:var(--muted);font:10px var(--mono)}
+.utilitarian-desk .scene-controls.desk-module{padding:10px 0;margin:8px 0;border:0;border-top:1px solid var(--border);border-radius:0;background:transparent}
+.utilitarian-desk .scene-controls.desk-module>.module-title{font-size:11px;margin-bottom:8px}
+.utilitarian-desk .sale-toolbar,.utilitarian-desk .sale-pagination{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.utilitarian-desk .sale-pagination{justify-content:flex-end;font-size:11px;margin:10px 0}
+.utilitarian-desk #sale-market-progress{display:block;width:100%;height:5px;border:0;accent-color:var(--accent);margin:12px 0}
+.utilitarian-desk .sale-coverage{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.utilitarian-desk .sale-coverage>span{font-size:10px;color:var(--muted);border-right:1px solid var(--border)}
+.utilitarian-desk .sale-coverage strong{display:block;color:var(--text);font:500 19px/1.6 var(--mono)}
+.utilitarian-desk .sale-warning{color:var(--amber);font-size:11px!important}
+.utilitarian-desk .sale-filters{display:flex;flex-wrap:wrap;align-items:end;gap:10px;margin:15px 0}
+.utilitarian-desk .sale-filters label{font-size:11px}
+.utilitarian-desk .sale-filters input[type=search]{width:190px;display:block}
+.utilitarian-desk .sale-filters input[type=number]{width:140px;display:block}
+.utilitarian-desk .segmented{display:flex;padding:0;border:1px solid var(--border);border-radius:8px;overflow:hidden;margin:0;min-width:0;align-self:end}
+.utilitarian-desk .segmented label{position:relative;cursor:pointer;display:block}
+.utilitarian-desk .segmented input{position:absolute;opacity:0;width:1px;height:1px;min-height:0}
+.utilitarian-desk .segmented span{display:block;padding:9px 12px;border-right:1px solid var(--border)}
+.utilitarian-desk .segmented input:checked+span{background:color-mix(in srgb,var(--accent) 20%,var(--panel));color:var(--text)}
+.utilitarian-desk .segmented input:focus-visible+span{outline:2px solid var(--accent);outline-offset:-3px}
+.utilitarian-desk #sale-market-results{max-height:580px;overflow:auto;border-bottom:1px solid var(--border)}
+.utilitarian-desk #sale-market-results th{position:sticky;top:0;background:var(--panel);z-index:1}
+.utilitarian-desk #sale-market-results td{padding:8px;vertical-align:middle;font-variant-numeric:tabular-nums}
+.utilitarian-desk #sale-market-results td small{display:block;max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:10px;color:var(--muted)}
+.utilitarian-desk .sale-symbol{padding:0;border:0;background:transparent;color:var(--accent);font-weight:600;text-decoration:underline;text-underline-offset:3px}
+.utilitarian-desk .sale-symbol[aria-pressed=true]{color:var(--text)}
+.utilitarian-desk .sale-inspection{padding:12px;border:1px solid var(--border);border-radius:8px;margin:12px 0}
+.utilitarian-desk .sale-inspection h4{margin:0 0 8px}
+.utilitarian-desk .sale-context-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.utilitarian-desk .sale-scope{color:var(--muted)}
+.utilitarian-desk .scanner-lenses{flex-basis:100%;width:fit-content;flex-grow:0;border:0;gap:4px;flex-wrap:wrap}
+.utilitarian-desk .scanner-lenses span{border:1px solid var(--border);border-radius:8px}
+.utilitarian-desk .scanner-link{display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:11px;padding:8px 11px;margin:8px 0 12px;border:1px solid var(--border);border-radius:7px;background:color-mix(in srgb,var(--accent) 5%,var(--panel))}
+.utilitarian-desk .scanner-link span{color:var(--muted)}
+.utilitarian-desk [hidden]{display:none!important}
+@media(max-width:1150px){.utilitarian-desk #research-studio{grid-template-columns:minmax(0,1fr)}.utilitarian-desk .sale-context-grid{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:650px){.utilitarian-desk .sale-coverage{grid-template-columns:repeat(2,minmax(0,1fr))}.utilitarian-desk .source-results,.utilitarian-desk .studio-fields{grid-template-columns:minmax(0,1fr)}.utilitarian-desk .sale-filters input[type=search]{width:160px}.utilitarian-desk .desk-module{padding:11px}}
+.utilitarian-desk .live-command{border-top:3px solid var(--accent);padding:18px}
+.utilitarian-desk .live-command,.utilitarian-desk .agent-summary{margin-bottom:16px}
+.utilitarian-desk .live-command>.panel-head{align-items:start;gap:12px}
+.utilitarian-desk .live-auto-facts,.utilitarian-desk .agent-summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.utilitarian-desk .live-auto-facts article,.utilitarian-desk .agent-summary-grid article{min-width:0;border-left:1px solid var(--border);padding-left:12px}
+.utilitarian-desk .live-auto-facts span,.utilitarian-desk .live-auto-facts small{display:block;color:var(--muted);font-size:11px;margin:5px 0}
+.utilitarian-desk .live-auto-facts strong{display:block;font-size:14px;line-height:1.5}
+.utilitarian-desk .live-auto-blockers{font-size:12px;line-height:1.7;padding:12px 12px 12px 30px;background:color-mix(in srgb,var(--amber) 7%,var(--panel));border-radius:7px}
+.utilitarian-desk .live-auto-blockers:empty,.utilitarian-desk #agent-review-error:empty{display:none}
+.utilitarian-desk .agent-summary h3{font-size:14px;line-height:1.5;margin:6px 0}
+.utilitarian-desk .agent-summary p{font-size:12px;line-height:1.6;margin:7px 0}
+.utilitarian-desk .agent-links{display:flex;gap:8px 16px;flex-wrap:wrap;border-top:1px solid var(--border);padding-top:12px;margin-top:14px;font-size:11px}
+.utilitarian-desk .research-shelf{max-height:720px;overflow:auto;border:1px solid var(--border);border-radius:10px;padding:14px;scroll-padding-top:16px}
+.utilitarian-desk .research-shelf:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.utilitarian-desk #moss-desk{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:start}
+.utilitarian-desk #moss-desk>.companion-intro,.utilitarian-desk #moss-desk>.companion-body,.utilitarian-desk #moss-desk>.scanner-link{grid-column:1/-1}
+.utilitarian-desk #moss-desk>.desk-module{margin:0}
+@media(max-width:1150px){.utilitarian-desk .live-auto-facts,.utilitarian-desk .agent-summary-grid{grid-template-columns:1fr}.utilitarian-desk #moss-desk{grid-template-columns:minmax(0,1fr)}}
+#live-agent .compact-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));gap:12px}
+#live-agent .compact-form label>input{width:100%;max-width:none;box-sizing:border-box}
+#live-agent fieldset{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:12px 24px;min-width:0;border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+#live-agent fieldset .chk{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+#live-agent .compact-form input[type=radio]{display:inline-block;width:16px;height:16px;min-height:16px;margin:0;flex:0 0 16px}
+#live-agent-history{max-height:180px;overflow:auto;font-size:12px;padding-left:22px}
+#live-agent .live-agent-budget{border:1px solid var(--border);border-radius:8px;padding:12px;margin:12px 0;font-size:12px;overflow-wrap:anywhere}
+#live-agent-budget-list{padding-left:18px;margin:8px 0;max-height:220px;overflow:auto}
+#live-agent-budget-list:empty{display:none}
+#live-agent-budget-list li{margin:7px 0;line-height:1.6}
+.utilitarian-desk .headline-take{border-left:2px solid var(--accent);padding:8px 14px;margin:10px 0;background:color-mix(in srgb,var(--accent) 5%,var(--panel))}
+.utilitarian-desk .headline-take p{font:italic 16px/1.65 var(--serif,Georgia);margin:5px 0 10px}
+.utilitarian-desk .headline-take small,.utilitarian-desk #headline-sources small,.utilitarian-desk .headline-list small{display:block;color:var(--muted);font-size:10px;line-height:1.6;margin-top:5px}
+.utilitarian-desk .headline-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;max-height:330px;overflow:auto;margin:12px 0}
+.utilitarian-desk .headline-list article{padding:8px 0;border-top:1px solid var(--border);font-size:12px;line-height:1.6}
+.utilitarian-desk #headline-sources td{padding:8px;vertical-align:top;font-size:11px}
+.utilitarian-desk #headline-sources strong{font-weight:500}
+@media(max-width:650px){.utilitarian-desk .headline-list{grid-template-columns:minmax(0,1fr)}}
+
+/* Phase 1 IA — sticky mini-subnav inside #desk-live (organization only) */
+#desk-live .desk-live-subnav {
+  grid-column: 1 / -1;
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding: 8px 10px;
+  margin: 0 0 12px;
+  background: color-mix(in srgb, var(--panel, #121a2b) 92%, transparent);
+  border: 1px solid var(--border, #2a3650);
+  border-radius: 10px;
+  backdrop-filter: blur(6px);
+}
+#desk-live .desk-live-subnav a {
+  font-size: 12px;
+  text-decoration: none;
+  color: var(--muted, #93a0bd);
+  padding: 4px 8px;
+  border-radius: 7px;
+}
+#desk-live .desk-live-subnav a:hover,
+#desk-live .desk-live-subnav a:focus {
+  color: var(--text, #e8eefc);
+  background: var(--panel2, #182235);
+}
+#desk-live .live-status-hub {
+  display: contents;
+}
+#desk-live .live-guide-details,
+#desk-live .live-secondary-tools {
+  grid-column: 1 / -1;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border, #2a3650);
+  border-radius: 10px;
+  background: var(--panel, #121a2b);
+}
+#desk-live .live-guide-details > summary,
+#desk-live .live-secondary-tools > summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 4px 0;
+}

@@ -13,7 +13,9 @@ after a successful broker submit.
 from __future__ import annotations
 
 import os
+import math
 import time
+from urllib.parse import quote
 from pathlib import Path
 from typing import Any, Optional
 
@@ -203,6 +205,16 @@ def get_positions() -> dict[str, Any]:
     }
 
 
+def get_open_orders() -> dict[str, Any]:
+    if not is_configured():
+        return {"ok": False, "error": "not_configured", "orders": []}
+    code, data = _request("GET", "/orders?status=open&limit=500&nested=false")
+    # A full page could omit more orders; don't claim a complete risk snapshot.
+    if code == 200 and isinstance(data, list) and len(data) < 500:
+        return {"ok": True, "orders": data}
+    return {"ok": False, "error": "Open-order snapshot unavailable or truncated", "orders": []}
+
+
 def cancel_order(order_id: str) -> dict[str, Any]:
     if not is_configured():
         return {"ok": False, "status": "live_not_configured", "error": "not_configured"}
@@ -285,6 +297,7 @@ def wait_for_fill(order_id: str, *, timeout: float = 6.0, interval: float = 0.5)
         state = "unknown"
     return {
         "state": state,
+        "terminal": st == "filled" or st in TERMINAL_BAD,
         "alpaca_status": st or None,
         "filled_qty": fq,
         "filled_avg_price": _f("filled_avg_price"),
@@ -301,6 +314,21 @@ def reconcile_after_timeout(order_id: str, *, timeout: float = 2.0) -> dict[str,
             cancel_order(order_id)
         return wait_for_fill(order_id, timeout=max(0.0, timeout), interval=0.25)
     return wait_for_fill(order_id, timeout=max(0.0, timeout))
+
+
+def cancel_reviewed_order(order_id, expected_identity, expires):
+    context = verify_execution_context()
+    if not context.get("ok") or context.get("identity") != expected_identity or time.time() >= expires:
+        return {"state": "unknown", "terminal": False, "error": "Cancellation account changed or review expired"}
+    current = get_order(order_id)
+    if not current.get("ok"):
+        return {"state": "unknown", "terminal": False, "error": "Order unavailable"}
+    status = str((current.get("order") or {}).get("status") or "").lower()
+    if status not in {"filled", *TERMINAL_BAD}:
+        if time.time() >= expires:
+            return {"state": "unknown", "terminal": False, "error": "Cancellation review expired during broker check"}
+        cancel_order(order_id)
+    return wait_for_fill(order_id, timeout=2, interval=.25)
 
 
 def _normalize_side(side: str) -> str | None:
@@ -352,18 +380,18 @@ def place_equity_order(
         q = float(qty) if qty is not None else 0.0
     except (TypeError, ValueError):
         q = 0.0
-    if q <= 0:
+    if not math.isfinite(q) or q <= 0 or not q.is_integer():
         return {
             "ok": False,
             "status": "error",
-            "error": "qty must be > 0",
+            "error": "qty must be a positive finite whole-share quantity",
             "broker": "alpaca",
             "paper_mode": paper_mode(),
         }
 
     otype = (order_type or "market").strip().lower()
     if otype not in ("market", "limit"):
-        otype = "market"
+        return {"ok": False, "submission_attempted": False, "error": "Unsupported order type"}
 
     body: dict[str, Any] = {
         "symbol": sym,
@@ -373,7 +401,10 @@ def place_equity_order(
         "time_in_force": (time_in_force or "day").strip().lower() or "day",
     }
     if otype == "limit":
-        if limit_price is None:
+        try:
+            from order_terms import positive
+            positive(limit_price, "Limit price")
+        except ValueError:
             return {
                 "ok": False,
                 "status": "error",
@@ -411,6 +442,9 @@ def place_equity_order(
             },
         }
 
+    error_text = str(data).lower()
+    duplicate_reference = "client_order_id" in error_text and any(
+        word in error_text for word in ("unique", "duplicate", "already", "exists"))
     return {
         "ok": False,
         "status": "error",
@@ -418,15 +452,42 @@ def place_equity_order(
         "paper_mode": pm,
         "endpoint": base_url(),
         "http_status": code,
+        # A duplicate reference can describe a previously accepted order. Keep
+        # that outcome unresolved until its existing client ID is looked up.
+        "definitive_rejection": code in (400, 401, 403, 422) and not duplicate_reference,
         "error": data if not isinstance(data, dict) else (data.get("message") or data),
         "message": "Alpaca order rejected or failed — not treated as a fill.",
     }
+
+
+def verify_execution_context() -> dict[str, Any]:
+    result = get_account()
+    account = result.get("account") or {}
+    if not result.get("ok") or not account.get("id"):
+        return {"ok": False, "error": "Alpaca account identity unavailable"}
+    return {"ok": True, "identity": {"broker": "alpaca", "account_id": account["id"],
+                                    "endpoint": base_url(), "paper_mode": paper_mode()}}
 
 
 def place_from_desk_order(order: dict[str, Any]) -> dict[str, Any]:
     """Map desk order dict → place_equity_order."""
     if not isinstance(order, dict):
         return {"ok": False, "status": "error", "error": "order must be a dict"}
+    from order_terms import canonical_order
+    try:
+        options = {"type": order.get("type") or order.get("order_type") or "market"}
+        if options["type"] == "limit":
+            options["limit_price"] = order.get("limit", order.get("limit_price"))
+        canonical_order({"side": order.get("side"), "suggested_shares": order.get("shares") or order.get("qty")}, options)
+    except ValueError as exc:
+        return {"ok": False, "submission_attempted": False, "error": str(exc)}
+    context = verify_execution_context()
+    if not context.get("ok") or context.get("identity") != order.get("broker_identity"):
+        return {"ok": False, "submission_attempted": False, "error": "Broker account changed; review again"}
+    from broker_router import submission_window_error
+    error = submission_window_error(order)
+    if error:
+        return {"ok": False, "submission_attempted": False, "error": error}
     symbol = order.get("ticker") or order.get("symbol") or ""
     side = order.get("side") or ""
     qty = order.get("shares") or order.get("qty") or order.get("quantity")
@@ -450,6 +511,7 @@ def place_from_desk_order(order: dict[str, Any]) -> dict[str, Any]:
         limit_price=float(limit) if limit not in (None, "") and otype == "limit" else None,
         client_order_id=str(client_id) if client_id else None,
     )
+    result.setdefault("submission_attempted", bool(result.get("ok") or "http_status" in result))
     result["order"] = {
         "ticker": symbol,
         "side": side,
@@ -458,6 +520,22 @@ def place_from_desk_order(order: dict[str, Any]) -> dict[str, Any]:
         "signal_id": order.get("signal_id"),
     }
     return result
+
+
+def find_order_by_signal(signal_id: str, expected_identity=None) -> dict[str, Any]:
+    """Read an existing client-order ID without submitting or retrying anything."""
+    if not is_configured() or not signal_id:
+        return {"ok": False, "error": "Broker or submission reference unavailable"}
+    context = verify_execution_context()
+    if not context.get("ok") or context.get("identity") != expected_identity:
+        return {"ok": False, "error": "Submission belongs to a different broker account"}
+    code, data = _request("GET", "/orders:by_client_order_id?client_order_id=" + quote(signal_id[:48], safe=""))
+    if code == 200 and isinstance(data, dict) and data.get("id"):
+        return {"ok": True, "found": True, "order_id": data["id"], "broker": "alpaca",
+                "paper_mode": paper_mode(), "endpoint": base_url()}
+    if code == 404:
+        return {"ok": True, "found": False}
+    return {"ok": False, "error": "Broker submission lookup unavailable"}
 
 
 def cancel_all_orders() -> dict[str, Any]:

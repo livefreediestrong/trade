@@ -286,7 +286,10 @@ def test_intraday_signals_vwap_and_relvol():
     close = list(np.linspace(100, 101, 12)) * 2 + list(np.linspace(101, 99, 12))
     df = pd.DataFrame({"Open": close, "High": [c + 0.1 for c in close], "Low": [c - 0.1 for c in close],
                        "Close": close, "Volume": vol}, index=idx)
-    sig = screener_logic.intraday_signals(df, atr_usd=2.0, price=99.0)
+    sig = screener_logic.intraday_signals(
+        df, atr_usd=2.0, price=99.0,
+        now=pd.Timestamp("2026-09-22 10:27", tz="America/New_York"),
+    )
     assert sig["rel_vol_5m"] == 5.0
     assert sig["vwap_slope_pct"] < 0 and sig["vwap_dist_atr"] < 0
     v, flags, notes = screener_logic.intraday_adjust("PASS", sig)
@@ -302,10 +305,10 @@ def test_market_radar_rejects_nonfinite_and_low_price():
 
 def test_market_radar_marks_distribution_and_parabolic_moves():
     distribution = market_radar._row_from_quote(
-        "AAA", price=100, pct=-4.0, volume=3_000_000, avg_vol=500_000
+        "AAA", price=100, pct=-4.0, volume=3_000_000, avg_vol=500_000, market_time=datetime.now(timezone.utc)
     )
     parabolic = market_radar._row_from_quote(
-        "BBB", price=100, pct=55.0, volume=3_000_000, avg_vol=500_000
+        "BBB", price=100, pct=55.0, volume=3_000_000, avg_vol=500_000, market_time=datetime.now(timezone.utc)
     )
     assert distribution and "distribution_day" in distribution["research_flags"]
     assert parabolic and "parabolic_move" in parabolic["research_flags"]
@@ -356,7 +359,9 @@ def test_claude_shadow_needs_key(client, monkeypatch):
 def test_brain_scoreboard_counts_same_decisions():
     for i, (m, c) in enumerate([("helped", "hurt"), ("hurt", "helped"), ("helped", "helped")]):
         ev = _ev(i, m)
-        ev.update(brain_mode="gemini", shadow_claude_outcome=c)
+        ev.update(brain_mode="gemini", shadow_claude_outcome=c, scoring_version="horizon-net-v2",
+                  outcome_status="scored", llm_model="gemini-test", shadow_claude={"model": "claude-test"},
+                  prompt_version="test", horizon_min=20, input_hash="fixture")
         lessons.record_outcome(desk.LESSONS_PATH, ev)
     lessons.record_outcome(desk.LESSONS_PATH, _ev(9, "helped"))  # no claude → excluded
     s = desk.brain_scoreboard(days=100000)

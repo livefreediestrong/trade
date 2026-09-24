@@ -4,6 +4,7 @@ Paper-only helpers used by app.py + paper_loop. No live broker.
 """
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
@@ -521,7 +522,7 @@ def classify_horizon_outcome(
         intended = "buy"
     if intended in ("short", "lower", "selling"):
         intended = "sell"
-    if mid_at <= 0 or mid_now <= 0:
+    if not all(math.isfinite(v) for v in (mid_at, mid_now, slip_bps, fee_bps)) or mid_at <= 0 or mid_now <= 0:
         return {"outcome": None, "error": "no_mid"}
     move_bps = ((mid_now - mid_at) / mid_at) * 10_000.0
     abs_bps = abs(move_bps)
@@ -543,7 +544,7 @@ def classify_horizon_outcome(
     for value in path_prices or []:
         try:
             price = float(value)
-            if price > 0:
+            if math.isfinite(price) and price > 0:
                 path.append(price)
         except (TypeError, ValueError):
             continue
@@ -556,6 +557,8 @@ def classify_horizon_outcome(
     executable_move_bps = move_bps * direction - round_trip_cost_bps if direction else 0.0
     return {
         "outcome": label,
+        "directional_outcome": label,
+        "net_outcome": ("helped" if executable_move_bps > 1e-9 else "hurt" if executable_move_bps < -1e-9 else "flat") if direction else None,
         "move_bps": round(move_bps, 2),
         "mid_at": round(mid_at, 4),
         "mid_now": round(mid_now, 4),
@@ -576,7 +579,7 @@ def schedule_decision_outcome(
     *,
     default_horizon_min: int = 20,
 ) -> dict[str, Any] | None:
-    if not event:
+    if not event or event.get("error") or event.get("llm_error"):
         return None
     ek = str(event.get("event") or "").lower()
     if ek not in ("intent", "decision"):
@@ -603,7 +606,7 @@ def schedule_decision_outcome(
         mid_f = float(mid) if mid is not None else None
     except (TypeError, ValueError):
         mid_f = None
-    if mid_f is None or mid_f <= 0:
+    if mid_f is None or not math.isfinite(mid_f) or mid_f <= 0:
         return None
     try:
         hz = int(event.get("horizon_min") or default_horizon_min)

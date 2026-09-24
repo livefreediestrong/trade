@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Auto Trade — Draft</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --panel: #121a2b;
+    --panel-2: #182235;
+    --line: #2a3650;
+    --text: #e8eefc;
+    --muted: #93a0bd;
+    --buy: #16a34a;
+    --buy-soft: rgba(22,163,74,.16);
+    --sell: #dc2626;
+    --sell-soft: rgba(220,38,38,.16);
+    --warn: #fbbf24;
+    --focus: #60a5fa;
+    --ok: #34d399;
+    --pause: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    font: 15px/1.4 "Segoe UI", system-ui, sans-serif;
+    color: var(--text);
+    background:
+      radial-gradient(900px 500px at 10% -10%, #1a2a4a 0%, transparent 60%),
+      radial-gradient(700px 400px at 110% 10%, #2a1a10 0%, transparent 50%),
+      var(--bg);
+  }
+  .shell { max-width: 420px; margin: 24px auto; padding: 0 14px 28px; }
+  .badge-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .badge {
+    font-size: 11px; font-weight: 700; letter-spacing: .04em;
+    text-transform: uppercase; padding: 5px 9px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); background: var(--panel);
+  }
+  .badge.live { color: #fecaca; border-color: #7f1d1d; background: #1f1215; }
+  .badge.ok { color: #a7f3d0; border-color: #065f46; background: #0f1f1a; }
+  .badge.agent { color: #bfdbfe; border-color: #1e3a8a; background: #0f172a; }
+  .card {
+    background: linear-gradient(180deg, var(--panel) 0%, #0e1624 100%);
+    border: 1px solid var(--line); border-radius: 20px; padding: 18px;
+    box-shadow: 0 20px 50px rgba(0,0,0,.35); margin-bottom: 12px;
+  }
+  .title { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .title h1 { margin: 0; font-size: 20px; }
+  .title .sub { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  .pulse {
+    width: 12px; height: 12px; border-radius: 50%; background: var(--ok);
+    box-shadow: 0 0 0 0 rgba(52,211,153,.7); animation: pulse 1.6s infinite;
+    margin-top: 6px; flex-shrink: 0;
+  }
+  .pulse.paused { background: var(--pause); animation: none; box-shadow: none; }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(52,211,153,.55); }
+    70% { box-shadow: 0 0 0 12px rgba(52,211,153,0); }
+    100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
+  }
+  .caps {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 16px 0 0;
+  }
+  .cap {
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 12px; padding: 10px 8px; text-align: center;
+  }
+  .cap .k { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .cap .v { font-size: 14px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .field {
+    display: block; font-size: 12px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .05em; margin: 0 0 8px;
+  }
+  .next {
+    border: 1px solid var(--line); border-radius: 16px; overflow: hidden;
+    background: #0a101b; margin-top: 8px;
+  }
+  .next .head {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 14px; border-bottom: 1px solid var(--line);
+  }
+  .next .head .when { color: var(--muted); font-size: 12px; }
+  .next .body { padding: 14px; }
+  .side-chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 22px; font-weight: 800; letter-spacing: .04em;
+  }
+  .side-chip.buy { color: #86efac; }
+  .side-chip.sell { color: #fca5a5; }
+  .side-chip .dot {
+    width: 10px; height: 10px; border-radius: 50%;
+  }
+  .side-chip.buy .dot { background: var(--buy); }
+  .side-chip.sell .dot { background: var(--sell); }
+  .sym { font-size: 28px; font-weight: 800; margin: 6px 0 2px; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .rows { margin-top: 12px; }
+  .rows .row { display: flex; justify-content: space-between; margin: 5px 0; font-size: 14px; }
+  .rows .row span:last-child { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .actions {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 14px;
+  }
+  .actions.triple { grid-template-columns: 1fr 1.2fr 1fr; }
+  button {
+    appearance: none; border-radius: 14px; padding: 14px 12px;
+    font-weight: 800; cursor: pointer; border: 1px solid var(--line);
+  }
+  .btn-pause { background: #2a2110; color: #fde68a; border-color: #78350f; }
+  .btn-kill { background: var(--sell-soft); color: #fecaca; border-color: #7f1d1d; }
+  .btn-go {
+    background: linear-gradient(180deg, #22c55e, #15803d);
+    color: white; border: 0; grid-column: 1 / -1; padding: 16px; font-size: 16px;
+  }
+  .btn-go.armed { background: linear-gradient(180deg, #38bdf8, #0369a1); }
+  .btn-secondary { background: var(--panel-2); color: var(--text); }
+  .today {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px;
+  }
+  .today .stat {
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 12px; padding: 12px;
+  }
+  .today .stat .k { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+  .today .stat .v { font-size: 18px; font-weight: 800; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .log { margin-top: 10px; }
+  .log .item {
+    display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line);
+    font-size: 13px;
+  }
+  .log .item:last-child { border-bottom: 0; }
+  .log .tag {
+    font-size: 10px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase;
+    padding: 3px 7px; border-radius: 999px; height: fit-content; border: 1px solid var(--line);
+  }
+  .log .tag.buy { color: #86efac; border-color: #166534; background: var(--buy-soft); }
+  .log .tag.info { color: var(--muted); }
+  .log .tag.wait { color: #bfdbfe; border-color: #1e3a8a; background: #0f172a; }
+  .hint { text-align: center; color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .sheet {
+    display: none; position: fixed; inset: 0; background: rgba(4,8,16,.72);
+    align-items: flex-end; justify-content: center; padding: 16px; z-index: 20;
+  }
+  .sheet.open { display: flex; }
+  .sheet .panel {
+    width: min(420px, 100%); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 20px 20px 16px 16px; padding: 18px;
+  }
+  .sheet h2 { margin: 0 0 8px; font-size: 20px; }
+  .sheet p { margin: 0 0 14px; color: var(--muted); font-size: 14px; }
+  .sheet .row2 { display: grid; grid-template-columns: 1fr 1.4fr; gap: 8px; }
+  .sheet .cancel { background: transparent; color: var(--text); }
+  .sheet .go { background: var(--buy); color: white; border-color: #15803d; }
+</style>
+</head>
+<body>
+  <div class="shell">
+    <div class="badge-row">
+      <span class="badge live">Live IBKR</span>
+      <span class="badge ok">Risk ready</span>
+      <span class="badge agent">Moss auto</span>
+      <span class="badge">Draft UI · not wired</span>
+    </div>
+
+    <div class="card">
+      <div class="title">
+        <div>
+          <h1 id="phaseTitle">Agent enabled</h1>
+          <p class="sub" id="phaseSub">Waiting for the next research cycle · SPY only</p>
+        </div>
+        <div class="pulse" id="pulse" title="Running"></div>
+      </div>
+      <div class="caps">
+        <div class="cap"><div class="k">Max order</div><div class="v">$800</div></div>
+        <div class="cap"><div class="k">Daily loss</div><div class="v">$2</div></div>
+        <div class="cap"><div class="k">Orders left</div><div class="v">1</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <label class="field">Next proposed action</label>
+      <div class="next">
+        <div class="head">
+          <span class="when">After research · ~2 min</span>
+          <span class="badge ok" style="margin:0">Preview</span>
+        </div>
+        <div class="body">
+          <div class="side-chip buy"><span class="dot"></span>BUY</div>
+          <div class="sym">SPY</div>
+          <div class="meta">Limit · 1 share · est. $768 · within raised caps</div>
+          <div class="rows">
+            <div class="row"><span>Confidence</span><span>0.74</span></div>
+            <div class="row"><span>Limit</span><span>$768.70</span></div>
+            <div class="row"><span>Why</span><span>Above VWAP · trend intact</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn-pause" id="btnPause">Pause</button>
+        <button type="button" class="btn-kill" id="btnKill">Kill day</button>
+        <button type="button" class="btn-go" id="btnArm">Auto will place if approved by policy</button>
+      </div>
+      <p class="hint" style="margin:10px 0 0">Same ticket language as manual: big side, clear size, caps always visible. Auto adds Pause / Kill and a next-action preview.</p>
+    </div>
+
+    <div class="card">
+      <label class="field">Today</label>
+      <div class="today">
+        <div class="stat"><div class="k">Orders</div><div class="v">0 / 1</div></div>
+        <div class="stat"><div class="k">Day P&amp;L</div><div class="v" style="color:var(--ok)">$0.00</div></div>
+        <div class="stat"><div class="k">Research</div><div class="v">3</div></div>
+        <div class="stat"><div class="k">Model $</div><div class="v">$0.12</div></div>
+      </div>
+      <div class="log">
+        <div class="item"><span class="tag wait">Wait</span><div>Enabled · waiting for next eligible cycle</div></div>
+        <div class="item"><span class="tag info">Risk</span><div>Daily P&amp;L feed ready · $0.00</div></div>
+        <div class="item"><span class="tag buy">Policy</span><div>SPY · limit · max $800 · 1 order/day</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sheet" id="sheet">
+    <div class="panel">
+      <h2 id="sheetTitle">Pause auto trading?</h2>
+      <p id="sheetBody">Moss stays connected for reconciliation but will not place new orders until you resume.</p>
+      <div class="row2">
+        <button type="button" class="cancel" id="sheetCancel">Back</button>
+        <button type="button" class="go" id="sheetGo">Pause agent</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+const pulse = document.getElementById('pulse');
+const phaseTitle = document.getElementById('phaseTitle');
+const phaseSub = document.getElementById('phaseSub');
+const sheet = document.getElementById('sheet');
+let mode = 'enabled';
+
+function openSheet(title, body, goLabel, onGo) {
+  document.getElementById('sheetTitle').textContent = title;
+  document.getElementById('sheetBody').textContent = body;
+  const go = document.getElementById('sheetGo');
+  go.textContent = goLabel;
+  go.onclick = () => { sheet.classList.remove('open'); onGo(); };
+  sheet.classList.add('open');
+}
+document.getElementById('sheetCancel').onclick = () => sheet.classList.remove('open');
+
+document.getElementById('btnPause').onclick = () => openSheet(
+  'Pause auto trading?',
+  'Moss stays connected for reconciliation but will not place new orders until you resume.',
+  'Pause agent',
+  () => {
+    mode = 'paused';
+    pulse.classList.add('paused');
+    phaseTitle.textContent = 'Agent paused';
+    phaseSub.textContent = 'Broker reconciliation continues · no new orders';
+  }
+);
+document.getElementById('btnKill').onclick = () => openSheet(
+  'Kill the trading day?',
+  'Stops the session and blocks further live auto orders today. Manual review still available.',
+  'Kill day',
+  () => {
+    mode = 'killed';
+    pulse.classList.add('paused');
+    phaseTitle.textContent = 'Day killed';
+    phaseSub.textContent = 'Live auto blocked for today';
+  }
+);
+</script>
+</body>
+</html>

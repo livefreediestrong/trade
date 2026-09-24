@@ -31,7 +31,7 @@ def scorecard(decisions: list[dict[str, Any]] | None, fills: list[dict[str, Any]
         "actionable": len(actionable),
         "fills": len(fills or []),
         "outcomes": len(outcomes),
-        "outcome_coverage": round(len(outcomes) / len(actionable), 4) if actionable else None,
+        "outcome_coverage": round(sum(bool(d.get("outcome")) for d in actionable) / len(actionable), 4) if actionable else None,
         "capture_rate": round(capture_rate, 4) if capture_rate is not None else None,
         "missed_favorable_calls": len(favorable_unfilled),
         "blocked_actionable": len(blocked),

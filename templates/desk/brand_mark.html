@@ -1,0 +1,24 @@
+{# Original Whirl Tray geometry from Mark.dc.html. Light stays inside its swirls. #}
+<svg id="scene-mark" viewBox="0 0 100 100" aria-hidden="true" width="80" height="80">
+  <defs>
+    <g id="logo-whirl-shape">
+      {% for arm in range(4) %}{% for step in range(6) %}
+      {% set size = 3.6 + step * (0.55 * 7 / 6) %}
+      <rect x="{{ 50 + 13 + step * 5.52 - size / 2 }}" y="{{ 50 - size / 2 }}" width="{{ size }}" height="{{ size }}" transform="rotate({{ arm * 90 + step * 13 }} 50 50)" />
+      {% endfor %}{% endfor %}
+    </g>
+    <mask id="logo-whirl-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="100" height="100"><use href="#logo-whirl-shape" fill="white" /></mask>
+    <radialGradient id="logo-flow-gradient">
+      <stop offset="35%" stop-color="#fff0da" stop-opacity="0" />
+      <stop offset="58%" stop-color="#fff0da" stop-opacity=".25" />
+      <stop offset="73%" stop-color="#fff5e5" stop-opacity=".95" />
+      <stop offset="86%" stop-color="#fff0da" stop-opacity=".35" />
+      <stop offset="100%" stop-color="#fff0da" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+  <circle cx="50" cy="50" r="46" fill="none" stroke="#f1e6d2" stroke-width="4" opacity=".72" />
+  <circle cx="50" cy="50" r="8" fill="#f1e6d2" opacity=".85" />
+  <use href="#logo-whirl-shape" fill="#f1e6d2" opacity=".52" />
+  <rect x="87.19583333333333" y="46.59583333333333" width="6.808333333333334" height="6.808333333333334" transform="rotate(65 50 50)" fill="#e6a391" opacity=".8" />
+  <g mask="url(#logo-whirl-mask)"><circle class="logo-flow" cx="50" cy="50" r="56" fill="url(#logo-flow-gradient)" /></g>
+</svg>

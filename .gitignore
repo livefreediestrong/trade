@@ -3,8 +3,11 @@ __pycache__/
 *.pyc
 .env
 data/*.json
+data/research_history/
 !data/.gitkeep
 *.log
+data/*.log.*
+data/*.pid
 .DS_Store
 .venv/
 _backup_*/
@@ -14,3 +17,25 @@ data/*.txt
 data/*.tmp
 *.tmp
 .pytest_cache/
+
+# Source sharing: runtime state and local diagnostics stay on this PC.
+.env.*
+!.env.example
+/data/*
+!/data/.gitkeep
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+/releases/
+/deploy_out/
+/_*.json
+/_*.png
+/_probe_*.ps1
+/_test_app.ps1
+/_ui_*.ps1
+/debug_populate.ps1
+/smoke_*.ps1
+/verify_ui_fix.ps1
+/DEPLOY_NOTES.md

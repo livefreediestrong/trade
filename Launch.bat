@@ -1,9 +1,3 @@
 @echo off
-cd /d "%~dp0"
-if not exist .venv (
-  python -m venv .venv
-)
-call .venv\Scripts\activate.bat
-pip install -r requirements.txt
-python app.py
-pause
+powershell.exe -NoProfile -File "%~dp0Start-Tomahawk.ps1" %*
+exit /b %errorlevel%

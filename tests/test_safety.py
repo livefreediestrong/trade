@@ -137,6 +137,10 @@ def test_llm_chat_rate_limit_is_fail_closed(client, monkeypatch):
 
 
 def test_live_mode_requires_server_confirmation(client, monkeypatch):
+    from broker_fixtures import IDENTITY
+    import broker_alpaca
+    monkeypatch.setattr(broker_alpaca, 'verify_execution_context', lambda: {'ok':True,'identity':dict(IDENTITY,paper_mode=False)})
+    monkeypatch.setattr(broker_alpaca, 'public_status', lambda: {'broker':'alpaca','configured':True,'paper_mode':False})
     monkeypatch.setattr(
         desk,
         "_broker_public_status",
@@ -231,6 +235,12 @@ def test_signal_prune_keeps_pending():
 
 @pytest.fixture
 def broker_on(monkeypatch):
+    import broker_alpaca
+    from broker_fixtures import configure
+    cfg = dict(desk.load_config(), session_active=True, mode="auto_live", rth_only=False)
+    configure(monkeypatch, cfg)
+    desk.save_config(cfg)
+    monkeypatch.setattr(broker_alpaca, "get_open_orders", lambda: {"ok": True, "orders": []})
     monkeypatch.setattr(desk, "_broker_is_configured", lambda: True)
     monkeypatch.setattr(desk, "_broker_day_pnl", lambda: (0.0, 100_000.0, None))
     monkeypatch.setattr(desk, "can_take_trade", lambda *a, **k: (True, "ok"))
@@ -283,6 +293,7 @@ def test_broker_fill_uses_real_price_and_counts(monkeypatch, broker_on):
 
 def test_unconfirmed_fill_is_flagged(monkeypatch, broker_on):
     import broker_alpaca
+    monkeypatch.setattr(broker_alpaca, "reconcile_after_timeout", lambda *a, **k: {"state": "pending", "terminal": False})
     monkeypatch.setattr(desk, "live_broker_place_order",
                         lambda order: {"ok": True, "status": "paper_submitted", "order_id": "o1", "qty": "10"})
     monkeypatch.setattr(broker_alpaca, "wait_for_fill",

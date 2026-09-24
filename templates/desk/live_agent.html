@@ -1,0 +1,25 @@
+<section class="desk-module" id="live-agent" aria-labelledby="live-agent-title">
+ <div class="panel-head"><h3 id="live-agent-title">Moss · broker agent</h3><span class="pill" id="live-agent-state">Loading</span></div>
+ <p id="live-agent-status" role="status">Reading the saved policy.</p>
+ <p id="live-agent-next" class="hint-line keep-visible">Verify account → check budget → save policy → start.</p>
+ <form id="live-agent-form"><div class="compact-form">
+  <label>Stock / ETF symbols<input id="la-symbols" required autocomplete="off" placeholder="Your symbols, separated by spaces" /></label>
+  <label>Seconds between research cycles<input id="la-interval_sec" type="number" min="30" max="3600" step="1" required /></label>
+  <fieldset><legend>Order type</legend><label class="chk"><input type="radio" name="la-order-type" value="limit" checked /> DAY limit</label><label class="chk"><input type="radio" name="la-order-type" value="market" /> Market</label></fieldset>
+  <label title="A limit is placed this far from the research price: above it for buys, below it for sells. It may not fill.">Limit offset · basis points<input id="la-limit_offset_bps" type="number" min="0" max="100" step="0.1" required /></label>
+  <label title="Price-based sizing before fees. A market order can fill beyond its estimated amount.">Maximum amount per order · $<input id="la-max_order_usd" type="number" min="0.01" max="1000000000" step="0.01" required /></label>
+  <label>Daily account loss stop · $<input id="la-max_daily_loss_usd" type="number" min="0.01" max="1000000000" step="0.01" required /></label>
+  <label title="Every broker submission attempt counts, including rejected or uncertain attempts. Exits count too.">Broker attempts per day<input id="la-max_orders_per_day" type="number" min="1" max="100000" step="1" required /></label>
+  <label>Research attempts per day<input id="la-max_research_per_day" type="number" min="1" max="10000" step="1" required /></label>
+  <label title="Pauses when recorded total desk AI cost reaches this amount. Cost is estimated and may exclude unreported charges; one research attempt may use several model calls.">Recorded desk AI budget · $<input id="la-model_budget_usd" type="number" min="0.01" max="100000" step="0.01" required /></label>
+  <label title="A model confidence score is not a calibrated probability of profit.">Minimum decision confidence · 0–1<input id="la-min_confidence" type="number" min="0" max="1" step="0.01" required /></label>
+  <label>Maximum quote age · seconds<input id="la-max_quote_age_sec" type="number" min="1" max="60" step="1" required /></label>
+ </div><div class="live-agent-budget"><button class="btn" id="live-agent-budget-check" type="button">Check symbol budget</button><p id="live-agent-budget-status" role="status">Check whole-share capacity using current quotes. No policy is saved and no order is sent.</p><ul id="live-agent-budget-list" aria-label="Symbol budget estimates"></ul></div>
+ <button class="btn" id="live-agent-save" type="submit">Save policy · leaves agent paused</button> <button class="btn" id="live-agent-reload" type="button">Reload saved policy</button></form>
+ <p id="live-agent-account">Account unavailable</p><a href="#live-execution-settings" data-guide-jump="live-execution-settings">Verify account in broker settings</a>
+ <div class="compact-form"><label>Type REAL or PAPER for the displayed account<input id="live-agent-confirm" autocomplete="off" spellcheck="false" /></label>
+ <button class="btn" id="live-agent-start" type="button" disabled>Start broker agent</button><button class="btn" id="live-agent-pause" type="button">Pause agent</button></div>
+ <p id="live-agent-result" role="status"></p>
+ <p class="hint-line keep-visible">Regular US sessions only. Existing desk risk limits also apply. Pause stops future decisions; a submission already committed may finish. Working orders and positions remain at the broker. Sells are research-driven; this version has no automatic stop/target exits, close-time flattening or protective brackets. Whole shares only.</p>
+ <p id="live-agent-today"></p><ol id="live-agent-history" aria-label="Recent live agent decisions"></ol>
+</section>

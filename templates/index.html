@@ -3,809 +3,103 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Tomahawk</title>
+  <title>nadzeeɫ · Research & trading desk</title>
+  <link rel="icon" href="/static/nadzeel-mark.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/static/app.css" />
-  <link rel="stylesheet" href="/static/theme_light.css" />
+  <link rel="stylesheet" href="/static/desk_attention.css?v=moonlit-20260924-1" />
+  <link rel="stylesheet" href="/static/moss_avatar.css?v=news-20260924-2" />
+  <link rel="stylesheet" href="/static/market_operations.css" />
+  <link rel="stylesheet" href="/static/nadzeel.css?v=moonlit-20260924-1" />
+  <link rel="stylesheet" href="/static/desk_guidance.css?v=moonlit-20260924-1" />
+  <link rel="stylesheet" href="/static/nadzeel_motion.css?v=moonlit-20260924-1" />
+  <link rel="stylesheet" href="/static/desk_layout.css?v=ia-reorder-20260924-1" />
+  <link rel="stylesheet" href="/static/live_ticket.css?v=live-ticket-20260924-3" />
+  <link rel="stylesheet" href="/static/visual_phase1.css?v=visual-phase1-20260924-1" />
   <script>
     // Theme before first paint: saved choice, else follow the computer's setting.
     (function () {
       var t = null;
       try { t = localStorage.getItem("desk_theme_v2"); } catch (e) {}
       if (t !== "light" && t !== "dark") {
-        t = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+        t = "dark";
       }
       document.documentElement.setAttribute("data-theme", t);
     })();
   </script>
 </head>
-<body class="ui-simple vibe-chill">
-  <script>
-    (function () {
-      try {
-        if (localStorage.getItem("ui_mode") === "advanced") {
-          document.body.classList.remove("ui-simple");
-          document.body.classList.add("ui-advanced");
-        }
-      } catch (e) {}
-      /* design themes deferred — clear legacy Pendleton / wool keys once */
-      try {
-        localStorage.removeItem("desk_theme");
-        localStorage.removeItem("wool_vibe");
-      } catch (e) {}
-    })();
-  </script>
-  <!-- Masthead: PAPER ONLY honesty strip (banner folded in; no stacked chrome) -->
-  <div class="paper-chrome masthead" id="paper-chrome" aria-live="polite">
-    <div class="chrome-badges">
-      <span class="chrome-badge paper" id="chrome-paper" title="Fake money — local sim / Alpaca paper API">PAPER ONLY</span>
-      <span class="chrome-badge broker hidden" id="chrome-broker" title="Broker connection and execution venue">Broker</span>
-      <span class="chrome-badge rth" id="chrome-rth" title="US regular trading session — open or closed">Market hours</span>
-      <span class="chrome-badge buzz-pill hidden adv-only" id="buzz-simple-pill" title="A watchlist ticker is being mentioned in Reddit buzz (research only)">Buzz</span>
-      <span class="chrome-badge live-ind polling" id="live-ind" data-health="connecting" title="How fresh the numbers are — seconds since the last update">Connecting…</span>
-    </div>
-    <span class="chrome-note" id="chrome-note">Paper only</span>
-    <span class="chrome-note banner-line adv-only" id="banner">{{ banner }}</span>
-  </div>
-  <div class="chrome-wave simple-only" aria-hidden="true"></div>
-
-  <div class="stale-banner" id="stale-banner" role="alert" hidden>
-    <span data-stale-text>Numbers haven't updated recently. They may be out of date.</span>
-    <button type="button" class="btn sm" id="btn-stale-retry">Try again</button>
-  </div>
-  <div class="execution-summary" id="execution-summary" role="status" aria-live="polite">
-    <span class="execution-summary-label">Execution</span>
-    <strong id="execution-summary-mode">Checking mode…</strong>
-    <span id="execution-summary-broker">Broker status checking…</span>
-    <span id="execution-summary-session">Session not started</span>
-    <span id="execution-summary-pending">No pending ideas</span>
-  </div>
-
-  <nav class="desk-guide" id="desk-guide" aria-label="Desk steps" hidden>
-    <ol class="desk-guide-steps">
-      <li class="desk-step" data-step="goal"><span class="step-num">1</span><span class="step-label">Goal</span></li>
-      <li class="desk-step-sep" aria-hidden="true">·</li>
-      <li class="desk-step" data-step="start"><span class="step-num">2</span><span class="step-label">Start</span></li>
-      <li class="desk-step-sep" aria-hidden="true">·</li>
-      <li class="desk-step" data-step="auto"><span class="step-num">3</span><span class="step-label">Auto paper</span></li>
-      <li class="desk-step-sep" aria-hidden="true">·</li>
-      <li class="desk-step" data-step="waiting"><span class="step-num">4</span><span class="step-label">Waiting</span></li>
-      <li class="desk-step-sep" aria-hidden="true">·</li>
-      <li class="desk-step" data-step="positions"><span class="step-num">5</span><span class="step-label">Positions</span></li>
-    </ol>
-  </nav>
-
-  <header class="topbar">
-    <div class="brand-cluster">
-      <div class="brand">
-        <h1>Tomahawk</h1>
-        <span class="pill soft quiet" id="stat-llm" title="Brain picks Hold, Buy, or Sell">Brain...</span>
-        <span class="pill soft quiet adv-only" id="stat-mode">manual</span>
-        <span class="pill soft quiet adv-only" id="stat-preset">mid</span>
-      </div>
-      <div class="butler-card simple-only" id="butler-card" aria-label="Butler status">
-        <div class="butler-mark" aria-hidden="true"></div>
-        <div class="butler-card-text">
-          <div class="butler-card-label">Butler</div>
-          <p class="butler-card-status" id="butler-header-status">Standing by</p>
-        </div>
-      </div>
-    </div>
-    <div class="topbar-chrome-tools">
-      <div class="ui-mode-toggle" role="group" aria-label="Interface mode">
-        <button type="button" class="mode-btn active" data-ui-mode="simple" id="btn-ui-simple" title="Calm desk — fewer panels">Simple</button>
-        <button type="button" class="mode-btn" data-ui-mode="advanced" id="btn-ui-advanced" title="Research desk — more detail">Advanced</button>
-      </div>
-      <button type="button" class="btn ghost sm howto-btn" id="btn-howto" title="Open a short tutorial">How to</button>
-      <button type="button" class="btn ghost sm" id="btn-report" title="How the last 7 days went — with a grade">Report card</button>
-      <button type="button" class="btn ghost sm simple-only" id="btn-feeling-lucky" title="Pick a random watchlist ticker and focus the desk (no fill)">I&rsquo;m Feeling Lucky</button>
-      <button type="button" class="btn icon ghost theme-btn" id="btn-theme" title="Switch light / dark" aria-label="Switch to light mode">☀</button>
-      <button type="button" class="btn icon ghost simple-only" id="btn-simple-settings" title="Settings — friction &amp; alerts" aria-label="Open settings">⚙</button>
-    </div>
-
-    <div class="hero-stats">
-      <div class="hero" title="Profit or loss today. 'Closed' is from finished trades; 'open' is what your current positions are worth right now versus what you paid.">
-        <span class="lbl">Today <span class="lbl-sub">closed</span></span>
-        <span class="val money" id="stat-pnl">-</span>
-        <span class="sub money" id="stat-pnl-open" hidden></span>
-      </div>
-      <div class="hero target-hero" title="Your daily profit goal">
-        <span class="lbl">Goal</span>
-        <span class="val" id="stat-target">not set</span>
-        <div class="target-bar race-meter" id="race-meter" aria-label="Goal race">
-          <div class="target-fill" id="target-fill"></div>
-          <div class="pace-mark" id="pace-mark" title="Expected progress through regular trading hours (informational only)"></div>
-        </div>
-        <span class="target-rem" id="stat-target-rem"></span>
-        <span class="pace-label adv-only" id="pace-label"></span>
-      </div>
-      <div class="hero" title="Paper trades today">
-        <span class="lbl">Trades</span>
-        <span class="val" id="stat-trades">0</span>
-      </div>
-    </div>
-  </header>
-
-  <div class="toolbar" id="session-toolbar">
-    <div class="session-strip" role="group" aria-label="Session">
-      <div class="session-controls">
-        <div class="tool target-tool">
-          <label for="daily-target" title="How much you hope to make today, in dollars">Today's goal</label>
-          <div class="inline">
-            <span class="dollar">$</span>
-            <input type="number" id="daily-target" min="0" step="0.01" placeholder="--" />
-          </div>
-        </div>
-        <div class="tool bank-tool">
-          <label for="beginning-bank" title="Practice (fake) money you begin the day with">Practice cash</label>
-          <div class="inline">
-            <span class="dollar">$</span>
-            <input type="number" id="beginning-bank" min="1" step="0.01" placeholder="10000" />
-          </div>
-        </div>
-      </div>
-      <div class="session-actions">
-        <div class="fill-mode-wrap simple-only session-fill-mode" id="session-fill-mode">
-          <div class="fill-mode-toggle" id="fill-mode-toggle" role="group" aria-label="How fills run">
-            <button type="button" class="fill-mode-btn" data-fill-mode="auto_paper" id="btn-fill-auto" title="The desk places local paper trades for you — no approval needed">Automatic paper simulation</button>
-            <button type="button" class="fill-mode-btn" data-fill-mode="manual" id="btn-fill-ask" title="Ideas wait until you approve or skip">Ask before every trade</button>
-          </div>
-          <p class="fill-mode-gloss muted" id="fill-mode-gloss">Ask me first: ideas wait in Waiting for Approve or Skip. Auto fill: paper fills can happen without Approve.</p>
-        </div>
-        <div class="tool start-tool">
-          <label class="sr-only" for="btn-start-session">Start session</label>
-          <button type="button" class="btn primary start-btn" id="btn-start-session" disabled title="Looks at your watchlist every few minutes with fake money. Nothing is bought until you Approve — unless Auto fill is on.">Start checking</button>
-        </div>
-      </div>
-      <div class="session-status">
-        <span class="session-chip hidden" id="session-chip" aria-live="polite" title="Shows when your session is on"></span>
-        <button type="button" class="btn stop-btn soft-danger hidden" id="btn-stop-session" title="Stop looking for new trades. Open positions keep their stop-loss.">Stop</button>
-      </div>
-    </div>
-    <div class="tool adv-only">
-      <label for="preset-row" title="How large paper stops and size tend to be">Risk <span class="title-ctx">(stop / size comfort)</span></label>
-      <div class="preset-row" id="preset-row">
-        <button type="button" class="preset-btn" data-preset="low" title="Smaller size, tighter comfort">Low</button>
-        <button type="button" class="preset-btn" data-preset="mid" title="Balanced paper risk">Mid</button>
-        <button type="button" class="preset-btn" data-preset="high" title="Larger size, wider comfort">High</button>
-      </div>
-    </div>
-    <div class="tool actions adv-only">
-      <button type="button" class="btn ghost" id="btn-gen" title="Find one idea now. It waits in Waiting for your Approve — it never trades on its own.">Find an idea</button>
-      <button type="button" class="btn ghost" id="btn-refresh" title="Reload desk state from the server">Refresh</button>
-    </div>
-  </div>
-  <p class="hint-line toolbar-hint simple-only quiet-hint">1 · Set today's goal and your practice cash. 2 · Pick <strong>Ask me first</strong> or <strong>Auto fill</strong>. 3 · Press <strong>Start checking</strong>.</p>
-  <p class="hint-line toolbar-hint adv-only quiet-hint">Auto paper checks tickers on a schedule while Start is on. New signal runs one research scan without changing that schedule.</p>
-  <p class="hint-line quiet-hint adv-only adv-intro" id="adv-intro">Advanced shows research detail. Nothing here is a live brokerage recommendation. Open <strong>How to</strong> anytime for a short walkthrough.</p>
-
-  <div class="field live-box hidden adv-only" id="live-box">
-    <p class="warn" id="broker-status-line">Broker connection is optional. Live mode stays disabled until the connected account is verified and you explicitly confirm the order.</p>
-    <p class="hint-line" id="broker-chip-line"><span class="broker-chip" id="broker-chip" title="Broker connection status">Broker: …</span></p>
-    <input type="text" id="live-confirm" placeholder="optional note (not an unlock phrase)" autocomplete="off" title="Optional note only — does not unlock live trading" />
-    <div class="kill-grid">
-      <label title="Pause Auto paper if paper loss reaches this amount">Max loss $<input type="number" id="ks-loss" min="1" step="1" /></label>
-      <label title="Pause Auto paper after this many paper trades today">Max trades / day<input type="number" id="ks-trades" min="1" step="1" /></label>
-      <label title="Largest paper position size allowed in dollars">Max size $<input type="number" id="ks-pos" min="1" step="1" /></label>
-    </div>
-  </div>
-
-  <section class="panel live-loop-panel" id="live-loop-panel">
-    <div class="loop-head">
-      <h2><span class="panel-ico" aria-hidden="true">▸</span> Auto paper <span class="title-ctx simple-only">(timer checks while Start is on)</span><span class="title-ctx adv-only">(scheduled paper checks while Start is on)</span></h2>
-      <div class="loop-gates adv-only" id="loop-gates" aria-label="Auto paper gates">
-        <span class="gate" id="gate-rth" title="Whether US regular trading hours are open">Hours...</span>
-        <span class="gate" id="gate-loss" title="Biggest paper loss allowed today before Auto paper pauses">Max loss...</span>
-        <span class="gate" id="gate-loop" title="Whether the scheduled check loop is running">Loop...</span>
-      </div>
-    </div>
-    <p class="hint-line simple-only quiet-hint">While Start is on, Tomahawk checks tickers on a timer. The big tile shows the latest call. The list below is a log — not a to-do. Ideas that need you show in Waiting for you.</p>
-    <p class="hint-line adv-only quiet-hint">While Start is on, Tomahawk checks tickers on a timer. The big tile is the latest call. The decision log below is history — not a to-do. Brain cost, odds bars, and tiny price lines are research tools, not live brokerage advice.</p>
-    <div class="loop-banner outside-rth hidden" id="loop-rth-banner">Market closed — scheduled checks paused</div>
-    <div class="loop-strip" id="loop-strip">
-      <div class="strip-cell adv-only" title="How long the last check took (latency)"><span class="lbl">Speed</span><span class="val" id="loop-lat">-</span></div>
-      <div class="strip-cell" title="Is Auto paper on or off"><span class="lbl">Status</span><span class="val" id="loop-health">Off</span></div>
-      <div class="strip-cell" title="What you hold right now"><span class="lbl">Position</span><span class="val" id="loop-pos">None</span></div>
-      <div class="strip-cell strip-secondary" title="Today's paper profit or loss"><span class="lbl">Today</span><span class="val" id="loop-pnl">-</span></div>
-      <div class="strip-cell strip-secondary" title="Your daily profit goal"><span class="lbl">Goal</span><span class="val" id="loop-goal">-</span></div>
-    </div>
-    <div class="brain-ledger adv-only" id="brain-ledger" aria-label="Model cost versus paper profit and loss">
-      <p class="hint-line quiet-hint ledger-caption">Brain ledger — model spend vs paper P&amp;L (research accounting, not a broker statement).</p>
-      <span class="ledger-pill" id="ledger-brain" title="Estimated model API spend this session">Brain $0</span>
-      <span class="ledger-pill" id="ledger-pnl" title="Today's paper profit or loss">Paper P&amp;L $0</span>
-      <span class="ledger-pill" id="ledger-friction" title="Paper slip and fee drag this session">Friction $0</span>
-      <span class="ledger-pill soft" id="ledger-late" title="Checks skipped because the move looked late">Late 0</span>
-      <label class="brain-toggle" for="brain-mode-select">Brain
-        <select id="brain-mode-select" title="Which research brain picks Hold, Buy, or Sell on paper">
-          <option value="gemini">Gemini</option>
-          <option value="mock">Mock</option>
-          <option value="jev">Jev</option>
-          <option value="claude">Claude</option>
-        </select>
-      </label>
-      <label class="brain-toggle chk" for="claude-shadow" title="Claude answers the same question silently next to your main AI. It never trades — the report card shows who called it better.">
-        <input type="checkbox" id="claude-shadow" /> Claude head-to-head
-      </label>
-    </div>
-    <!-- One Job sticky stage (Simple); Advanced still sees big-action + probs inside -->
-    <div class="stage-wrap" id="one-job-stage">
-      <div class="stage-ambient" id="stage-ambient" aria-hidden="true"></div>
-      <div class="stage-phase-tag simple-only" id="stage-phase-tag" hidden></div>
-      <div class="stage-thinking" id="stage-thinking" role="status" aria-live="polite" hidden>
-        <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
-        <span data-thinking-text>Checking…</span>
-      </div>
-      <div class="stage-bleed" id="stage-bleed" role="alert" hidden>
-        <strong>Paused to protect your money.</strong>
-        <p data-bleed-text></p>
-        <div class="bleed-actions">
-          <button type="button" class="btn sm" id="btn-bleed-resume">Resume anyway</button>
-          <span class="muted">Tip: look at the Positions and trade history first.</span>
-        </div>
-      </div>
-      <div class="stage-decide" id="stage-decide" hidden></div>
-      <div class="stage">
-        <div class="goal-race simple-only" id="stage-goal-race" aria-label="Goal race">
-          <span class="lbl">Goal</span>
-          <div class="race-track">
-            <div class="race-fill" id="stage-race-fill"></div>
-            <div class="race-pace" id="stage-race-pace" title="Expected progress through regular trading hours (informational)"></div>
-          </div>
-          <span class="rem" id="stage-race-rem"></span>
-        </div>
-        <p class="bench-line" id="bench-line" hidden title="Compares this desk with simply buying the S&amp;P 500 (SPY) with the same cash when you pressed Start checking."></p>
-        <div class="loop-action-row">
-          <div class="call-spoken big-action hold" id="loop-big-action" role="status" aria-live="polite">
-            <span class="action-aurora" aria-hidden="true"></span>
-            <div class="conf-ring-wrap" id="conf-ring-wrap" title="Confidence">
-              <div class="conf-ring" id="conf-ring" aria-hidden="true"></div>
-              <div class="conf-ring-core">
-                <span class="action-label adv-only">Latest call</span>
-                <span class="action-word" id="loop-action-word">Hold</span>
-                <span class="conf-label" id="loop-action-conf-label">—</span>
-              </div>
-            </div>
-            <div class="spoken-body">
-              <p class="spoken-eyebrow simple-only">Latest call</p>
-              <p class="spoken-line simple-only" id="spoken-line">Standing by — press Start when you wish</p>
-              <span class="action-gloss" id="loop-action-gloss">No call yet — Start when you wish</span>
-              <p class="spoken-why simple-only" id="spoken-why" hidden></p>
-              <p class="spoken-news-match simple-only muted" id="spoken-news-match" hidden></p>
-              <span class="action-meta" id="loop-action-meta">No call yet — press Start</span>
-              <span class="action-outcome" id="loop-action-outcome" hidden></span>
-              <p class="butler-story simple-only" id="butler-story" aria-live="polite">Standing by</p>
-              <details class="how-call simple-only" id="how-call-made">
-                <summary>How this call was made</summary>
-                <div class="how-call-body" id="how-call-body">
-                  <p class="muted" id="how-call-empty">No decision yet — details appear after the first check.</p>
-                </div>
-              </details>
-            </div>
-            <!-- legacy conf bar kept for any CSS hooks; hidden -->
-            <span class="call-conf simple-only" id="loop-action-conf" aria-hidden="true" hidden title="Confidence">
-              <span class="call-conf-fill" id="loop-action-conf-fill"></span>
-            </span>
-          </div>
-          <div class="prob-bars adv-only" id="loop-probs" aria-label="Buy, sell, or stay flat odds for the latest check">
-            <p class="prob-caption title-ctx">(model odds for this check — research only)</p>
-            <div class="prob-row buy" title="Model weight toward Buy"><span class="prob-lbl">Buy</span><div class="prob-track"><div class="prob-fill" id="prob-buy" style="width:0%"></div></div><span class="prob-pct" id="prob-buy-pct">0%</span></div>
-            <div class="prob-row sell" title="Model weight toward Sell"><span class="prob-lbl">Sell</span><div class="prob-track"><div class="prob-fill" id="prob-sell" style="width:0%"></div></div><span class="prob-pct" id="prob-sell-pct">0%</span></div>
-            <div class="prob-row flat" title="Model weight toward staying flat (no trade)"><span class="prob-lbl">Stay flat</span><div class="prob-track"><div class="prob-fill" id="prob-flat" style="width:50%"></div></div><span class="prob-pct" id="prob-flat-pct">50%</span></div>
-          </div>
-        </div>
-      </div>
-    </div>
-    <div id="spark-strip" class="spark-strip adv-only" aria-label="Tiny price lines for focus tickers" title="Tiny price lines for recent focus tickers — research only, not a signal"></div>
-    <div class="loop-prefs-home" id="loop-prefs-home">
-    <div class="desk-alert-prefs" id="desk-alert-prefs" role="group" aria-label="Desk alerts">
-      <label class="chk" title="Quiet beep for Waiting, goal, and max-loss">
-        <input type="checkbox" id="chk-alert-sound" />
-        Soft alert sound
-      </label>
-      <label class="chk" title="Browser pop-ups for Waiting, goal, and max-loss — asks once when you turn this on">
-        <input type="checkbox" id="chk-browser-alerts" />
-        Desktop alerts
-      </label>
-    </div>
-    <div class="paper-friction" id="paper-friction" role="group" aria-label="Paper fill honesty">
-      <div class="friction-head">
-        <span class="friction-title"><span class="simple-only">Pretend trading costs</span><span class="adv-only">Paper friction</span></span>
-        <span class="friction-session muted" id="friction-session-hint" title="Pretend costs so far this session">So far $0.00</span>
-      </div>
-      <div class="friction-row">
-        <label class="friction-field" for="friction-slip" title="How much worse than mid-price the paper fill is, in basis points (1 bps = 0.01%)">
-          <span class="friction-lbl"><span class="simple-only">Fill penalty</span><span class="adv-only">Slip (bps)</span> <span class="title-ctx adv-only">(fill worse than mid)</span></span>
-          <input type="number" id="friction-slip" min="0" max="100" step="1" value="5" inputmode="decimal" />
-        </label>
-        <label class="friction-field" for="friction-fee" title="Extra cash drag per fill, in basis points of notional (1 bps = 0.01%)">
-          <span class="friction-lbl"><span class="simple-only">Fee per trade</span><span class="adv-only">Fee (bps)</span> <span class="title-ctx adv-only">(cash drag per fill)</span></span>
-          <input type="number" id="friction-fee" min="0" max="50" step="0.5" value="1" inputmode="decimal" />
-        </label>
-        <div class="friction-presets" role="group" aria-label="Friction presets">
-          <button type="button" class="btn ghost friction-preset" data-slip="0" data-fee="0" title="No extra costs (less realistic)">None</button>
-          <button type="button" class="btn ghost friction-preset" data-slip="5" data-fee="1" title="About what a real trade costs">Typical</button>
-          <button type="button" class="btn ghost friction-preset" data-slip="15" data-fee="3" title="Pessimistic costs — a tougher test">Tough</button>
-        </div>
-      </div>
-      <p class="friction-gloss muted"><span class="simple-only">Real trades cost a little: you rarely get the exact price, and brokers charge fees. These make practice honest. Example: fill penalty 5 means buying $1,000 of stock costs about $0.50 extra; fee 1 adds $0.10.</span><span class="adv-only">Slip = how much worse than mid the paper fill is. Fee = cash drag per fill. Both use bps (basis points: 1 bps = 0.01%). Presets: Cheap / Typical / Harsh.</span></p>
-    </div>
-    </div><!-- /loop-prefs-home -->
-    <div class="loop-feed-wrap adv-only">
-      <p class="feed-caption">Decision log <span class="title-ctx">(history of checks — not a to-do list)</span></p>
-      <div class="loop-feed-head">
-        <span class="feed-seq" title="Sequence number">#</span><span class="feed-time" title="When the check happened">Time</span><span class="feed-ticker" title="Ticker symbol">Ticker</span><span class="feed-act" title="What the brain decided or filled">Action</span><span class="feed-conf" title="Confidence — how sure the brain was (0–100%)">Conf</span><span class="feed-ms adv-only" title="Latency — how long the check took (milliseconds)">ms</span><span class="feed-size" title="Share size or mid price">Size</span><span class="feed-mode adv-only" title="Brain/fill mode — paper intent vs paper fill">Mode</span>
-      </div>
-      <div id="loop-empty" class="feed-empty feed-empty-calm">
-        <p class="feed-empty-icon" aria-hidden="true">···</p>
-        <p class="feed-empty-main">No decisions yet.</p>
-        <p class="muted feed-empty-sub">Press Start — each scheduled check lands here as a history log, not a task list.</p>
-      </div>
-      <div class="loop-feed" id="loop-feed" aria-live="polite"></div>
-    </div>
-    <div class="desk-alerts-wrap adv-only" id="desk-alerts-wrap">
-      <p class="feed-caption">Desk alerts <span class="title-ctx">(Waiting, goal, and max-loss notes)</span></p>
-      <div id="desk-alerts-empty" class="feed-empty feed-empty-calm desk-alerts-empty">
-        <p class="muted feed-empty-sub">Quiet for now — notes about Waiting ideas, goal hit, and max-loss pause land here.</p>
-      </div>
-      <div class="desk-alerts-log" id="desk-alerts-log" aria-live="polite"></div>
-    </div>
-  </section>
-
-
-
-  <section class="panel equity-score-panel viz-primary curve-strip" id="equity-score-panel" aria-label="Day equity scoreboard">
-    <button type="button" class="curve-toggle simple-only" id="btn-curve-toggle" aria-expanded="false" title="Expand or collapse day curve">
-      <span class="chev" aria-hidden="true">▸</span>
-      <span class="curve-toggle-label">Day curve</span>
-      <span class="curve-meta" id="curve-strip-meta">—</span>
-    </button>
-    <div class="curve-body" id="curve-body">
-    <div class="panel-head equity-score-head">
-      <h2>
-        <span class="panel-ico" aria-hidden="true">⌒</span>
-        Day curve
-        <span class="title-ctx simple-only">(today's paper P&amp;L)</span>
-        <span class="title-ctx adv-only">(today's paper P&amp;L, biggest drop, and fills)</span>
-      </h2>
-      <div class="equity-score-stats" aria-label="Day stats">
-        <span class="eq-stat" title="Biggest drop from today's high"><span class="eq-lbl">Biggest drop</span><span class="eq-val" id="eq-dd">—</span></span>
-        <span class="eq-stat" title="How many paper trades filled today"><span class="eq-lbl">Fills today</span><span class="eq-val" id="eq-fills">0</span></span>
-        <span class="eq-stat" title="Share of calls that helped over the decision horizon (not fill W/L)"><span class="eq-lbl">Calls helped</span><span class="eq-val" id="eq-win">—</span></span>
-      </div>
-    </div>
-    <div class="equity-curve-shell" role="presentation">
-      <canvas id="equity-curve-canvas" width="640" height="72" role="img" aria-label="Session paper equity curve"></canvas>
-    </div>
-    <p class="equity-butler simple-only" id="eq-butler">Quiet so far — watching watchlist headlines for you</p>
-    <div class="radar-whisper-wrap" id="radar-whisper-wrap">
-      <p class="radar-butler-line muted hidden simple-only" id="radar-butler-line" aria-live="polite"></p>
-      <div class="radar-whisper simple-only" id="radar-whisper" aria-label="Top radar tickers" hidden></div>
-    </div>
-    </div><!-- /curve-body -->
-  </section>
-
-  <section class="panel daily-recap-panel" id="daily-recap-panel" aria-label="Daily after-hours recap">
-    <div class="panel-head">
-      <h2><span class="panel-ico" aria-hidden="true">◷</span> Daily recap <span class="title-ctx">(after the market closes)</span></h2>
-    </div>
-    <p class="daily-recap-headline muted" id="daily-recap-headline">Waiting for the day summary…</p>
-    <p class="daily-recap-detail muted" id="daily-recap-detail">No recap yet.</p>
-  </section>
-
-  <section class="panel desk-pulse-panel viz-secondary adv-only" id="desk-pulse-panel" aria-label="Desk pulse">
-    <div class="panel-head desk-pulse-head">
-      <h2>
-        <span class="panel-ico" aria-hidden="true">∿</span>
-        Desk pulse
-      </h2>
-    </div>
-    <div class="desk-pulse-shell" role="presentation">
-      <canvas id="desk-pulse-canvas" width="640" height="72" role="img" aria-label="Live desk pulse chart watching paper session activity"></canvas>
-      <p class="desk-pulse-ah-caption" id="desk-pulse-ah-caption" aria-hidden="true">After hours · soft moonlight</p>
-    </div>
-  </section>
-
-  <section class="panel trade-glow-panel viz-tertiary" id="trade-glow-panel" aria-label="Trade glow">
-    <div class="panel-head trade-glow-head">
-      <h2>
-        <span class="panel-ico" aria-hidden="true">◈</span>
-        Trade glow
-        <span class="title-ctx adv-only">(abstract flashes when paper fills happen)</span>
-        <span class="title-ctx simple-only">(paper fills flash here)</span>
-      </h2>
-      <div class="trade-glow-legend" aria-hidden="true">
-        <span class="tg-leg buy"><i></i>Buy</span>
-        <span class="tg-leg sell"><i></i>Sell</span>
-        <span class="tg-leg paper">Paper only</span>
-      </div>
-    </div>
-    <div class="trade-glow-stage">
-      <div class="trade-glow-shell">
-        <canvas id="trade-glow-canvas" width="640" height="72" aria-hidden="true"></canvas>
-        <p class="trade-glow-ah-caption" id="trade-glow-ah-caption" aria-hidden="true">After hours · soft moonlight</p>
-      </div>
-      <p class="trade-glow-empty" id="trade-glow-empty">Paper fills show up here when they happen.</p>
-    </div>
-  </section>
-
-  <section class="panel heat-panel adv-only" id="heat-panel">
-    <div class="panel-head">
-      <h2>Heat <span class="title-ctx">(tickers Reddit is mentioning right now)</span></h2>
-    </div>
-    <p class="hint-line quiet-hint">Shows names getting buzz attention. Research only — it does not change your watchlist or place trades.</p>
-    <div id="heat-lane" class="heat-lane" aria-label="Buzz heat lane"></div>
-  </section>
-
-  <section class="panel radar-panel adv-only" id="radar-panel">
-    <div class="panel-head">
-      <h2>Market radar <span class="title-ctx">(whole-market movers to watch)</span></h2>
-    </div>
-    <p class="hint-line quiet-hint">Scans the market for big movers. Research only — the brain does not decide on a name until it enters Auto paper.</p>
-    <div class="radar-controls">
-      <label class="chk" title="Turn on whole-market mover scanning (paper research)">
-        <input type="checkbox" id="chk-radar-enabled" />
-        Watch top movers (paper)
-      </label>
-      <label class="radar-topn-label" for="radar-top-n" title="How many top movers to keep">Top N
-        <input type="number" id="radar-top-n" min="5" max="50" step="1" value="20" />
-      </label>
-      <button type="button" class="btn ghost sm" id="btn-radar-refresh" title="Refresh movers now">Refresh</button>
-      <span class="muted-line" id="radar-meta" title="Radar status">Off</span>
-    </div>
-    <p class="hint-line quiet-hint">Skips pennies and thin dollar-volume names. When your session is on, hot names can join Auto paper / Ask-me-first focus — still not a live brokerage recommendation.</p>
-    <div id="radar-lane" class="radar-lane" aria-label="Market mover radar"></div>
-  </section>
-
-
-  <section class="panel opp-panel" id="opp-panel">
-    <div class="panel-head waiting-head">
-      <div class="waiting-row waiting-title-row">
-        <h2>
-          <span class="panel-ico simple-only" aria-hidden="true">❚❚</span>
-          <span class="simple-only">Waiting for you</span>
-          <span class="adv-only">Idea board</span>
-          <span class="title-ctx adv-only">(ideas waiting for Approve or Skip)</span>
-          <span class="count-chip is-zero" id="opp-waiting-count" aria-live="polite"></span>
-        </h2>
-      </div>
-    </div>
-    <p class="hint-line simple-only quiet-hint" id="opp-hint-simple">Paper ideas that need Approve or Skip.</p>
-    <p class="hint-line adv-only quiet-hint" id="opp-hint-adv">Ranked research ideas (Pass = worth a look, Watch = not ready). Approve or Skip only applies to pending ideas — not a live order ticket.</p>
-    <div id="opp-churn" class="adv-only opp-churn" aria-live="polite"></div>
-    <div class="opp-feed-wrap">
-    <div id="opp-empty" class="empty opp-empty-calm">
-      <p class="opp-empty-icon soft-pulse-icon" aria-hidden="true">❚❚</p>
-      <p id="opp-empty-main">Nothing waiting.</p>
-      <p class="muted" id="opp-empty-sub">When an idea needs you, it lands here as a calm tray card. Approve places the paper trade; Skip passes.</p>
-    </div>
-    <div id="opp-feed" class="opp-feed" aria-live="polite"></div>
-    </div>
-  </section>
-
-  <!-- News: what's influencing the market (live watchlist_news + macro) -->
-  <section class="panel news-panel desk-news" id="news-panel" aria-label="Market news">
-    <div class="panel-head news-head">
-      <h2>
-        <span class="panel-ico" aria-hidden="true">☰</span>
-        <span class="simple-only">What&rsquo;s moving</span>
-        <span class="adv-only">News</span>
-        <span class="title-ctx simple-only">(watchlist headlines — display only)</span>
-        <span class="title-ctx adv-only">(watchlist headlines — research only)</span>
-      </h2>
-      <div class="news-tools adv-only">
-        <label class="sr-only" for="news-filter">Filter by symbol</label>
-        <select id="news-filter" class="news-filter" title="Filter headlines by symbol">
-          <option value="">All symbols</option>
-        </select>
-        <button type="button" class="btn ghost sm" id="btn-news-refresh" title="Refresh news now">Refresh</button>
-      </div>
-    </div>
-    <div class="macro-strip" id="macro-strip" hidden aria-label="Macro and calendar">
-      <span class="macro-strip-lbl">Macro / calendar</span>
-      <div class="macro-strip-items" id="macro-strip-items"></div>
-    </div>
-    <p class="news-butler muted" id="news-butler" aria-live="polite"></p>
-    <div id="news-empty" class="empty news-empty hidden">
-      <p id="news-empty-main">No headlines right now</p>
-      <p class="muted" id="news-empty-sub">Sources may be offline, or the watchlist is empty. Headlines are display-only — they do not gate fills.</p>
-    </div>
-    <div id="news-feed" class="news-feed" aria-live="polite"></div>
-    <div class="news-intel adv-only" id="news-intel" hidden>
-      <div class="news-intel-head">
-        <strong>Intelligence context</strong>
-        <span class="muted" id="news-intel-meta">Research-only</span>
-      </div>
-      <div class="news-intel-summary" id="news-intel-summary"></div>
-      <div class="news-intel-timeline" id="news-intel-timeline"></div>
-    </div>
-  </section>
-
-  <section class="panel edge-panel adv-only" id="edge-panel">
-    <div class="panel-head">
-      <h2>Edge check <span class="title-ctx">(sample metrics — not proof of edge)</span></h2>
-      <span class="sample-tag">sample only — not proof of edge</span>
-    </div>
-    <p class="hint-line quiet-hint">Small-sample stats from recent paper research. Use them to sanity-check the desk — they do not prove a trading edge.</p>
-    <div class="edge-grid" id="edge-grid">
-      <div class="edge-cell" title="How many sample decisions are in this window"><span class="lbl">Sample size</span><span class="val" id="edge-n">-</span></div>
-      <div class="edge-cell" title="Share of checks that stayed flat / abstained"><span class="lbl">Hold / abstain</span><span class="val" id="edge-hold">-</span></div>
-      <div class="edge-cell" title="Share marked Pass (worth a look) — research label, not a fill"><span class="lbl">Pass rate</span><span class="val" id="edge-pass">-</span></div>
-      <div class="edge-cell" title="Share that helped when an outcome was marked — still sample only"><span class="lbl">Win (when marked)</span><span class="val" id="edge-win">-</span></div>
-    </div>
-  </section>
-
-  <section class="panel adv-only" id="risk-cockpit-panel">
-    <div class="panel-head">
-      <h2>Risk cockpit <span class="title-ctx">(evidence and execution health)</span></h2>
-    </div>
-    <p class="hint-line quiet-hint">Operational checks only — this panel does not create a trading edge or authorize live mode.</p>
-    <div class="edge-grid" id="risk-cockpit-grid">
-      <div class="edge-cell"><span class="lbl">Trade permission</span><span class="val" id="risk-trade-allowed">-</span></div>
-      <div class="edge-cell"><span class="lbl">Open exposure</span><span class="val" id="risk-exposure">-</span></div>
-      <div class="edge-cell"><span class="lbl">Avg slippage</span><span class="val" id="risk-slippage">-</span></div>
-      <div class="edge-cell"><span class="lbl">Promotion gate</span><span class="val" id="risk-promotion">-</span></div>
-    </div>
-    <p class="muted-line" id="risk-quality-note"></p>
-  </section>
-
-
-  <section class="panel buzz-panel adv-only" id="buzz-panel">
-    <div class="panel-head">
-      <h2>Ticker buzz <span class="title-ctx">(Reddit mention counts — research only)</span></h2>
-      <button type="button" class="btn ghost sm" id="btn-buzz-refresh" title="Refresh Reddit mention counts now">Refresh</button>
-    </div>
-    <p class="hint-line quiet-hint">Counts how often tickers show up on Reddit (WallStreetBets threads and hot posts). Uses a Reddit login when configured; otherwise public feeds may fail. Paper research only — not a trade signal.</p>
-    <div class="buzz-meta" id="buzz-meta" title="When buzz data was last refreshed">Last refresh: -</div>
-    <div class="buzz-errors muted-line" id="buzz-errors"></div>
-    <div class="buzz-live-chat" id="buzz-live-chat">
-      <div class="live-chat-head">
-        <strong>WSB Live Chat</strong>
-        <span class="live-chat-note muted" id="buzz-live-chat-note">Live Chat needs Reddit login — connect later.</span>
-      </div>
-      <div class="live-chat-tickers" id="buzz-live-chat-tickers"></div>
-      <details class="live-chat-paste-wrap">
-        <summary>Paste chat export (optional bridge)</summary>
-        <textarea id="buzz-live-chat-paste" rows="4" placeholder="Paste WSB Daily Live Chat lines here..."></textarea>
-        <button type="button" class="btn ghost sm" id="btn-buzz-live-chat-ingest">Parse paste</button>
-      </details>
-    </div>
-    <div class="buzz-megathreads" id="buzz-megathreads" aria-label="WSB megathreads"></div>
-    <div class="buzz-list" id="buzz-list" aria-live="polite"></div>
-  </section>
-
-  <section class="panel ops-panel adv-only" id="ops-panel">
-    <div class="panel-head">
-      <h2>Operator console <span class="title-ctx">(emergency paper controls)</span></h2>
-    </div>
-    <div class="ops-row">
-      <button type="button" class="btn danger" id="btn-force-flatten" title="Close all local paper positions now; also cancel/close on Alpaca when keys are set">Force flatten</button>
-      <span class="hint-line quiet-hint">Closes every local paper position right away. If Alpaca keys are set, it also cancels and closes there. Use when you want flat fast.</span>
-    </div>
-    <div class="ops-row alert-sound-row">
-      <p class="hint-line quiet-hint">Soft alert sound and Desktop alerts live under Auto paper (same toggles as Simple).</p>
-    </div>
-  </section>
-
-  <div id="churn-strip" class="churn-strip hidden adv-only" aria-live="polite"></div>
-
-
-  <div id="howto-modal" class="modal howto-modal hidden" role="dialog" aria-modal="true" aria-labelledby="howto-modal-title">
-    <div class="modal-card howto-card" role="document">
-      <h3 id="howto-modal-title">How to use Tomahawk</h3>
-      <p class="howto-intro">A practice trading desk. It uses <strong>fake money</strong> unless you deliberately connect a real Alpaca account in Advanced.</p>
-      <ol class="howto-steps">
-        <li><strong>Set today's goal and your practice cash.</strong> Example: goal $50, cash $10,000.</li>
-        <li><strong>Choose how trades happen.</strong> <em>Ask me first</em> — every idea waits for you to Approve or Skip. <em>Auto fill</em> — the desk places practice trades on its own.</li>
-        <li><strong>Press Start checking.</strong> The desk looks at your watchlist every few minutes while the market is open (9:30 am – 4 pm Eastern, weekdays).</li>
-      </ol>
-      <p class="howto-more muted">The big card shows the latest call and why. When an idea needs you it appears on that card — press <kbd>A</kbd> to review or <kbd>S</kbd> to skip (you get 5 seconds to undo). Press <strong>Stop</strong> any time; open positions keep their stop-loss, and you'll see how the day went.</p>
-      <label class="howto-seen-opt chk">
-        <input type="checkbox" id="howto-show-once" checked />
-        Show this once when I open the desk
-      </label>
-      <div class="modal-actions">
-        <button type="button" class="btn primary" id="btn-howto-close" title="Close tutorial">Got it</button>
-        <button type="button" class="btn ghost" id="btn-howto-dismiss" title="Close tutorial">Close</button>
-      </div>
-    </div>
-  </div>
-
-  <div id="approve-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="approve-modal-title">
-    <div class="modal-card">
-      <h3 id="approve-modal-title">Confirm paper fill</h3>
-      <div id="approve-preview" class="approve-preview"></div>
-      <label class="live-ack hidden" id="live-ack-wrap" for="live-ack-input">
-        Type <strong id="live-ack-ticker">the ticker</strong> to confirm this live order
-        <input type="text" id="live-ack-input" autocomplete="off" autocapitalize="characters" spellcheck="false" />
-      </label>
-      <div class="approve-bracket simple-quiet" id="approve-bracket">
-        <p class="approve-bracket-gloss muted" id="approve-bracket-gloss">Optional paper stop &amp; take-profit — blank uses your risk preset.</p>
-        <div class="approve-bracket-row">
-          <label for="approve-stop" title="Exit if the trade goes against you">Stop <span class="title-ctx">(exit if it goes against you)</span>
-            <input type="text" id="approve-stop" inputmode="decimal" placeholder="e.g. 1% or 178.5" autocomplete="off" />
-          </label>
-          <label for="approve-tp" title="Exit if the trade goes your way">Take profit <span class="title-ctx">(exit if it goes your way)</span>
-            <input type="text" id="approve-tp" inputmode="decimal" placeholder="e.g. 2.5% or 185" autocomplete="off" />
-          </label>
-        </div>
-        <label class="approve-trail" for="approve-trail" title="The stop follows the price up and never moves down. Example: 3 means the stop stays 3% below the highest price since you bought.">Trailing stop % <span class="title-ctx">(optional — locks in gains as the price rises)</span>
-          <input type="text" id="approve-trail" inputmode="decimal" placeholder="e.g. 3" autocomplete="off" />
-        </label>
-        <label class="chk approve-bracket-off">
-          <input type="checkbox" id="approve-no-bracket" />
-          No stop / take-profit on this fill
-        </label>
-      </div>
-      <div class="modal-actions">
-        <button type="button" class="btn good" id="btn-approve-confirm" title="Place this paper trade">Confirm fill</button>
-        <button type="button" class="btn ghost" id="btn-approve-cancel" title="Close without trading">Cancel</button>
-      </div>
-    </div>
-  </div>
-
-  <details class="panel chat-panel adv-only" id="chat-panel">
-    <summary>Ask Gemini <span class="title-ctx">(chat about a ticker — research only)</span></summary>
-    <div class="chat-body">
-      <div class="chat-log" id="chat-log"></div>
-      <div class="chat-form">
-        <input type="text" id="chat-ticker" placeholder="Ticker (optional)" maxlength="12" />
-        <input type="text" id="chat-input" placeholder="Ask about a stock or idea..." />
-        <button type="button" class="btn primary" id="btn-chat-send">Send</button>
-      </div>
-    </div>
-  </details>
-
-  <main class="desk">
-    <section class="panel queue adv-only">
-      <div class="panel-head queue-head">
-        <h2>Signal queue <span class="title-ctx">(pending paper ideas by status)</span></h2>
-      </div>
-      <div class="tabs" id="tabs" role="tablist" aria-label="Signal queue">
-        <button type="button" class="tab active" role="tab" aria-selected="true" aria-controls="signal-panel-pending" data-tab="pending" title="Ideas waiting for approval or skip">Waiting</button>
-        <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="signal-panel-approved" data-tab="approved" title="Ideas that were filled or approved">Filled</button>
-        <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="signal-panel-rejected" data-tab="rejected" title="Ideas you skipped">Skipped</button>
-        <button type="button" class="tab adv-only" role="tab" aria-selected="false" aria-controls="signal-panel-expired" data-tab="expired" title="Ideas that timed out">Expired</button>
-      </div>
-      <p class="hint-line quiet-hint">Paper ideas grouped by status. Approve or Skip here when something is pending — not a live brokerage ticket.</p>
-      <div class="signal-list" id="signal-list"></div>
+{% include "desk/header.html" %}
+<nav class="page-nav{% if config.get('COMPANION_AVAILABLE') %} has-companion-habitat{% endif %}" aria-label="On this page">
+  <a class="nav-brand" href="#desk-overview" aria-label="nadzeeɫ overview"><span class="logo-medallion">{% include "desk/brand_mark.html" %}</span><span class="wordmark">nadzeeɫ</span></a>
+  {% if config.get('COMPANION_AVAILABLE') %}{% include "desk/sidebar_companions.html" %}{% endif %}
+  <div class="sidebar-scroll" id="sidebar-scroll">
+  <span class="nav-caption">TRADE</span>
+  <a href="#desk-overview">Overview</a>
+  <a href="#desk-live">Live desk</a>
+  <a href="#broker-book">Holdings</a>
+  <a href="#live-stock-ticket">Ticket</a>
+  <a href="#broker-orders-list">Orders</a>
+  <a href="#opp-panel">Ideas</a>
+  <a href="#live-automation">Broker agent</a>
+  {% if config.get('OPTIONS_AVAILABLE') %}<a href="#desk-options">Options (paper)</a>{% endif %}
+  <a href="#desk-paper">Paper</a>
+  <span class="nav-caption">RESEARCH</span>
+  <a href="#desk-research">Research records</a>
+  {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}<a href="#research-studio">Research studio</a><a href="#stocks-on-sale">Market scanner · on sale</a>{% endif %}
+  {% if config.get('MARKETS_AVAILABLE') %}<a href="#market-explorer">US markets</a><a href="#operations-desk">Evidence</a>{% endif %}
+  {% if config.get('COMPANION_AVAILABLE') %}<a href="#companion-news">Headlines &amp; her take</a><a href="#moss-desk">Moss &amp; automation</a><a href="#agent-research">Moss's brief</a>{% endif %}
+  <span class="nav-caption">SETTINGS</span>
+  <a href="#desk-settings">Settings &amp; journal</a>
+  <div class="nav-bottom">
+    <section class="scene-controls desk-module"><h3 class="module-title">Scene &amp; motion</h3>
+      <label class="scene-motion-label"><input id="desk-scene-rotate" type="checkbox" checked /> Rotate scenery</label>
+      <label for="desk-sky">Desert sky</label><select id="desk-sky"><option value="auto">Follow Eastern time</option><option value="dawn">Dawn</option><option value="day">Day</option><option value="dusk">Dusk</option><option value="night">Night</option></select>
+      <label for="desk-landscape">Landscape treatment</label><select id="desk-landscape"><option value="banded">Banded sky</option><option value="clouds">Sculpted clouds</option><option value="earth">Earth &amp; grain</option></select>
+      <label class="scene-motion-label"><input id="desk-scene-motion" type="checkbox" checked /> Gentle scene motion</label>
+      <button id="desk-sky-preview" type="button" class="btn ghost sm" aria-pressed="false">Preview a day · 12s</button>
+      <span id="scene-motion-note" class="scene-note" role="status">Scenery rotates gently</span>
     </section>
-
-    <aside class="side">
-      <section class="panel broker-book hidden" id="broker-book" aria-labelledby="broker-book-title">
-        <div class="panel-head">
-          <h2 id="broker-book-title">At your broker <span class="title-ctx" id="broker-book-kind">(not connected)</span></h2>
-          <span class="muted" id="broker-book-day"></span>
-        </div>
-        <p class="muted broker-book-note">Broker orders live here — they are separate from this desk's local paper book.</p>
-        <div id="broker-book-list" class="broker-book-list"></div>
-      </section>
-      <section class="panel pos-row" id="positions-panel">
-        <button type="button" class="pos-toggle simple-only" id="btn-pos-toggle" aria-expanded="false" title="Expand or collapse positions">
-          <span class="pos-chip" id="pos-chip">0 open</span>
-          <span>Positions</span>
-          <span class="pos-hint" id="pos-hint">tap to expand</span>
-        </button>
-        <div class="pos-body" id="pos-body">
-        <h2><span class="panel-ico" aria-hidden="true">▤</span> Positions <span class="title-ctx simple-only">(what you hold on paper)</span><span class="title-ctx adv-only">(open paper holdings)</span></h2>
-        <div id="pos-empty" class="empty hidden">No open positions<span class="empty-hint">Nothing held on paper yet.</span></div>
-        <div id="positions" class="table-wrap"></div>
-        </div>
-      </section>
-      <section class="panel adv-only">
-        <h2>Fills <span class="title-ctx">(recent paper trades that filled)</span></h2>
-        <div id="fills" class="table-wrap"></div>
-      </section>
-      <details class="panel more adv-only" open>
-        <summary>More <span class="title-ctx">(watchlist, how trades run, journal)</span></summary>
-        <div class="more-body">
-          <div class="watchlist-heading">
-            <label for="watchlist" title="Tickers Auto paper and scans can look at">Watchlist</label>
-            <span class="count-badge" id="watchlist-count">0 tickers</span>
-          </div>
-          <div class="wl-find" title="Find tickers by name or plain English">
-            <label class="sr-only" for="wl-find-q">Find tickers by name or plain English</label>
-            <input type="text" id="wl-find-q" class="wl-find-input" placeholder="e.g. semiconductors on my list" autocomplete="off" title="Type a name or plain English to find tickers" />
-            <button type="button" class="btn ghost sm" id="btn-wl-find" title="Search your list and suggest adds">Find</button>
-          </div>
-          <p class="hint-line wl-find-hint quiet-hint">Find tickers by company name or plain English. Results filter your list or suggest adds — confirm before anything merges.</p>
-          <div id="wl-find-results" class="wl-find-results hidden" aria-live="polite"></div>
-          <textarea id="watchlist" rows="4" placeholder="AAPL MSFT NVDA" title="Paste ticker symbols here"></textarea>
-          <p class="hint-line quiet-hint">Paste tickers (spaces, commas, or new lines). A CSV Symbol column works too.</p>
-          <div class="watchlist-actions">
-            <button type="button" class="btn ghost" id="btn-save-watchlist" title="Save the list as typed">Save</button>
-            <button type="button" class="btn ghost" id="btn-merge-watchlist" title="Add pasted tickers to the saved list">Add paste</button>
-            <button type="button" class="btn ghost" id="btn-replace-watchlist" title="Replace the saved list with what is pasted">Replace with paste</button>
-            <button type="button" class="btn primary" id="btn-evaluate-watchlist" title="Score tickers for research (Pass / Watch / Avoid)">Score list</button>
-          </div>
-          <p class="hint-line quiet-hint" id="watchlist-focus-note">Scan and Auto paper can focus on liquid US names (~40). Your full list stays saved unless you replace it.</p>
-          <div class="watchlist-actions focus-actions">
-            <button type="button" class="btn ghost" id="btn-use-liquid" title="Load a liquid US ticker set (~40)">Use liquid US list (~40)</button>
-            <button type="button" class="btn ghost" id="btn-focus-liquid" title="Scan only liquid names; keep full list saved">Focus: liquid</button>
-            <button type="button" class="btn ghost" id="btn-focus-all" title="Scan the full saved watchlist">Keep full list</button>
-            <button type="button" class="btn ghost hidden" id="btn-restore-gf" title="Restore a previously imported Google Finance list">Restore Google Finance list</button>
-          </div>
-          <p class="muted-line" id="watchlist-focus-status"></p>
-          <div id="watchlist-results" class="watchlist-results" aria-live="polite"></div>
-          <p class="preset-detail" id="preset-detail"></p>
-          <div class="tool mode-advanced">
-            <label for="mode-select" title="Whether you approve each idea or Auto paper fills for you">How trades run</label>
-            <div class="inline">
-              <select id="mode-select" title="Ask-me-first, auto paper fills, or Alpaca when configured">
-                <option value="manual">I approve each</option>
-                <option value="auto_paper">Auto on paper</option>
-                <option value="live_manual">Approve each — live broker</option>
-                <option value="auto_live">Automatic broker orders — live risk</option>
-              </select>
-              <button type="button" class="btn" id="btn-apply-mode" title="Apply how trades run">Apply</button>
-            </div>
-          </div>
-          <p class="muted-line">Account <span id="stat-equity">-</span> | Cash <span id="stat-cash">-</span></p>
-          <button type="button" class="btn ghost dangerish" id="btn-reset-ledger" title="Wipe paper positions, fills, and cash back to starting bank">Reset paper account</button>
-          <h2>Journal <span class="title-ctx">(short notes from the desk)</span></h2>
-          <div id="journal" class="journal"></div>
-        </div>
-      </details>
-    </aside>
-  </main>
-
-  <p class="simple-disclaimer simple-only" id="simple-disclaimer">
-    Paper-only educational desk. Calls are research suggestions for fake money — not live brokerage advice, not an order ticket, and not a promise of profit.
-  </p>
-  <button type="button" class="footer-mock-link simple-only" id="btn-simple-mock" title="Open standalone One Job mock (not live)">Old mock (comparison)</button>
-
-  <div class="sheet-backdrop" id="simple-sheet-backdrop" hidden></div>
-  <aside class="sheet simple-settings-sheet" id="simple-settings-sheet" role="dialog" aria-modal="true" aria-labelledby="simple-settings-title" hidden>
-    <div class="sheet-head">
-      <h2 id="simple-settings-title">Settings</h2>
-      <button type="button" class="btn ghost sm" id="btn-simple-sheet-close">Close</button>
-    </div>
-    <div class="sheet-body" id="simple-settings-body">
-      <section class="simple-wl" aria-labelledby="simple-wl-title">
-        <h3 id="simple-wl-title">Your watchlist <span class="muted" id="simple-wl-count"></span></h3>
-        <p class="muted">The stocks the desk checks, one per line (e.g. AAPL).</p>
-        <textarea id="simple-wl" rows="6" spellcheck="false" autocapitalize="characters" aria-describedby="simple-wl-status"></textarea>
-        <div class="simple-wl-actions">
-          <button type="button" class="btn good sm" id="btn-simple-wl-save">Save watchlist</button>
-          <span class="muted" id="simple-wl-status" role="status"></span>
-        </div>
-      </section>
-      <p class="hint-quiet muted" style="padding:0;margin:0.75rem 0">Costs and alerts:</p>
-      <!-- friction + alerts moved here by JS in Simple mode -->
-    </div>
-  </aside>
-
-  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
-
-  <div class="undo-bar" id="undo-bar" role="status" hidden>
-    <span data-undo-text>Skipped.</span>
-    <button type="button" class="btn sm" data-undo-btn>Undo</button>
+    <small id="desk-clock"></small>
   </div>
-
-  <div id="report-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="report-title">
-    <div class="modal-card report-card">
-      <h3 id="report-title">This week's report card</h3>
-      <div id="report-body" class="report-body"><p class="muted">Loading…</p></div>
-      <div class="modal-actions">
-        <button type="button" class="btn ghost" id="btn-backtest" title="Replay the screener's buy rule on ~2 years of past prices for your watchlist">Test the rules on past data</button>
-        <button type="button" class="btn good" id="btn-report-close">Close</button>
-      </div>
-    </div>
   </div>
-
-  <div id="recap-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="recap-title">
-    <div class="modal-card recap-card">
-      <h3 id="recap-title">How today went</h3>
-      <div id="recap-body" class="recap-body"></div>
-      <div class="modal-actions">
-        <button type="button" class="btn danger hidden" id="btn-recap-flatten">Close all paper positions</button>
-        <button type="button" class="btn ghost" id="btn-recap-report">Week's report card</button>
-        <button type="button" class="btn good" id="btn-recap-ok">Keep them &amp; close</button>
-      </div>
-    </div>
+</nav>
+<main id="unified-desk">
+  {% include "desk/attention.html" %}
+  {% include "desk/overview.html" %}
+  {% include "desk/live.html" %}
+  {% include "desk/live_automation.html" %}
+  {% if config.get('OPTIONS_AVAILABLE') %}{% include "desk/options.html" %}{% endif %}
+  {% include "desk/paper.html" %}
+  {% if config.get('COMPANION_AVAILABLE') %}
+    {% include "desk/companion.html" %}
+    {% include "desk/agent_summary.html" %}
+  {% else %}
+    <p class="hint-line">Moss and the new planning tools will appear after the next app restart.</p>
+  {% endif %}
+  <div class="research-shelf" role="region" aria-label="Research records and tools" tabindex="0">
+  {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}{% include "desk/scanner_workspace.html" %}{% endif %}
+  {% include "desk/research.html" %}
+  {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}{% include "desk/research_studio.html" %}{% endif %}
   </div>
-  <script src="/static/desk_motion.js"></script>
-  <script src="/static/trade_glow.js"></script>
-  <script src="/static/desk_pulse.js"></script>
+  {% include "desk/settings.html" %}
+</main>
+{% include "desk/dialogs.html" %}
+  <script src="/static/agent_desk.js?v=agent-20260924-2"></script>
+  <script src="/static/live_agent.js?v=agent-setup-20260924-1"></script>
   <script src="/static/equity_scoreboard.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="/static/workbench.js?v=visual-phase1-20260924-1"></script>
+  {% if config.get('MARKETS_AVAILABLE') %}<script src="/static/market_operations.js"></script>{% endif %}
+  <script src="/static/order_controls.js"></script>
+  <script src="/static/live_ticket.js?v=live-ticket-20260924-3"></script>
+  <script src="/static/desk_attention.js?v=moonlit-20260924-1"></script>
+  {% if config.get('COMPANION_AVAILABLE') %}<script src="/static/paper_workday_ui.js?v=moonlit-20260924-1"></script>{% endif %}
+  {% if config.get('COMPANION_AVAILABLE') %}<script src="/static/news_quips.js?v=news-20260924-1"></script><script src="/static/moss_avatar.js?v=news-20260924-1"></script><script src="/static/companion.js?v=cleanup-20260924-1"></script><script src="/static/news_desk.js?v=cleanup-20260924-1"></script>{% endif %}
+  <script src="/static/app.js?v=visual-phase1-20260924-1"></script>
+  {% if config.get('OPTIONS_AVAILABLE') %}<script src="/static/options.js?v=modules-20260924-1"></script>{% endif %}
+  <script src="/static/desk_guidance.js?v=guided-20260923-3"></script>
+  <script src="/static/context_help.js?v=cleanup-20260924-1"></script>
+  <script src="/static/nadzeel.js?v=visual-phase1-20260924-1"></script>
+  <script src="/static/constellations.js?v=moonlit-20260924-1"></script>
+  <script src="/static/nadzeel_motion.js?v=modules-20260924-1"></script>
+  {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}<script src="/static/research_studio.js?v=modules-20260924-1"></script><script src="/static/sale_market.js?v=cleanup-20260924-1"></script>{% endif %}
 </body>
 </html>

@@ -1,0 +1,22 @@
+<section class="panel workbench-wide" id="symbol-workspace" aria-labelledby="symbol-workspace-title">
+  <h3 id="symbol-workspace-title">Symbol workspace</h3>
+  <form id="symbol-form" class="compact-tools">
+    <label for="linked-watchlist-symbol">Watchlist symbol</label>
+    <select id="linked-watchlist-symbol"><option value="">Choose from your watchlist</option></select>
+    <label>Selected instrument <input id="linked-symbol" name="symbol" maxlength="35" value="SPY" placeholder="SPY or YF:7203.T" autocomplete="off" autocapitalize="characters" required /></label>
+    <button type="submit" class="btn">Load research</button>
+    <label>Bars displayed <select id="chart-window"><option>30</option><option selected>60</option><option>120</option></select></label>
+  </form>
+  <p class="hint-line">One symbol links historical candles, volume, news and saved theses. Selecting a symbol never changes an open order review.</p>
+  <p id="symbol-status" role="status">Load a symbol to inspect its historical context.</p>
+  <button id="follow-global" class="btn ghost sm" type="button" hidden>Add to Moss’s global research</button><p id="instrument-capability" class="hint-line"></p>
+  <div id="linked-chart" class="linked-chart" aria-label="Historical candlestick and volume chart"></div>
+  <label id="chart-inspector-label" hidden>Inspect bar <input type="range" id="chart-inspector" min="0" max="0" value="0" /></label>
+  <output id="chart-detail" for="chart-inspector"></output>
+  <div class="section-grid"><div><h4>Headlines</h4><ul id="linked-news"></ul></div><div><h4>Saved theses</h4><div id="linked-theses"></div></div></div>
+</section>
+<section class="panel workbench-wide" id="evaluation-panel">
+  <div class="panel-head"><h3>Research evaluation</h3><button type="button" class="btn ghost" id="evaluation-refresh">Refresh evaluation</button></div>
+  <p class="hint-line">Group by actual model, prompt version, workspace and outcome horizon. Model confidence is self-reported. These retained observations are descriptive, not held-out proof.</p>
+  <div id="evaluation-results" class="table-wrap" role="status">Load evaluation to see sample sizes and coverage.</div>
+</section>

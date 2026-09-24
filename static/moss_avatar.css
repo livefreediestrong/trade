@@ -1,0 +1,50 @@
+/* Cozy desert perches: wide navigation and small expressive companions. */
+body.unified-desk:has(.has-companion-habitat){padding-left:332px}
+.page-nav.has-companion-habitat{width:300px;padding:24px 16px;overflow:hidden;isolation:isolate;background:linear-gradient(165deg,color-mix(in srgb,var(--panel) 88%,#a2779e),var(--bg) 52%,color-mix(in srgb,var(--bg) 87%,#e6a391))}
+.has-companion-habitat .nav-brand{position:relative;z-index:4;padding:0 12px 14px}
+.has-companion-habitat .sidebar-scroll{position:absolute;inset:207px 22px 284px;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;display:flex;flex-direction:column;gap:4px;z-index:4}
+.has-companion-habitat .sidebar-scroll>a{padding:8px 12px;font-size:13px;line-height:1.5;flex-shrink:0}
+.has-companion-habitat .nav-caption{padding:4px 8px 7px;font-size:9px}
+.has-companion-habitat .nav-bottom{padding:12px 4px 20px;flex-shrink:0}
+.has-companion-habitat .nav-bottom p{font-size:14px}
+.sidebar-companions{position:absolute;inset:0;pointer-events:none;z-index:3}
+.sidebar-companions::before{content:'';position:absolute;inset:75px 0 0;background:radial-gradient(ellipse at 10% 8%,#efd8eb0c,transparent 45%),radial-gradient(ellipse at 85% 90%,#e6a39110,transparent 55%);pointer-events:none}
+.sidebar-companions[hidden]{display:none}
+.moss-sidebar-stage{position:absolute;inset:0;overflow:hidden;contain:layout paint}
+.moss-sidebar-stage::before,.moss-sidebar-stage::after{content:'';position:absolute;top:154px;bottom:16px;width:7px;background:url('/static/apache-basket-border.svg') center top/7px 72px repeat-y;opacity:.13;mask-image:linear-gradient(transparent,#000 5% 95%,transparent)}
+.moss-sidebar-stage::before{left:3px}.moss-sidebar-stage::after{right:3px}
+.sidebar-trails{position:absolute;inset:0;width:100%;height:100%;overflow:visible;fill:none;stroke:var(--accent);stroke-width:.7;stroke-opacity:.24;pointer-events:none}
+.sidebar-trails .habitat-rock,.sidebar-trails .habitat-sand,.sidebar-trails .habitat-cacti{stroke:none}
+.habitat-rock.far{fill:color-mix(in srgb,#92748f 23%,var(--bg));opacity:.9}.habitat-rock.near{fill:color-mix(in srgb,#c28579 25%,var(--bg));opacity:.8}.habitat-sand{fill:color-mix(in srgb,#dfb88e 30%,var(--bg));opacity:.9}.habitat-cacti{fill:color-mix(in srgb,#94a084 38%,var(--bg))}
+.moss-sprite{position:absolute;top:0;left:0;width:88px;height:88px;image-rendering:pixelated;pointer-events:none;user-select:none;filter:drop-shadow(0 2px 2px #0003)}
+.moss-sprite::before,.moss-sprite::after{content:'';position:absolute;inset:0;background:url('/static/companion-breeze-v1.png') 0 0/400% 200% no-repeat}
+.moss-sprite::before{background-position:var(--frame-a,0% 0%)}
+.moss-sprite::after{background-position:var(--frame-b,0% 0%);opacity:var(--frame-blend,0);transition:opacity 1.35s ease-in-out}
+.moss-sprite[data-still=true]::after{transition:none}
+.moss-sprite[hidden]{display:none}
+.moss-sprite[data-buzz=true]{transform-origin:50% 66%;animation:fox-buzz-listen 12s ease-in-out 1}
+@keyframes fox-buzz-listen{0%,100%{rotate:0deg;filter:drop-shadow(0 2px 2px #0003)}30%,55%{rotate:-2deg;filter:drop-shadow(0 0 6px #e6a39155)}75%{rotate:1deg}}
+.moss-sprite.moss-woman{--frame-a:0% 100%;--frame-b:0% 100%}
+.moss-sprite.moss-woman::before,.moss-sprite.moss-woman::after{background-image:url('/static/changing-woman-day-routine-v1.png');background-size:400% 400%}
+.sidebar-companions .moss-speech{position:absolute;bottom:122px;left:16px;right:16px;height:148px;box-sizing:border-box;overflow:auto;pointer-events:auto;padding:15px 17px;background:color-mix(in srgb,var(--panel2) 65%,var(--bg));border:1px solid color-mix(in srgb,var(--border) 65%,transparent);border-radius:22px 18px 25px 11px;box-shadow:0 5px 18px #0001;scrollbar-width:thin}
+.moss-speech[data-speaker=woman]{border-radius:18px 23px 10px 25px}
+.sidebar-companions .moss-speech[data-topic=buzz]{top:116px;bottom:auto;left:119px;right:12px;height:100px;padding:8px 10px;border-radius:14px 14px 14px 3px}
+.moss-speech[data-topic=buzz] p{font-size:10px;line-height:1.4;margin:4px 0}
+.moss-speech[data-topic=buzz] small{font-size:8px}
+.page-nav .moss-speech[data-topic=buzz] a{font-size:10px}
+.moss-speech small{display:block;font:9px/1.6 var(--mono);color:var(--muted);padding-right:16px}
+.moss-speech p{font-size:12px;line-height:1.6;margin:7px 0}
+.page-nav .moss-speech a{font-size:11px;display:inline-block;padding:1px 0;border:0;background:none}
+#moss-speech-dismiss{position:absolute;top:3px;right:4px;border:0;background:none;color:var(--muted);padding:3px 7px;min-width:24px;min-height:24px}
+.moss-speech[hidden]{display:none}
+.has-companion-habitat:has(.sidebar-companions[hidden]) .sidebar-scroll{inset:120px 16px 20px}
+@media(min-width:801px) and (max-width:1200px){body.unified-desk:has(.has-companion-habitat){padding-left:292px}.page-nav.has-companion-habitat{width:270px}}
+@media(max-height:650px) and (min-width:801px){.has-companion-habitat .sidebar-scroll{top:166px;bottom:232px}.sidebar-companions .moss-speech{height:105px;bottom:112px}.has-companion-habitat .nav-brand{scale:.9;transform-origin:left top}}
+@media(max-height:650px) and (min-width:801px){.sidebar-companions .moss-speech[data-topic=buzz]{top:104px;bottom:auto;left:103px;height:90px}}
+@media(max-width:800px){body.unified-desk:has(.has-companion-habitat){padding:0 14px 45px}.page-nav.has-companion-habitat{position:relative;inset:auto;width:auto;padding:10px;overflow:visible}.has-companion-habitat .sidebar-scroll,.has-companion-habitat:has(.sidebar-companions[hidden]) .sidebar-scroll{position:static;display:flex;flex-direction:row;flex-wrap:wrap;width:100%;overflow:visible;gap:4px}.has-companion-habitat .sidebar-scroll>a{font-size:11px;padding:7px 9px}.has-companion-habitat .nav-caption{display:none}.has-companion-habitat .nav-bottom{width:100%;padding:8px 0 0}.sidebar-companions{display:none}}
+@media print{.sidebar-companions,.moss-appearance{display:none}}
+.sidebar-companions .moss-speech[data-topic=news]{height:206px}
+.sidebar-companions #moss-news-headline{font:10px/1.5 var(--sans,system-ui);color:var(--muted);border-top:1px solid var(--border);padding-top:7px}
+@media(min-width:801px){.has-companion-habitat:has(.moss-speech[data-topic=news]:not([hidden])) .sidebar-scroll{bottom:344px}}
+@media(max-height:650px) and (min-width:801px){.sidebar-companions .moss-speech[data-topic=news]{height:150px}}
+@media(max-height:650px) and (min-width:801px){.has-companion-habitat:has(.moss-speech[data-topic=news]:not([hidden])) .sidebar-scroll{bottom:278px}}

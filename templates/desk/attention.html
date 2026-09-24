@@ -1,0 +1,16 @@
+<div class="attention-bar" aria-label="Desk attention preferences">
+ <label class="chk" title="Pauses decorative motion and unsolicited speech. Trading and risk alerts continue."><input type="checkbox" id="desk-quiet" aria-describedby="desk-attention-note" /> Quiet desk</label>
+ <label for="desk-task">Jump to</label><select id="desk-task">
+  <option value="desk-live">Live desk</option>
+  <option value="broker-book">Holdings</option>
+  <option value="live-stock-ticket">Ticket</option>
+  <option value="broker-orders-list">Orders</option>
+  <option value="opp-panel">Ideas</option>
+  <option value="live-automation">Broker agent</option>
+  {% if config.get('OPTIONS_AVAILABLE') %}<option value="desk-options">Options</option>{% endif %}
+  <option value="desk-paper">Paper</option>
+  {% if config.get('COMPANION_AVAILABLE') %}<option value="agent-research">Moss's research brief</option><option value="moss-desk">Moss &amp; automation</option><option value="moss-notebook">Research notebook</option>{% endif %}
+  <option value="desk-settings">Settings</option>
+ </select><button type="button" class="btn" id="desk-task-go">Go</button>
+ <p id="desk-attention-note" class="sr-only">Quiet desk pauses decorative motion and unprompted speech. Trading and risk alerts continue.</p>
+</div>

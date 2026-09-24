@@ -12,6 +12,8 @@ Abstain/hold is always allowed (never forced into a trade).
 from __future__ import annotations
 
 import threading
+import math
+import re
 import time
 import uuid
 from datetime import date, datetime, time as dtime, timedelta, timezone
@@ -139,6 +141,8 @@ def equity_loop_symbols(watchlist: list[str]) -> list[str]:
     seen: set[str] = set()
     for raw in watchlist or []:
         sym = str(raw or "").strip().upper()
+        if not re.fullmatch(r"[A-Z][A-Z0-9]{0,5}(?:\.[AB])?", sym):
+            continue
         if not sym or sym.startswith("."):
             continue
         if any(ch in sym for ch in (" ", "/", ":")):
@@ -300,17 +304,33 @@ class DecisionRing:
 
     def append(self, event: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
+            import copy
+            import json
             self._seq += 1
-            ev = dict(event)
+            ev = copy.deepcopy(event)
             ev.setdefault("id", str(uuid.uuid4()))
             ev["seq"] = self._seq
             ev.setdefault("ts", datetime.now(timezone.utc).isoformat())
             ev.setdefault("sim", True)
             ev.setdefault("dry_run", True)
+            if ev.get("event") in ("decision", "outcome") and ev.get("scoring_version") == "horizon-net-v2":
+                archive = self.path.parent / "research_history" / (datetime.now(timezone.utc).date().isoformat() + ".jsonl")
+                archive.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open("a", encoding="utf-8") as stream:
+                    stream.write(json.dumps(ev, allow_nan=False) + "\n")
             self._events.insert(0, ev)
-            self._events = self._events[: self.max_events]
+            # Unresolved horizons must survive a burst of newer scan/skip events.
+            retained = []
+            resolved = 0
+            for item in self._events:
+                if item.get("outcome_pending"):
+                    retained.append(item)
+                elif resolved < self.max_events:
+                    retained.append(item)
+                    resolved += 1
+            self._events = retained
             self._persist()
-            return ev
+            return copy.deepcopy(ev)
 
     def patch(self, event_id: str, updates: dict[str, Any]) -> Optional[dict[str, Any]]:
         """Merge updates onto an existing event by id (outcome stamps)."""
@@ -321,9 +341,31 @@ class DecisionRing:
                 if e.get("id") == event_id:
                     e.update(updates or {})
                     self._persist()
+                    if e.get("source") == "moss_paper":
+                        import json
+                        archive = self.path.parent / "research_history" / (datetime.now(timezone.utc).date().isoformat() + ".jsonl")
+                        archive.parent.mkdir(parents=True, exist_ok=True)
+                        with archive.open("a", encoding="utf-8") as stream:
+                            stream.write(json.dumps(dict(e, revision_at=datetime.now(timezone.utc).isoformat()), allow_nan=False) + "\n")
                     return dict(e)
             return None
 
+    def pending_due(self, now: datetime, limit: int = 40) -> list[dict[str, Any]]:
+        """Select oldest due horizons before applying the per-tick work limit."""
+        due_rows = []
+        with self._lock:
+            for event in self._events:
+                if not event.get("outcome_pending") or event.get("outcome"):
+                    continue
+                try:
+                    due = datetime.fromisoformat(str(event.get("outcome_due_ts")).replace("Z", "+00:00"))
+                    if due.tzinfo is None:
+                        due = due.replace(tzinfo=timezone.utc)
+                except (ValueError, TypeError):
+                    continue
+                if due <= now:
+                    due_rows.append((due, dict(event)))
+        return [row for _, row in sorted(due_rows, key=lambda pair: pair[0])[:max(1, min(limit, 120))]]
     def since(
         self,
         *,
@@ -672,7 +714,7 @@ class PaperLoop:
             pass
         # Housekeeping whenever session is active (equity curve / pending outcomes),
         # including Ask me first (manual) — not gated on auto_paper.
-        if cfg.get("session_active"):
+        if cfg.get("session_active") or cfg.get("paper_research_enabled"):
             try:
                 refresh_eq = deps.get("maybe_refresh_equity_curve")
                 if refresh_eq:
@@ -687,6 +729,9 @@ class PaperLoop:
                 pass
 
         if not self._running_flag:
+            return 5
+        if (cfg.get("moss_paper") or {}).get("enabled"):
+            self._last_skip = "moss_paper_owns_research"
             return 5
         if not cfg.get("session_active"):
             self._last_skip = "session_inactive"
@@ -971,13 +1016,13 @@ class PaperLoop:
                 spread_bps = None
 
             # Shadow coherence auditor (observe-only unless SHADOW_GATE)
-            shadow = None
+            shadow = thesis.get("shadow")
             shadow_fn = deps.get("shadow_audit")
-            if shadow_fn and raw_side in ("buy", "sell") and thesis_text and not llm_error:
+            if "shadow" not in thesis and shadow_fn and raw_side in ("buy", "sell") and thesis_text and not llm_error:
                 try:
                     shadow = shadow_fn(raw_side, thesis_text, analysis=analysis, cfg=cfg)
                 except Exception as exc:  # noqa: BLE001
-                    shadow = {"coherent": True, "label": "error", "reason": str(exc)[:120]}
+                    shadow = {"coherent": None, "label": "unavailable", "reason": type(exc).__name__}
             if shadow and shadow.get("model_cost_usd"):
                 try:
                     self._bump_total("model_usd", float(shadow.get("model_cost_usd") or 0))
@@ -991,11 +1036,11 @@ class PaperLoop:
                 )
 
             # Prism-style advisory panel (observe-only by default; never flips side)
-            advisory = None
+            advisory = thesis.get("advisory")
             policy_label = None
             soft_kill = False
             advisory_fn = deps.get("run_advisory_panel")
-            if advisory_fn and not llm_error:
+            if "advisory" not in thesis and advisory_fn and not llm_error:
                 try:
                     advisory = advisory_fn(
                         raw_side,
@@ -1008,9 +1053,9 @@ class PaperLoop:
                         "enabled": True,
                         "method": "error",
                         "scores": {},
-                        "policy_label": None,
+                        "policy_label": "UNKNOWN",
                         "observe_only": True,
-                        "size_mult": 1.0,
+                        "size_mult": 0.0 if deps.get("advisory_soft_size_enabled", lambda: False)() else 1.0,
                         "reason": str(exc)[:120],
                     }
             if advisory and advisory.get("model_cost_usd"):
@@ -1022,9 +1067,11 @@ class PaperLoop:
                 policy_label = advisory.get("policy_label")
                 # Soft size only — never flip buy↔sell; never open when directional hold
                 try:
-                    amult = float(advisory.get("size_mult") or 1.0)
+                    amult = float(advisory.get("size_mult", 1.0))
+                    if not math.isfinite(amult) or not 0 <= amult <= 1:
+                        amult = 0.0
                 except (TypeError, ValueError):
-                    amult = 1.0
+                    amult = 0.0
                 if amult < 1.0 and amult > 0:
                     thesis = dict(thesis)
                     thesis["advisory_size_mult"] = amult
@@ -1037,7 +1084,7 @@ class PaperLoop:
                 _macro = _mc.risk_adjustment(ticker, cfg)
                 if _macro.get("size_mult", 1.0) < 1.0:
                     thesis = dict(thesis)
-                    prev_m = float(thesis.get("advisory_size_mult") or 1.0)
+                    prev_m = float(thesis.get("advisory_size_mult", 1.0))
                     thesis["advisory_size_mult"] = round(prev_m * float(_macro["size_mult"]), 4)
                     thesis["macro_size_mult"] = _macro["size_mult"]
                 if _macro.get("force_ask_first"):
@@ -1314,7 +1361,7 @@ class PaperLoop:
                 "brain_mode": brain_mode,
                 "model_cost_usd": model_cost,
                 "shadow": shadow,
-                "coherent": None if not shadow else bool(shadow.get("coherent")),
+                "coherent": (shadow or {}).get("coherent"),
                 "coherence_label": (shadow or {}).get("label"),
                 "advisory": advisory,
                 "policy_label": policy_label,
@@ -1372,7 +1419,9 @@ class PaperLoop:
             # P0.3 — schedule horizon mark (helped/hurt/flat) when mid known
             try:
                 sched = deps.get("schedule_decision_outcome")
-                if sched:
+                if thesis.get("decision_record_id"):
+                    intent_event["decision_record_id"] = thesis["decision_record_id"]
+                elif sched:
                     sched(intent_event)
             except Exception:
                 pass

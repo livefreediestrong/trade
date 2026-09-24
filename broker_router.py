@@ -2,14 +2,22 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
+
+
+def submission_window_error(order):
+    """Adapters must check this after their last blocking preflight call."""
+    try:
+        now = datetime.now(timezone.utc)
+        deadline = datetime.fromisoformat(str(order.get("valid_until") or "").replace("Z", "+00:00"))
+        if deadline.tzinfo is None or now >= deadline:
+            return "Order review, signal or quote expired; request a fresh review"
+    except (ValueError, TypeError):
+        return "Verified order expiry required before broker submission"
+    return None
 
 
 def _module():
-    # Keep the existing Alpaca-focused unit tests isolated from a developer's
-    # local live-broker .env; production never sets PYTEST_CURRENT_TEST.
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        import broker_alpaca
-        return broker_alpaca
     if (os.environ.get("BROKER_PROVIDER", "alpaca") or "alpaca").strip().lower() == "ibkr":
         import broker_ibkr
         return broker_ibkr

@@ -59,9 +59,11 @@ def lesson_text(ev: dict[str, Any]) -> str:
         conf = "?"
     call = {"buy": "Buy", "sell": "Sell"}.get(side, "Hold")
     outcome = str(ev.get("outcome") or "?")
+    net = ev.get("outcome_executable_move_bps")
+    cost_note = f" Modeled after-cost move: {net:+.2f} bps ({ev.get('net_outcome')}); not a fill." if isinstance(net, (int, float)) else ""
     return (
-        f"{t}: {call} call ({verdict}, {lateness} timing, {conf} sure) — price went {move} "
-        f"over the look-ahead window, so the call {outcome}."
+        f"{t}: {call} call ({verdict}, {lateness} timing, {conf} model confidence) — price went {move} "
+        f"over the look-ahead window; direction label: {outcome}." + cost_note
     )
 
 
@@ -82,6 +84,11 @@ def record_outcome(path: Path, ev: dict[str, Any]) -> dict[str, Any] | None:
         "move_bps": ev.get("outcome_move_bps"),
         "text": lesson_text(ev),
     }
+    for key in ("requested_model", "llm_model", "prompt_version", "horizon_min", "scoring_version",
+                "mock", "routed", "net_outcome", "shadow_claude_net_outcome", "outcome_executable_move_bps",
+                "shadow_claude_executable_move_bps", "outcome_cost_bps", "outcome_status", "input_hash"):
+        row[key] = ev.get(key)
+    row["shadow_claude_model"] = (ev.get("shadow_claude") or {}).get("model")
     with _lock:
         rows = _read(path)
         if row["id"] and any(r.get("id") == row["id"] for r in rows):
@@ -102,8 +109,12 @@ def _tally(rows: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
     return out
 
 
-def track_record(path: Path, *, ticker: str, verdict: Any, lateness: Any) -> dict[str, Any]:
+def track_record(path: Path, *, ticker: str, verdict: Any, lateness: Any, scope: dict | None = None) -> dict[str, Any]:
     rows = _read(path)
+    if scope is not None:
+        rows = [dict(r, outcome=r.get("net_outcome") if r.get("side") in ("buy", "sell") else r.get("outcome"))
+                for r in rows if all(r.get(k) == v for k, v in scope.items())
+                and r.get("outcome_status") == "scored" and not r.get("mock") and not r.get("routed")]
     key = setup_key(verdict, lateness)
     same_setup = [r for r in rows if r.get("setup") == key][:200]
     same_ticker = [r for r in rows if r.get("ticker") == str(ticker or "").upper()][:8]
@@ -115,7 +126,7 @@ def track_record(path: Path, *, ticker: str, verdict: Any, lateness: Any) -> dic
         moves = []
         for row in samples:
             try:
-                moves.append(float(row.get("move_bps")))
+                moves.append(float(row.get("outcome_executable_move_bps") if scope else row.get("move_bps")))
             except (TypeError, ValueError):
                 continue
         helped = sum(1 for r in samples if r.get("outcome") == "helped")
@@ -144,6 +155,8 @@ def track_record(path: Path, *, ticker: str, verdict: Any, lateness: Any) -> dic
         decided = bucket["helped"] + bucket["hurt"]
         bucket["observed_helped_rate"] = round(bucket["helped"] / decided, 3) if decided else None
     return {
+        "scope": scope,
+        "metric": "modeled_after_cost" if scope else "legacy_direction",
         "setup": key,
         "setup_results": _tally(same_setup),
         "setup_count": len(same_setup),

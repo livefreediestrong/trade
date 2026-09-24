@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Trade Ticket — Draft</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --panel: #121a2b;
+    --panel-2: #182235;
+    --line: #2a3650;
+    --text: #e8eefc;
+    --muted: #93a0bd;
+    --buy: #16a34a;
+    --buy-soft: rgba(22,163,74,.16);
+    --sell: #dc2626;
+    --sell-soft: rgba(220,38,38,.16);
+    --warn: #fbbf24;
+    --focus: #60a5fa;
+    --ok: #34d399;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font: 15px/1.4 "Segoe UI", system-ui, sans-serif;
+    color: var(--text);
+    background:
+      radial-gradient(900px 500px at 10% -10%, #1a2a4a 0%, transparent 60%),
+      radial-gradient(700px 400px at 100% 0%, #14261a 0%, transparent 55%),
+      var(--bg);
+  }
+  .shell { max-width: 420px; margin: 24px auto; padding: 0 14px 28px; }
+  .badge-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .badge {
+    font-size: 11px; font-weight: 700; letter-spacing: .04em;
+    text-transform: uppercase; padding: 5px 9px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted); background: var(--panel);
+  }
+  .badge.live { color: #fecaca; border-color: #7f1d1d; background: #1f1215; }
+  .badge.ok { color: #a7f3d0; border-color: #065f46; background: #0f1f1a; }
+  .card {
+    background: linear-gradient(180deg, var(--panel) 0%, #0e1624 100%);
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    padding: 18px;
+    box-shadow: 0 20px 50px rgba(0,0,0,.35);
+  }
+  .field {
+    display: block; font-size: 12px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .05em; margin: 0 0 8px;
+  }
+  .symbol-row {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  }
+  .symbol-row input {
+    width: 130px; font-size: 28px; font-weight: 800; letter-spacing: .02em;
+    text-transform: uppercase; color: var(--text);
+    background: transparent; border: 0; outline: none; padding: 0;
+  }
+  .price-block { text-align: right; }
+  .price-block .price { font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .price-block .chg { font-size: 13px; color: var(--ok); margin-top: 2px; }
+  .caps {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+    margin: 16px 0 18px;
+  }
+  .cap {
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 12px; padding: 10px 8px; text-align: center;
+  }
+  .cap .k { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .cap .v { font-size: 14px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .side {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px;
+  }
+  .side button {
+    appearance: none; border: 2px solid transparent; border-radius: 16px;
+    padding: 18px 12px; font-size: 22px; font-weight: 800; letter-spacing: .06em;
+    cursor: pointer; transition: transform .08s ease, box-shadow .12s ease, background .12s;
+  }
+  .side button:active { transform: scale(.98); }
+  .side .buy { background: var(--buy-soft); color: #86efac; border-color: #166534; }
+  .side .sell { background: var(--sell-soft); color: #fca5a5; border-color: #7f1d1d; }
+  .side .buy.active {
+    background: var(--buy); color: white; border-color: #15803d;
+    box-shadow: 0 8px 24px rgba(22,163,74,.35);
+  }
+  .side .sell.active {
+    background: var(--sell); color: white; border-color: #b91c1c;
+    box-shadow: 0 8px 24px rgba(220,38,38,.35);
+  }
+  .unit {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+    background: var(--panel-2); padding: 4px; border-radius: 12px;
+    border: 1px solid var(--line); margin-bottom: 10px;
+  }
+  .unit button {
+    border: 0; background: transparent; color: var(--muted);
+    padding: 10px; border-radius: 9px; font-weight: 700; cursor: pointer;
+  }
+  .unit button.active { background: #243149; color: var(--text); }
+  .amount {
+    display: flex; align-items: center; gap: 8px;
+    background: #0a101b; border: 1px solid var(--line);
+    border-radius: 14px; padding: 12px 14px; margin-bottom: 8px;
+  }
+  .amount .prefix { color: var(--muted); font-weight: 700; font-size: 20px; }
+  .amount input {
+    flex: 1; border: 0; outline: none; background: transparent;
+    color: var(--text); font-size: 28px; font-weight: 700;
+    font-variant-numeric: tabular-nums; width: 100%;
+  }
+  .presets { display: flex; gap: 8px; margin-bottom: 16px; }
+  .presets button {
+    flex: 1; border: 1px solid var(--line); background: var(--panel-2);
+    color: var(--text); border-radius: 10px; padding: 10px 0;
+    font-weight: 700; cursor: pointer;
+  }
+  .presets button:hover { border-color: var(--focus); }
+  .type-row {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px;
+  }
+  .type-row button {
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--muted);
+    border-radius: 12px; padding: 12px; font-weight: 700; cursor: pointer; text-align: left;
+  }
+  .type-row button.active { color: var(--text); border-color: var(--focus); background: #1a2740; }
+  .type-row small { display: block; font-weight: 500; color: var(--muted); margin-top: 2px; font-size: 11px; }
+  .limit-box { display: none; margin-bottom: 14px; }
+  .limit-box.show { display: block; }
+  .estimate {
+    background: #0a101b; border: 1px dashed var(--line); border-radius: 14px;
+    padding: 12px 14px; margin-bottom: 14px;
+  }
+  .estimate .row { display: flex; justify-content: space-between; gap: 12px; margin: 4px 0; }
+  .estimate .row span:last-child { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .estimate .warn { color: var(--warn); font-size: 12px; margin-top: 8px; }
+  .confirm {
+    width: 100%; border: 0; border-radius: 16px; padding: 18px 16px;
+    font-size: 18px; font-weight: 800; cursor: pointer; color: white;
+  }
+  .confirm.buy { background: linear-gradient(180deg, #22c55e, #15803d); }
+  .confirm.sell { background: linear-gradient(180deg, #ef4444, #b91c1c); }
+  .confirm:disabled { opacity: .45; cursor: not-allowed; }
+  .fine { margin-top: 10px; text-align: center; font-size: 11px; color: var(--muted); }
+  .hint { margin-top: 14px; color: var(--muted); font-size: 12px; text-align: center; }
+  .sheet {
+    display: none; position: fixed; inset: 0; background: rgba(4,8,16,.72);
+    align-items: flex-end; justify-content: center; padding: 16px; z-index: 20;
+  }
+  .sheet.open { display: flex; }
+  .sheet .panel {
+    width: min(420px, 100%); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 20px 20px 16px 16px; padding: 18px;
+  }
+  .sheet h2 { margin: 0 0 8px; font-size: 20px; }
+  .sheet p { margin: 0 0 14px; color: var(--muted); font-size: 14px; }
+  .sheet .actions { display: grid; grid-template-columns: 1fr 1.4fr; gap: 8px; }
+  .sheet .actions button {
+    border-radius: 12px; padding: 14px; font-weight: 800; border: 1px solid var(--line);
+    cursor: pointer;
+  }
+  .sheet .cancel { background: transparent; color: var(--text); }
+  .sheet .go-buy { background: var(--buy); color: white; border-color: #15803d; }
+  .sheet .go-sell { background: var(--sell); color: white; border-color: #b91c1c; }
+</style>
+</head>
+<body>
+  <div class="shell">
+    <div class="badge-row">
+      <span class="badge live">Live IBKR</span>
+      <span class="badge ok">Risk ready</span>
+      <span class="badge">Draft UI · not wired</span>
+    </div>
+
+    <div class="card" id="ticket">
+      <div class="symbol-row">
+        <div>
+          <label class="field" for="symbol">Symbol</label>
+          <input id="symbol" value="YMAX" maxlength="8" aria-label="Symbol" />
+        </div>
+        <div class="price-block">
+          <div class="price" id="last">$7.82</div>
+          <div class="chg" id="chg">+0.04 (0.5%)</div>
+        </div>
+      </div>
+
+      <div class="caps" title="Hard limits from live policy">
+        <div class="cap"><div class="k">Max order</div><div class="v">$10</div></div>
+        <div class="cap"><div class="k">Daily loss</div><div class="v">$2</div></div>
+        <div class="cap"><div class="k">Orders left</div><div class="v">1</div></div>
+      </div>
+
+      <label class="field">Side</label>
+      <div class="side" role="group" aria-label="Order side">
+        <button type="button" class="buy active" id="btnBuy">BUY</button>
+        <button type="button" class="sell" id="btnSell">SELL</button>
+      </div>
+
+      <label class="field">Size</label>
+      <div class="unit" role="tablist" aria-label="Size unit">
+        <button type="button" class="active" id="unitUsd">Dollars</button>
+        <button type="button" id="unitShares">Shares</button>
+      </div>
+      <div class="amount">
+        <span class="prefix" id="prefix">$</span>
+        <input id="size" inputmode="decimal" value="10" aria-label="Order size" />
+      </div>
+      <div class="presets">
+        <button type="button" data-preset="5">$5</button>
+        <button type="button" data-preset="10">$10</button>
+        <button type="button" data-preset="max">Max</button>
+      </div>
+
+      <label class="field">Order type</label>
+      <div class="type-row">
+        <button type="button" class="active" id="typeLimit">
+          Limit
+          <small>Preferred · safer fill</small>
+        </button>
+        <button type="button" id="typeMarket">
+          Market
+          <small>Faster · less control</small>
+        </button>
+      </div>
+      <div class="limit-box show" id="limitBox">
+        <label class="field" for="limit">Limit price</label>
+        <div class="amount">
+          <span class="prefix">$</span>
+          <input id="limit" inputmode="decimal" value="7.82" aria-label="Limit price" />
+        </div>
+      </div>
+
+      <div class="estimate" id="estimate">
+        <div class="row"><span>Est. shares</span><span id="estShares">1</span></div>
+        <div class="row"><span>Est. cost</span><span id="estCost">$7.82</span></div>
+        <div class="row"><span>Within caps</span><span id="estOk" style="color:var(--ok)">Yes</span></div>
+        <div class="warn" id="estWarn" hidden></div>
+      </div>
+
+      <button type="button" class="confirm buy" id="confirm">Review BUY · YMAX</button>
+      <div class="fine">One tap to review. Nothing sends until you confirm on the next step.</div>
+    </div>
+    <p class="hint">Ease-of-use draft: dollar size first, huge side buttons, caps always visible, two-step confirm for live.</p>
+  </div>
+
+  <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+    <div class="panel">
+      <h2 id="sheetTitle">Confirm live BUY</h2>
+      <p id="sheetBody">Buy about 1 share of YMAX for up to $10 at limit $7.82 on IBKR LIVE.</p>
+      <div class="actions">
+        <button type="button" class="cancel" id="sheetCancel">Back</button>
+        <button type="button" class="go-buy" id="sheetGo">Confirm BUY</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+const PRICE = 7.82;
+const MAX_ORDER = 10;
+let side = "buy";
+let unit = "usd";
+let orderType = "limit";
+const $ = (id) => document.getElementById(id);
+const sizeEl = $("size");
+const limitEl = $("limit");
+function money(n){ return "$" + n.toFixed(2); }
+function refresh(){
+  const symbol = $("symbol").value.trim().toUpperCase() || "----";
+  $("symbol").value = symbol;
+  const raw = parseFloat(sizeEl.value) || 0;
+  let shares, cost;
+  if(unit === "usd"){
+    shares = raw > 0 ? Math.floor(raw / PRICE) : 0;
+    cost = shares * PRICE;
+  } else {
+    shares = Math.floor(raw);
+    cost = shares * PRICE;
+  }
+  const over = cost - MAX_ORDER > 0.0001 || (unit==="usd" && raw > MAX_ORDER);
+  $("estShares").textContent = String(shares);
+  $("estCost").textContent = money(cost);
+  $("estOk").textContent = over || shares < 1 ? "No" : "Yes";
+  $("estOk").style.color = over || shares < 1 ? "#f87171" : "var(--ok)";
+  const warn = $("estWarn");
+  if(shares < 1){
+    warn.hidden = false;
+    warn.textContent = "Size is below 1 whole share at this price. Raise dollars or pick a cheaper symbol.";
+  } else if(over){
+    warn.hidden = false;
+    warn.textContent = "Over the $10 max-order cap. Trim size before review.";
+  } else {
+    warn.hidden = true;
+  }
+  const verb = side === "buy" ? "BUY" : "SELL";
+  $("confirm").textContent = `Review ${verb} · ${symbol}`;
+  $("confirm").className = "confirm " + side;
+  $("confirm").disabled = shares < 1 || over;
+  $("sheetTitle").textContent = `Confirm live ${verb}`;
+  $("sheetBody").textContent = `${side==="buy"?"Buy":"Sell"} ${shares} share${shares===1?"":"s"} of ${symbol} (est. ${money(cost)}) at ${orderType} ${orderType==="limit"?money(parseFloat(limitEl.value)||PRICE):"market"} on IBKR LIVE.`;
+  $("sheetGo").textContent = `Confirm ${verb}`;
+  $("sheetGo").className = side === "buy" ? "go-buy" : "go-sell";
+}
+$("btnBuy").onclick = () => { side = "buy"; $("btnBuy").classList.add("active"); $("btnSell").classList.remove("active"); refresh(); };
+$("btnSell").onclick = () => { side = "sell"; $("btnSell").classList.add("active"); $("btnBuy").classList.remove("active"); refresh(); };
+$("unitUsd").onclick = () => { unit = "usd"; $("unitUsd").classList.add("active"); $("unitShares").classList.remove("active"); $("prefix").textContent = "$"; sizeEl.value = "10"; refresh(); };
+$("unitShares").onclick = () => { unit = "shares"; $("unitShares").classList.add("active"); $("unitUsd").classList.remove("active"); $("prefix").textContent = "#"; sizeEl.value = "1"; refresh(); };
+document.querySelectorAll("[data-preset]").forEach(btn => {
+  btn.onclick = () => {
+    unit = "usd"; $("unitUsd").classList.add("active"); $("unitShares").classList.remove("active");
+    $("prefix").textContent = "$";
+    sizeEl.value = btn.dataset.preset === "max" ? String(MAX_ORDER) : btn.dataset.preset;
+    refresh();
+  };
+});
+$("typeLimit").onclick = () => { orderType = "limit"; $("typeLimit").classList.add("active"); $("typeMarket").classList.remove("active"); $("limitBox").classList.add("show"); refresh(); };
+$("typeMarket").onclick = () => { orderType = "market"; $("typeMarket").classList.add("active"); $("typeLimit").classList.remove("active"); $("limitBox").classList.remove("show"); refresh(); };
+["symbol","size","limit"].forEach(id => $(id).addEventListener("input", refresh));
+$("confirm").onclick = () => { $("sheet").classList.add("open"); };
+$("sheetCancel").onclick = () => { $("sheet").classList.remove("open"); };
+$("sheetGo").onclick = () => { $("sheet").classList.remove("open"); $("confirm").textContent = "Demo only · not sent"; setTimeout(refresh, 1200); };
+refresh();
+</script>
+</body>
+</html>

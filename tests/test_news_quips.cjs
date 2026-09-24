@@ -1,0 +1,11 @@
+const assert=require('node:assert/strict');
+const {newsQuip}=require('../static/news_quips.js');
+const now=Date.now(),row={id:'one',title:'Company releases quarterly earnings',url:'https://www.cnbc.com/story',source:'CNBC',published_ts:(now-60000)/1000,checked_at:(now-1000)/1000,fresh:true};
+const q=newsQuip(row,now);
+assert.match(q.text,/earnings|report card/);assert.equal(q.title,row.title);assert.equal(q.source,'CNBC');assert.match(q.label,/App-written/);
+assert.deepEqual(newsQuip(row,now),q,'stable story has a stable observation');
+for(const patch of [{fresh:false},{published_ts:NaN},{published_ts:(now+1)/1000},{published_ts:(now-36*3600000-1)/1000},{checked_at:(now+1)/1000},{checked_at:(now-900001)/1000},{source:'mock feed'},{source:''},{url:'javascript:alert(1)'},{url:'https://user:password@host.test/'},{title:''}])assert.equal(newsQuip({...row,...patch},now),null);
+for(const title of ['Company announces layoffs','Workers killed in plant explosion','Fraud charges announced','Hurricane strikes coast'])assert.match(newsQuip({...row,title},now).text,/care, not a punchline/);
+assert.match(newsQuip({...row,title:'Trade truce announced'},now).text,/Diplomacy|negotiations/);
+assert.match(newsQuip({...row,title:'Oil market update'},now).text,/Energy|energy/);
+console.log('News quips: provenance, deterministic voice, topic matching, serious-story tone, missing/future/stale timestamps and unsafe links passed.');

@@ -20,7 +20,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Optional
@@ -77,6 +77,13 @@ FALLBACK_UNIVERSE: list[str] = [
 ]
 
 YAHOO_SCREENERS = ("day_gainers", "day_losers", "most_actives")
+_discovery_provider = None
+
+
+def configure_discovery(provider):
+    """Supply cached directory candidates; fetchers still obtain their own quotes."""
+    global _discovery_provider
+    _discovery_provider = provider
 
 _lock = threading.RLock()
 _cache: dict[str, Any] = {
@@ -218,6 +225,30 @@ def _passes_filters(
     return True
 
 
+def _market_observation(price, market_time, source, *, now=None):
+    """Reject unknown/stale observations; label the last close outside RTH."""
+    import data_sources
+    import paper_loop
+    now = now or datetime.now(timezone.utc)
+    quote = data_sources.quote_snapshot(price, market_time, source, now=now)
+    if quote["fresh"]:
+        return dict(quote, observation_status="recent")
+    if not quote["market_time"] or quote["age_sec"] < 0 or paper_loop.is_rth(now):
+        return None
+    local = now.astimezone(paper_loop.NY_TZ)
+    day = local.date()
+    close = paper_loop.session_close_time(day)
+    if close is None or local.time().replace(tzinfo=None) < close:
+        day -= timedelta(days=1)
+    while paper_loop.session_close_time(day) is None:
+        day -= timedelta(days=1)
+    closing = datetime.combine(day, paper_loop.session_close_time(day), paper_loop.NY_TZ)
+    stamp = datetime.fromisoformat(quote["market_time"])
+    if not 0 <= (closing-stamp).total_seconds() <= 600:
+        return None
+    return dict(quote, observation_status="prior_session")
+
+
 def _row_from_quote(
     symbol: str,
     *,
@@ -226,6 +257,7 @@ def _row_from_quote(
     volume: float,
     avg_vol: float = 0.0,
     source: str = "unknown",
+    market_time=None,
 ) -> Optional[dict[str, Any]]:
     sym = (symbol or "").strip().upper()
     if not _is_tradeable_symbol(sym):
@@ -236,12 +268,17 @@ def _row_from_quote(
     avg_vol = _safe_float(avg_vol)
     if price <= 0:
         return None
+    observation = _market_observation(price, market_time, source)
+    if observation is None:
+        return None
     dollar_vol = price * volume
     if not _passes_filters(price=price, volume=volume, dollar_vol=dollar_vol, pct=pct):
         return None
     rvol = _rel_vol(volume, avg_vol)
     score = _composite_score(pct, rvol, dollar_vol)
     flags: list[str] = []
+    if observation["observation_status"] == "prior_session":
+        flags.append("prior_session_quote")
     if pct <= RadarTuning.DISTRIBUTION_PCT and rvol >= RadarTuning.DISTRIBUTION_REL_VOLUME:
         flags.append("distribution_day")
     if abs(pct) >= RadarTuning.PARABOLIC_DAY_PCT:
@@ -257,6 +294,11 @@ def _row_from_quote(
         "score": score,
         "source": source,
         "research_flags": flags,
+        "market_time": observation["market_time"],
+        "received_at": observation["received_at"],
+        "age_sec": observation["age_sec"],
+        "fresh": observation["fresh"],
+        "observation_status": observation["observation_status"],
     }
 
 
@@ -325,6 +367,7 @@ def fetch_yahoo_screener_movers(count_per: int = 25) -> list[dict[str, Any]]:
                     volume=vol,
                     avg_vol=avg,
                     source=f"yahoo_{scr}",
+                    market_time=q.get("regularMarketTime"),
                 )
                 if row:
                     out.append(row)
@@ -417,6 +460,7 @@ def fetch_alpaca_snapshot_movers(universe: list[str] | None = None) -> list[dict
                     volume=vol,
                     avg_vol=0.0,
                     source="alpaca_snapshot_iex_est" if feed == "iex" else "alpaca_snapshot",
+                    market_time=latest.get("t") if latest.get("p") else daily.get("t") if daily.get("c") else (snap.get("minuteBar") or {}).get("t"),
                 )
                 if row:
                     out.append(row)
@@ -446,6 +490,8 @@ def fetch_polygon_snapshot_movers(universe: list[str] | None = None) -> list[dic
                 volume=_safe_float(s.get("volume")),
                 avg_vol=0.0,
                 source="polygon_snapshot",
+                market_time=(_safe_float(s.get("market_time"))/(1_000_000_000 if s.get("market_time_unit") == "ns" else 1000)
+                             if s.get("market_time") and s.get("market_time_unit") in ("ns", "ms") else None),
             )
             if row:
                 out.append(row)
@@ -472,6 +518,9 @@ def fetch_batch_quote_movers(universe: list[str] | None = None) -> list[dict[str
                 # ds.finnhub_quote normalizes to current / change_pct
                 price = _safe_float(q.get("current") or q.get("price") or q.get("c"))
                 pct = _safe_float(q.get("change_pct") or q.get("percent") or q.get("dp"))
+                observation = _market_observation(price, q.get("timestamp") or q.get("t"), "finnhub")
+                if observation is None:
+                    continue
                 # Finnhub quote has no volume in basic — skip thin filter via dollar soft
                 row = _row_from_quote(
                     sym,
@@ -480,10 +529,12 @@ def fetch_batch_quote_movers(universe: list[str] | None = None) -> list[dict[str
                     volume=max(MIN_VOLUME, 1),  # unknown vol — will need dollar soft fail
                     avg_vol=0,
                     source="finnhub",
+                    market_time=q.get("timestamp") or q.get("t"),
                 )
                 # Without volume Finnhub rows rarely pass filters; keep only strong % moves
                 if row is None and price >= MIN_PRICE and abs(pct) >= 2.0:
                     row = {
+                        **observation,
                         "ticker": sym,
                         "price": round(price, 4),
                         "pct_change": round(pct, 3),
@@ -493,6 +544,7 @@ def fetch_batch_quote_movers(universe: list[str] | None = None) -> list[dict[str
                         "dollar_volume": None,
                         "score": round(min(abs(pct) / 8.0, 1.5) * 40.0, 2),
                         "source": "finnhub_pct_only",
+                        "research_flags": ["prior_session_quote"] if observation["observation_status"] == "prior_session" else [],
                     }
                 if row:
                     out.append(row)
@@ -536,6 +588,7 @@ def fetch_batch_quote_movers(universe: list[str] | None = None) -> list[dict[str
                 volume=vol if vol else MIN_VOLUME,
                 avg_vol=avg,
                 source="yahoo_batch",
+                market_time=q.get("regularMarketTime"),
             )
             if row:
                 out.append(row)
@@ -588,7 +641,8 @@ def scan_movers(
 
     if not rows:
         try:
-            rows = fetch_batch_quote_movers()
+            discovery = _discovery_provider() if _discovery_provider else None
+            rows = fetch_batch_quote_movers(universe=discovery or None)
             if rows:
                 source = "batch_quotes"
         except Exception as exc:  # noqa: BLE001

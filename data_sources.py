@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import io
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -33,7 +33,7 @@ def yahoo_symbol(symbol: str) -> str:
     if not sym:
         return sym
     import re as _re
-    if _re.match(r"^[A-Z]{1,5}[./][A-Z]$", sym):
+    if _re.match(r"^[A-Z]{1,5}[./][AB]$", sym):
         return sym.replace(".", "-").replace("/", "-")
     return sym
 
@@ -57,14 +57,12 @@ def _env_search_paths():
 
 
 def _load_env():
+    from dotenv import dotenv_values
     for env_path in _env_search_paths():
         if env_path.exists():
-            for line in env_path.read_text().splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
-                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            for key, value in dotenv_values(env_path, encoding="utf-8-sig", interpolate=False).items():
+                if value is not None:
+                    os.environ.setdefault(key, value)
             return  # first file wins
 
 
@@ -319,7 +317,7 @@ def yahoo_quote_batch(symbols: list[str], timeout: int = 10) -> dict:
 def finnhub_earnings(symbol: str) -> Optional[dict]:
     """Next earnings date from Finnhub. Returns
     {date, days_away, is_soon, hour, eps_estimate, revenue_estimate} or None."""
-    today = datetime.utcnow().date()
+    today = datetime.now(timezone.utc).date()
     data = _finnhub_get("calendar/earnings", {
         "symbol": symbol.upper(),
         "from": today.strftime("%Y-%m-%d"),
@@ -380,6 +378,68 @@ def finnhub_quote(symbol: str) -> Optional[dict]:
         "prev_close": float(q.get("pc") or 0),
         "timestamp": int(q.get("t") or 0),
     }
+
+
+def quote_snapshot(price, timestamp, source: str, *, now=None) -> dict:
+    """Keep market time separate from receipt time. Unknown age is never fresh."""
+    import math
+    from datetime import timezone
+    now = now or datetime.now(timezone.utc)
+    stamp = None
+    try:
+        if isinstance(timestamp, (int, float)) and timestamp > 0:
+            stamp = datetime.fromtimestamp(timestamp, timezone.utc)
+        elif timestamp is not None:
+            stamp = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = None
+    except (TypeError, ValueError, OverflowError, OSError):
+        pass
+    try:
+        value = float(price)
+        valid = math.isfinite(value) and value > 0
+    except (TypeError, ValueError):
+        value, valid = None, False
+    age = (now - stamp).total_seconds() if stamp else None
+    # One-minute bars can be almost two minutes old near the next bar boundary.
+    fresh = bool(valid and age is not None and -15 <= age <= 120)
+    return {"price": value if valid else None, "source": source,
+            "market_time": stamp.isoformat() if stamp else None,
+            "received_at": now.isoformat(), "age_sec": round(age, 1) if age is not None else None,
+            "fresh": fresh, "max_age_sec": 120,
+            "error": None if fresh else "invalid_price" if not valid else "missing_market_time" if age is None else "stale_or_future_quote"}
+
+
+def latest_quote(symbol: str) -> dict:
+    """Return a timestamped quote; only a recent provider observation is usable."""
+    quote = finnhub_quote(symbol)
+    last = quote_snapshot(None, None, "unavailable")
+    if quote:
+        last = quote_snapshot(quote.get("current"), quote.get("timestamp"), "Finnhub")
+        if last["fresh"]:
+            return last
+    try:
+        import yfinance as yf
+        bars = yf.Ticker(yahoo_symbol(symbol)).history(period="1d", interval="1m", timeout=8)
+        if bars is not None and not bars.empty:
+            candidate = quote_snapshot(bars["Close"].iloc[-1], bars.index[-1], "Yahoo 1m")
+            if candidate["fresh"]:
+                return candidate
+            if last.get("price") is None:
+                last = candidate
+    except Exception:
+        pass
+    try:
+        batch = yahoo_quote_batch([symbol])
+        row = batch.get(symbol) or batch.get(yahoo_symbol(symbol)) or {}
+        candidate = quote_snapshot(row.get("regularMarketPrice"), row.get("regularMarketTime"), "Yahoo quote")
+        if candidate["fresh"]:
+            return candidate
+        if last.get("price") is None and candidate.get("price"):
+            last = candidate
+    except Exception:
+        pass
+    return last
 
 
 def finnhub_news(symbol: str, days: int = 7, limit: int = 8) -> list[dict]:

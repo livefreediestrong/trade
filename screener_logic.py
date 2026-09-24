@@ -6,7 +6,7 @@ composite. Prefer yfinance, then data_sources.get_daily_with_fallback.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
@@ -79,25 +79,25 @@ def entry_quality(close, current_price=None):
     if lateness >= 75:
         label = "chasing"
         suggestion = (
-            "Right at the top. Wait for a real pullback (5%+) or take a "
-            "partial entry only — full size here invites whipsaw."
+            "Price is extended relative to this history. Check a fresh quote, "
+            "liquidity and your risk limits before evaluating an entry."
         )
     elif lateness >= 50:
         label = "late"
         suggestion = (
-            "The easy money is made. Either size down significantly or "
-            "wait for a flag/consolidation."
+            "Price has already moved substantially. This historical measure "
+            "does not establish whether the move will continue."
         )
     elif lateness >= 25:
         label = "fair"
         suggestion = (
-            "Reasonable entry — not bargain-hunting territory but not "
-            "extended either."
+            "Moderate historical extension. Entry quality still depends on "
+            "current data, costs and risk checks."
         )
     else:
         label = "early"
         suggestion = (
-            "Plenty of room. If the setup checks out, fine to enter at full size."
+            "Low historical extension; this does not establish upside or authorize position size."
         )
 
     warnings = []
@@ -155,7 +155,13 @@ def first_hour_volumes(intraday):
     return out
 
 
-def _fetch_earnings(ticker: str, yf_ticker):
+def _fetch_earnings(ticker: str, yf_ticker, info: dict | None = None):
+    # Funds and indices have no company earnings calendar. Reuse metadata already
+    # fetched by the scan; don't make another failing quoteSummary request.
+    fund_symbols = {"SPY", "QQQ", "QQQM", "DIA", "IWM", "VTI", "VOO", *SECTOR_ETF.values()}
+    quote_type = str((info or {}).get("quoteType") or "").upper()
+    if ticker.upper() in fund_symbols or quote_type in ("ETF", "MUTUALFUND", "INDEX", "CRYPTOCURRENCY", "CURRENCY"):
+        return None, None
     earnings = ds.finnhub_earnings(ticker)
     if earnings:
         return earnings, "Finnhub"
@@ -245,6 +251,7 @@ def intraday_signals(
     price: Optional[float] = None,
     bid: Optional[float] = None,
     ask: Optional[float] = None,
+    now: Optional[datetime] = None,
 ) -> dict[str, Any]:
     """Short-term signals from 5-minute bars (today + prior days).
 
@@ -256,23 +263,71 @@ def intraday_signals(
       measured in typical daily moves (ATR).
     - spread_atr: bid-ask spread as a fraction of ATR (too wide = costly to trade).
     """
-    out: dict[str, Any] = {}
+    # A current last price cannot establish that a separate history feed is current.
+    out: dict[str, Any] = {
+        "source": "Yahoo 5m", "available": False, "fresh": False,
+        "as_of": None, "age_sec": None, "max_age_sec": 600,
+        "unavailable_reason": "missing_bars",
+    }
     if bars5 is None or len(bars5) == 0:
         return out
     try:
-        df = bars5.dropna(subset=["Close", "Volume"]).copy()
+        import paper_loop as _pl
+
+        stamp = pd.Timestamp(now or datetime.now(ZoneInfo("America/New_York")))
+        if stamp.tzinfo is None:
+            out["unavailable_reason"] = "missing_clock_timezone"
+            return out
+        stamp = stamp.tz_convert("America/New_York")
+        df = bars5.dropna(subset=["High", "Low", "Close", "Volume"]).sort_index().copy()
+        if df.empty:
+            return out
+        if not isinstance(df.index, pd.DatetimeIndex) or df.index.tz is None:
+            out["unavailable_reason"] = "missing_bar_timezone"
+            return out
+        df.index = df.index.tz_convert("America/New_York")
+        df = df[~df.index.duplicated(keep="last")]
+        latest = df.index[-1]
+        age = (stamp - latest).total_seconds()
+        out.update(as_of=latest.isoformat(), age_sec=round(age, 1),
+                   as_of_session=latest.strftime("%Y-%m-%d"))
+        if latest.date() != stamp.date():
+            out["unavailable_reason"] = "stale_session"
+            return out
+        if age < -15 or age > out["max_age_sec"]:
+            out["unavailable_reason"] = "future_bars" if age < -15 else "stale_bars"
+            return out
+        if not _pl.is_rth(stamp.to_pydatetime()):
+            out["unavailable_reason"] = "market_closed"
+            return out
+        # Exclude any extended-hours observations before calculating session VWAP.
+        minutes = df.index.hour * 60 + df.index.minute
+        df = df[(minutes >= 570) & (minutes < 960)]
+        df = df[[ts <= stamp and _pl.is_rth(ts.to_pydatetime()) for ts in df.index]]
+        numeric = df[["High", "Low", "Close", "Volume"]].apply(pd.to_numeric, errors="coerce")
+        valid = np.isfinite(numeric).all(axis=1) & (numeric["Low"] > 0) & (numeric["Volume"] >= 0)
+        valid &= (numeric["High"] >= numeric["Close"]) & (numeric["Low"] <= numeric["Close"])
+        if not valid.all():
+            out["unavailable_reason"] = "erroneous_bars"
+            return out
         idx = df.index
-        try:
-            idx = idx.tz_convert("America/New_York")
-        except Exception:
-            pass
         df["day"] = [ts.strftime("%Y-%m-%d") for ts in idx]
         df["slot"] = [ts.strftime("%H:%M") for ts in idx]
-        days = sorted(df["day"].unique())
-        today = days[-1]
+        today = stamp.strftime("%Y-%m-%d")
         tdf = df[df["day"] == today]
-        if len(tdf) >= 2:
-            last = tdf.iloc[-2]  # last COMPLETED bar
+        if tdf.empty:
+            out["unavailable_reason"] = "missing_session_bars"
+            return out
+        out.update(available=True, fresh=True, unavailable_reason=None)
+        completed = tdf[tdf.index + pd.Timedelta(minutes=5) <= stamp]
+        if not completed.empty:
+            last = completed.iloc[-1]
+            out["completed_bar_at"] = completed.index[-1].isoformat()
+            if len(completed) >= 4:
+                returns = np.log(completed["Close"].astype(float)).diff().dropna().tail(20)
+                out["realized_volatility_pct"] = round(float(np.sqrt((returns ** 2).sum()) * 100), 6)
+                out["realized_volatility_bars"] = len(returns)
+                out["session_dollar_volume"] = round(float((completed["Close"] * completed["Volume"]).sum()), 2)
             prior = df[(df["day"] != today) & (df["slot"] == last["slot"])]["Volume"]
             if len(prior) >= 2 and float(prior.median()) > 0:
                 out["rel_vol_5m"] = round(float(last["Volume"]) / float(prior.median()), 2)
@@ -294,6 +349,9 @@ def intraday_signals(
         if atr_usd and bid and ask and ask > bid > 0 and (ask - bid) / ask < 0.02:
             out["spread_atr"] = round((ask - bid) / atr_usd, 3)
     except Exception as exc:  # noqa: BLE001
+        out.update(available=False, fresh=False, unavailable_reason="invalid_bars")
+        for key in ("rel_vol_5m", "vwap", "vwap_slope_pct", "vwap_dist_atr", "hod_dist_atr", "spread_atr"):
+            out.pop(key, None)
         out["error"] = str(exc)[:120]
     return out
 
@@ -305,6 +363,11 @@ def intraday_adjust(verdict: str, sig: dict[str, Any]) -> tuple[str, list[str], 
     flags: list[str] = []
     notes: list[str] = []
     v = verdict
+    if not sig.get("fresh"):
+        flags.append("intraday_stale" if sig.get("as_of") else "intraday_unavailable")
+        reason = str(sig.get("unavailable_reason") or "missing_bars").replace("_", " ")
+        notes.append(f"Current five-minute indicators unavailable ({reason}); wait for fresh session bars.")
+        return ("WATCH" if v == "PASS" else v), flags, notes
     spread = sig.get("spread_atr")
     if spread is not None and spread > 0.08:
         flags.append("wide_spread")
@@ -328,6 +391,37 @@ def intraday_adjust(verdict: str, sig: dict[str, Any]) -> tuple[str, list[str], 
         flags.append("volume_surge_5m")
         notes.append(f"Trading in the last 5 minutes was {rv5:.1f}× normal for this time of day.")
     return v, flags, notes
+
+
+def _validated_daily(daily, now):
+    """Daily indices label exchange sessions, independently of a quote's age."""
+    import paper_loop
+    if daily is None or not isinstance(daily.index, pd.DatetimeIndex) or daily.index.hasnans:
+        raise ValueError("Daily history has no verifiable session dates")
+    frame = daily.copy()
+    dates = frame.index.tz_convert(paper_loop.NY_TZ).date if frame.index.tz is not None else frame.index.date
+    if any(day > now.date() for day in dates):
+        raise ValueError("Daily history contains a future session")
+    frame.index = pd.DatetimeIndex(dates)
+    frame = frame.sort_index(kind="stable").loc[lambda rows: ~rows.index.duplicated(keep="last")]
+    frame = frame.loc[[paper_loop.session_close_time(day) is not None for day in frame.index.date]]
+    frame = frame.dropna(subset=["Close"])
+    if len(frame) < 2 or not np.isfinite(frame["Close"]).all() or (frame["Close"] <= 0).any():
+        raise ValueError("Not enough valid daily price history")
+    expected = now.date()
+    close = paper_loop.session_close_time(expected)
+    if close is None or now.time().replace(tzinfo=None) < close:
+        expected -= timedelta(days=1)
+    while paper_loop.session_close_time(expected) is None:
+        expected -= timedelta(days=1)
+    completed = frame.loc[frame.index.date <= expected]
+    if completed.empty or completed.index[-1].date() != expected:
+        raise ValueError("Daily history is behind the latest completed session")
+    if frame.index[-1].date() > expected and now.time().replace(tzinfo=None) < paper_loop.RTH_OPEN:
+        raise ValueError("Daily history contains a session that has not opened")
+    return frame, {"as_of_session": frame.index[-1].date().isoformat(),
+                   "completed_session": expected.isoformat(),
+                   "forming": frame.index[-1].date() > expected, "fresh": True}
 
 
 def analyze_ticker(ticker: str) -> dict[str, Any]:
@@ -360,18 +454,35 @@ def analyze_ticker(ticker: str) -> dict[str, Any]:
         daily = df
         sources_used.append(f"{src} (fallback)")
 
-    # yfinance sometimes returns a NaN close on the newest row; NaN would slip past
-    # every comparison (gap gate included) and still yield WATCH.
     try:
-        daily = daily.dropna(subset=["Close"])
-    except Exception:
-        pass
-    if daily is None or len(daily) < 2:
-        return {"ticker": ticker, "error": f"Not enough clean price history for '{ticker}'."}
+        daily, daily_status = _validated_daily(daily, datetime.now(ZoneInfo("America/New_York")))
+    except (ValueError, TypeError, KeyError) as exc:
+        return {"ticker": ticker, "error": str(exc), "daily_history": {"fresh": False},
+                "research_flags": ["daily_history_unavailable"]}
     last_close = float(daily["Close"].iloc[-1])
     if not np.isfinite(last_close) or last_close <= 0:
         return {"ticker": ticker, "error": f"No valid last price for '{ticker}'."}
-    prev_close = float(daily["Close"].iloc[-2]) if len(daily) > 1 else last_close
+    # All price-dependent checks must use the same provider observation.
+    # Updating the price after selecting a verdict can turn an SMA failure into PASS.
+    try:
+        price_quote = ds.latest_quote(ticker)
+    except Exception:
+        price_quote = ds.quote_snapshot(None, None, "unavailable")
+    if price_quote.get("price"):
+        sources_used.append(price_quote["source"])
+        last_close = price_quote["price"]
+    price_day = daily.index[-1].date()
+    if price_quote.get("price") and price_quote.get("market_time"):
+        try:
+            stamp = pd.Timestamp(price_quote["market_time"])
+            if stamp.tzinfo is not None:
+                price_day = stamp.tz_convert("America/New_York").date()
+        except (ValueError, TypeError):
+            pass
+    previous = daily.loc[daily.index.date < price_day, "Close"]
+    if previous.empty:
+        return {"ticker": ticker, "error": "Previous completed close unavailable"}
+    prev_close = float(previous.iloc[-1])
     change_dollar = last_close - prev_close
     change_pct = (change_dollar / prev_close) * 100 if prev_close else 0.0
 
@@ -446,8 +557,13 @@ def analyze_ticker(ticker: str) -> dict[str, Any]:
 
     sector_etf = SECTOR_ETF.get(sector)
     sector_data = None
+    sector_error = None
     if sector_etf:
         s = _sector_daily(sector_etf)
+        try:
+            s, sector_status = _validated_daily(s, datetime.now(ZoneInfo("America/New_York")))
+        except (ValueError, TypeError, KeyError) as exc:
+            s, sector_error = None, str(exc)
         if s is not None and not s.empty and len(s) >= 2:
             today_pct = (s["Close"].iloc[-1] / s["Close"].iloc[-2] - 1) * 100
             five_d = (
@@ -465,6 +581,7 @@ def analyze_ticker(ticker: str) -> dict[str, Any]:
             if len(s) >= 6:
                 green_days_5 = int((s["Close"].iloc[-6:].pct_change().dropna() > 0).sum())
             sector_data = {
+                **sector_status,
                 "etf": sector_etf,
                 "today_pct": round(float(today_pct), 2),
                 "five_d_pct": round(float(five_d), 2),
@@ -490,6 +607,10 @@ def analyze_ticker(ticker: str) -> dict[str, Any]:
     gap_pct = float(change_pct) if change_pct is not None else 0.0
     halt_or_gap = False
     research_flags: list[str] = []
+    if sector_error:
+        research_flags.append("sector_history_unavailable")
+    if not price_quote.get("fresh"):
+        research_flags.append("stale_or_unverified_quote")
     if change_pct <= RadarTuning.DISTRIBUTION_PCT and rel_vol >= RadarTuning.DISTRIBUTION_REL_VOLUME:
         research_flags.append("distribution_day")
     if (
@@ -589,27 +710,8 @@ def analyze_ticker(ticker: str) -> dict[str, Any]:
             "Do not chase; require a fresh setup."
         )
 
-    # Optional live quote polish
-    fh_quote = ds.finnhub_quote(ticker)
-    if fh_quote:
-        if "Finnhub" not in sources_used:
-            sources_used.append("Finnhub")
-        last_close = fh_quote["current"]
-        change_dollar = fh_quote["change_dollar"]
-        change_pct = fh_quote["change_pct"]
-        # Recompute halt/gap AFTER Finnhub (gap may only appear with live quote)
-        gap_pct = float(change_pct) if change_pct is not None else gap_pct
-        if abs(gap_pct) > 8.0 and "gap_gt_8pct" not in research_flags:
-            halt_or_gap = True
-            research_flags.append("gap_gt_8pct")
-            verdict = "AVOID"
-            verdict_text = (
-                f"Hard AVOID: gap {gap_pct:+.1f}% vs prior close exceeds 8% (Finnhub). "
-                "Gap/halts need research — skip autopilot."
-            )
-
     daily_close = daily["Close"].dropna() if "Close" in daily.columns else None
-    live_price = fh_quote["current"] if fh_quote else None
+    live_price = price_quote.get("price") if price_quote.get("fresh") else None
     entry = (
         entry_quality(daily_close, current_price=live_price)
         if daily_close is not None
@@ -617,32 +719,32 @@ def analyze_ticker(ticker: str) -> dict[str, Any]:
     )
 
     # Short-term (5-minute) signals: time-of-day relative volume, VWAP, ATR distances.
-    intraday_sig: dict[str, Any] = {}
     try:
         bars5 = t.history(period="5d", interval="5m")
-        atr_usd = atr(daily)
-        intraday_sig = intraday_signals(
-            bars5,
-            atr_usd=atr_usd,
-            price=live_price or last_close,
-            bid=info.get("bid") if _rth_now() else None,
-            ask=info.get("ask") if _rth_now() else None,
-        )
-        if atr_usd:
-            intraday_sig["atr_usd"] = round(atr_usd, 4)
-        if not halt_or_gap:
-            new_v, iflags, inotes = intraday_adjust(verdict, intraday_sig)
-            if new_v != verdict:
-                verdict_text = f"{verdict_text} Downgraded to WATCH: {' '.join(inotes)}"
-                verdict = new_v
-            for f in iflags:
-                if f not in research_flags:
-                    research_flags.append(f)
-            intraday_sig["notes"] = inotes
     except Exception:
-        pass
+        bars5 = None
+    atr_usd = atr(daily)
+    intraday_sig = intraday_signals(
+        bars5,
+        atr_usd=atr_usd,
+        price=live_price or last_close,
+        bid=info.get("bid") if _rth_now() else None,
+        ask=info.get("ask") if _rth_now() else None,
+    )
+    if atr_usd:
+        intraday_sig["atr_usd"] = round(atr_usd, 4)
+    new_v, iflags, inotes = intraday_adjust(verdict, intraday_sig)
+    if new_v != verdict:
+        verdict_text = f"{verdict_text} Downgraded to WATCH: {' '.join(inotes)}"
+        verdict = new_v
+    elif not intraday_sig.get("fresh"):
+        verdict_text = f"{verdict_text} {' '.join(inotes)}"
+    for f in iflags:
+        if f not in research_flags:
+            research_flags.append(f)
+    intraday_sig["notes"] = inotes
 
-    earnings, earn_src = _fetch_earnings(ticker, t)
+    earnings, earn_src = _fetch_earnings(ticker, t, info)
     if earn_src and earn_src not in sources_used:
         sources_used.append(earn_src)
 
@@ -651,6 +753,10 @@ def analyze_ticker(ticker: str) -> dict[str, Any]:
     return {
         "ticker": ticker,
         "price": round(last_close, 2),
+        "quote": price_quote,
+        "as_of": price_quote.get("market_time"),
+        "daily_history": daily_status,
+        "sector_history_error": sector_error,
         "change_dollar": round(change_dollar, 2),
         "change_pct": round(change_pct, 2),
         "sources": sources_used,

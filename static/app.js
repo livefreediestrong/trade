@@ -1,9 +1,13 @@
-/* Tomahawk - vanilla JS */
+/* nadzeeɫ - vanilla JS */
 (() => {
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
   let state = null;
+  let activeWorkspace = "live";
+  let approvalContext = null;
+  let approveReturnFocus = null, approveReturnSignalId = null;
+  const liveSettingsFields = ["#mode-select", "#ks-loss", "#ks-trades", "#ks-pos"];
   let activeTab = "pending";
   let toastTimer = null;
   let pendingApproveId = null;
@@ -51,14 +55,221 @@
   const BUZZ_SPIKE_REL = 0.5;
   const BUZZ_SPIKE_COOLDOWN_MS = 180000; // 3 min
 
+  function signalWorkspace(signal) {
+    if (signal?.workspace === "paper" || signal?.workspace === "live") return signal.workspace;
+    if (signal?.source === "loop" || ["manual", "auto_paper"].includes(signal?.mode_at_create)) return "paper";
+    return "live";
+  }
+
+  function workspaceView(data, workspace = activeWorkspace) {
+    const source = data || {};
+    const cfg = source.config || {};
+    const signals = Object.fromEntries(Object.entries(source.signals || {}).map(([key, rows]) =>
+      [key, (Array.isArray(rows) ? rows : []).filter(s => signalWorkspace(s) === workspace)]));
+    const config = workspace === "paper" ? {...cfg,
+      mode: cfg.paper_auto_approve ? "auto_paper" : "manual",
+      session_active: !!cfg.paper_research_enabled,
+      daily_profit_target_usd: null,
+      risk_preset: cfg.paper_risk_preset || "mid"} : {...cfg};
+    return {...source, config, signals, _workspace: workspace,
+      daily: workspace === "paper" ? (source.paper_daily || {}) : source.daily,
+      daily_recap: workspace === "paper" ? (source.paper_daily_recap || {}) : source.daily_recap,
+      opportunities: (source.opportunities || []).filter(s => signalWorkspace(s) === workspace),
+      pending_count: (signals.pending || []).filter(s => s.actionable === true).length};
+  }
+
+  function selectWorkspace(workspace) {
+    if (!["live", "paper"].includes(workspace)) return;
+    if (pendingApproveId) { pendingApproveId = null; approvalContext = null; closeApproveModal(); }
+    activeWorkspace = workspace;
+    lastOppSig = "";
+    lastPosSig = "";
+    oppPrevTickers = new Set();
+    oppRankMap = {};
+    lastPendingCount = 0;
+    const feed = $("#opp-feed");
+    if (feed) feed.innerHTML = "";
+    if (oppEmptyTimer) { clearTimeout(oppEmptyTimer); oppEmptyTimer = null; }
+    if (state) render(state);
+    else document.body.dataset.workspace = workspace;
+  }
+
+  function renderWorkspaceChrome(data) {
+    const cfg = data?.config || {};
+    const paper = activeWorkspace === "paper";
+    document.body.dataset.workspace = activeWorkspace;
+    $$('[data-workspace-tab]').forEach(button => {
+      const selected = button.dataset.workspaceTab === activeWorkspace;
+      button.classList.toggle("active", selected);
+      button.setAttribute("aria-selected", String(selected));
+    });
+    const set = (selector, value) => { const el = $(selector); if (el) el.textContent = value; };
+    set("#workspace-description", paper
+      ? "Paper research · simulated funds only. Its approvals, positions and results stay separate from your live account."
+      : "Live trading · your actual broker account. Paper research uses a separate simulated account below.");
+    set("#paper-research-status", cfg.paper_research_enabled ? "Paper research running" : "Paper research stopped");
+    const toggle = $("#btn-paper-research-toggle");
+    if (toggle) toggle.textContent = cfg.paper_research_enabled ? "Stop paper research" : "Start paper research";
+    const auto = $("#paper-auto-approve");
+    if (auto && document.activeElement !== auto) auto.checked = !!cfg.paper_auto_approve;
+    const risk = $("#paper-risk-preset");
+    if (risk && document.activeElement !== risk) risk.value = cfg.paper_risk_preset || "mid";
+    set("#paper-account-totals", `Simulated equity ${fmtMoney(data?.ledger?.equity)} · simulated cash ${fmtMoney(data?.ledger?.cash)}`);
+    set("#workspace-call-label", paper ? "Paper research · latest call" : "Live research · latest call");
+    const legacy = $("#live-mode-notice");
+    if (legacy) { legacy.hidden = brokerMode(cfg); legacy.textContent = "Live execution is not enabled. Select a verified broker mode in live settings; changing workspace never enables trading."; }
+    if (paper) {
+      set("#chrome-paper", "SIMULATED FUNDS");
+      set("#chrome-note", "Paper research only · no broker orders");
+      set("#execution-summary-mode", cfg.paper_auto_approve ? "Paper auto approval" : "Paper manual approval");
+      set("#stat-mode", cfg.paper_auto_approve ? "Paper auto approval" : "Paper manual approval");
+      set("#execution-summary-broker", "Local simulation · no actual funds");
+      set("#execution-summary-session", cfg.paper_research_enabled ? "Paper research running" : "Paper research stopped");
+      document.body.classList.remove("money-live");
+      $("#chrome-paper")?.classList.remove("live-endpoint");
+    }
+    const scoped = workspaceView(data);
+    const count = scoped.pending_count;
+    const pendingEl = $("#execution-summary-pending");
+    if (pendingEl) {
+      const label = count ? `${count} idea${count === 1 ? "" : "s"} need review` : "No actionable ideas";
+      pendingEl.classList?.add("vp1-pending-chip");
+      pendingEl.classList?.toggle("has-pending", !!count);
+      pendingEl.innerHTML = `<span class="vp1-status-dot ${count ? "is-warn" : "is-off"}" aria-hidden="true"></span><span>${label}</span>`;
+    }
+    set("#signal-queue-hint", paper ? "Paper ideas only. Review opens a preview; final confirmation simulates a trade. Auto approval is controlled above." : "Live ideas only. Review trade opens the broker order review. Research-only ideas cannot be submitted.");
+    renderBrokerOrders(data);
+    renderRiskCockpit(data);
+    renderLiveIntel(data);
+    renderUnifiedPaper(data);
+    renderLiveTestReadiness(data);
+  }
+
+  function renderUnifiedPaper(data) {
+    const paper = workspaceView(data, "paper");
+    const status = $("#paper-signal-status")?.value || "pending";
+    const list = $("#paper-signal-list");
+    const rows = paper.signals?.[status] || [];
+    if (list) {
+      const html = rows.length ? rows.map(signalCard).join("") : '<div class="empty">No paper ideas in this status.</div>';
+      if (list.innerHTML !== html) list.innerHTML = html;
+    }
+    const call = data.paper_desk_call;
+    const latest = $("#paper-latest-call");
+    if (latest) latest.textContent = call
+      ? `Research ${String(call.side || call.action || "hold").toUpperCase()} ${call.ticker || ""} · ${call.status || "history"}${call.execution_block || call.reject_reason ? ` · ${call.execution_block || call.reject_reason}` : ""} · ${call.why_plain || call.llm_thesis || call.reason || "Paper research only"} · ${quoteLabel(call.quote)}`
+      : "No current paper call. Start paper research or find a paper idea above.";
+  }
+
+  function liveTestChecks(data, receivedAt, now = Date.now()) {
+    const book = data?.broker_book || {};
+    const broker = data?.broker || {};
+    const reasons = [];
+    if (!receivedAt || now - receivedAt > 25000) reasons.push("Desk data is stale or unavailable; refresh before reviewing an order.");
+    if (!book.ok || broker.connected === false) reasons.push("Broker account data is unavailable.");
+    if (book.paper_mode !== false || !book.account_id) reasons.push("An actual live account has not been verified.");
+    if (book.risk_ready !== true || typeof book.day_pnl_usd !== "number" || !Number.isFinite(book.day_pnl_usd)) reasons.push(book.risk_error || "Daily broker P&L is unavailable; new live risk remains blocked.");
+    if (data?.config?.mode !== "live_manual") reasons.push("Live execution is not set to manual order approval.");
+    if (data?.loop?.rth_ok !== true || data?.loop?.outside_rth === true) reasons.push(data?.loop?.rth_ok === false || data?.loop?.outside_rth === true ? "Regular market hours are closed." : "Market session status is unavailable.");
+    if ((data?.ledger?.pending_broker_orders || []).length) reasons.push("Broker orders still need reconciliation.");
+    reasons.push("DAY limits bound entry price, but cannot enforce a $10 all-in cap without a verified upper bound on broker fees.");
+    reasons.push("IBKR what-if fees are estimates, not guaranteed costs. Paper fee settings are not live broker fees.");
+    return reasons;
+  }
+
+  function renderLiveTestReadiness(data) {
+    const el = $("#live-test-status");
+    if (!el) return;
+    const reasons = liveTestChecks(data, lastDataAt);
+    const account = data?.broker_book?.account_id;
+    el.innerHTML = `<p><strong>Blocked · no test order prepared</strong>${account ? ` · account ending ${escapeHtml(String(account).slice(-4))}` : ""}</p><ul>${reasons.map(reason => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>`;
+  }
+
+  function renderBrokerOrders(data) {
+    const el = $("#broker-orders-list");
+    if (!el) return;
+    const ledger = data?.ledger || {};
+    const pending = ledger.pending_broker_orders || [];
+    const fills = (ledger.broker_fills || []).slice().sort((a,b) => Date.parse(b.ts || b.filled_at || 0) - Date.parse(a.ts || a.filled_at || 0)).slice(0, 20);
+    const pendingIds = new Set(pending.map(order => String(order.order_id)));
+    const rows = pending.map(order => {
+      const fill = (ledger.broker_fills || []).find(f => String(f.order_id) === String(order.order_id));
+      const requested = order.broker?.order?.shares ?? order.signal?.suggested_shares;
+      const confirmed = fill?.confirmed === true;
+      return {...order.signal, ...order, requested, filled: confirmed ? fill.shares : "Unconfirmed",
+        remaining: confirmed && Number.isFinite(Number(requested)) ? Math.max(0, Number(requested)-Number(fill.shares)) : "Unconfirmed",
+        price: confirmed ? fill.price : null, label: confirmed ? (Number(fill.shares) >= Number(requested) ? "Filled · awaiting terminal confirmation" : "Partial fill · remainder tracked") : "Working / awaiting broker evidence", cancelId: order.signal?.id};
+    }).concat(fills.filter(fill => !pendingIds.has(String(fill.order_id))).map(fill => ({...fill,
+      requested: "—", filled: fill.confirmed === true ? fill.shares : "Unconfirmed",
+      price: fill.confirmed === true ? fill.price : null,
+      remaining: fill.broker_reconciled === true ? 0 : "Unconfirmed",
+      label: fill.broker_fill_state === "voided" ? "Execution reversed" : fill.confirmed !== true ? "Fill unverified" :
+        fill.broker_reconciled !== true ? "Fill · awaiting reconciliation" : fill.broker_fill_state === "partially_filled" ? "Partial fill · remainder closed" : "Filled"})));
+    if (!rows.length) {
+      el.innerHTML = '<div class="empty">No broker orders recorded by this desk.</div>';
+      return;
+    }
+    el.innerHTML = `<div class="bo-list" role="list">${rows.map(row => {
+      const sideRaw = String(row.side || "").toLowerCase();
+      const sideBuy = sideRaw === "buy" || sideRaw === "long" || sideRaw === "cover";
+      const sideSell = sideRaw === "sell" || sideRaw === "short";
+      const sideCls = sideBuy ? "buy" : sideSell ? "sell" : "";
+      const sideLabel = sideBuy ? "BUY" : sideSell ? "SELL" : (row.side ? String(row.side).toUpperCase() : "—");
+      const reqN = Number(row.requested);
+      const fillN = Number(row.filled);
+      const hasProgress = Number.isFinite(reqN) && reqN > 0 && Number.isFinite(fillN);
+      const pct = hasProgress ? Math.max(0, Math.min(100, Math.round((fillN / reqN) * 100))) : 0;
+      const fillCls = !hasProgress ? "" : pct >= 100 ? "is-full" : pct > 0 ? "is-partial" : "";
+      const label = String(row.label || "");
+      const pillCls = /partial|unverified|awaiting|working/i.test(label) ? ( /filled/i.test(label) && !/partial/i.test(label) ? "is-filled" : /unverified|reversed/i.test(label) ? "is-warn" : "is-working") : /filled/i.test(label) ? "is-filled" : "is-working";
+      const cancel = row.cancelId && !String(row.order_id).startsWith("intent:")
+        ? ` <button type="button" class="btn ghost" data-cancel-review="${escapeHtml(row.cancelId)}">Review cancellation</button>`
+        : "";
+      const fillTxt = `${escapeHtml(String(row.filled))} / ${escapeHtml(String(row.requested ?? "—"))}`;
+      const remTxt = `left ${escapeHtml(String(row.remaining))}`;
+      const priceTxt = row.price == null ? "Unconfirmed" : fmtMoney(row.price);
+      return `<div class="bo-row" role="listitem">
+        <span class="bo-time">${escapeHtml(shortTs(row.ts || row.filled_at || row.created_at))}</span>
+        <span class="bo-ticker">${escapeHtml(row.ticker || row.symbol || "—")}</span>
+        <span class="bo-side-badge ${sideCls}" title="${escapeHtml(sideLabel)}">${escapeHtml(sideLabel)}</span>
+        <div class="bo-fill-wrap">
+          <div class="bo-fill-meta"><span>${fillTxt}</span><span>${remTxt}</span><span>${priceTxt}</span></div>
+          <div class="bo-fill-track" role="presentation" aria-hidden="true"><div class="bo-fill-bar ${fillCls}" style="width:${pct}%"></div></div>
+        </div>
+        <span class="bo-status-pill ${pillCls}">${escapeHtml(row.label)}</span>
+        <div class="bo-actions">${cancel}</div>
+      </div>`;
+    }).join("")}</div>`;
+  }
+
+  async function updatePaperResearch(patch) {
+    try {
+      const response = await api("/api/paper-research", {method: "POST", body: JSON.stringify(patch)});
+      if (response.config && state) state.config = {...state.config, ...response.config};
+      toast("Paper research settings updated — simulated funds only");
+      await refresh();
+    } catch (error) { toast(error.message, true); if (state) renderWorkspaceChrome(state); }
+  }
+
+  $$('[data-workspace-tab]').forEach(button => button.addEventListener("click", () => selectWorkspace(button.dataset.workspaceTab)));
+  $("#btn-paper-research-toggle")?.addEventListener("click", () => updatePaperResearch({enabled: !state?.config?.paper_research_enabled}));
+  $("#paper-auto-approve")?.addEventListener("change", event => updatePaperResearch({auto_approve: event.currentTarget.checked}));
+  $("#paper-risk-preset")?.addEventListener("change", event => updatePaperResearch({risk_preset: event.currentTarget.value}));
+  $("#paper-signal-status")?.addEventListener("change", () => { if (state) renderUnifiedPaper(state); });
+  $("#btn-live-test-check")?.addEventListener("click", async () => {
+    const button = $("#btn-live-test-check");
+    if (button) button.disabled = true;
+    try { await refresh(); } finally { if (button) button.disabled = false; }
+  });
+
 
   /** Simple-mode butler gloss for latest-call kinds (Hold/Buy/Sell/flat/none). */
   function callGloss(kind) {
     const k = String(kind == null ? "" : kind).toLowerCase().trim();
-    if (k === "buy" || k === "long" || k === "buying") return "Paper buy for you";
-    if (k === "sell" || k === "short" || k === "selling") return "Paper sell for you";
+    if (k === "buy" || k === "long" || k === "buying") return activeWorkspace === "paper" ? "Paper buy for research" : "Buy research — review before trading";
+    if (k === "sell" || k === "short" || k === "selling") return activeWorkspace === "paper" ? "Paper sell for research" : "Sell research — review before trading";
     if (k === "none" || k === "nocall" || k === "no_call" || k === "no-call") {
-      return "No call yet — Start when you wish";
+      return activeWorkspace === "paper" ? (state?.config?.paper_research_enabled ? "Waiting for the next paper scan" : "No call yet — press Start paper research") : "No call yet — press Start checking";
     }
     if (k === "hold" || k === "flat" || k === "holding" || !k) return "Holding — no trade";
     return "Holding — no trade";
@@ -126,11 +337,8 @@
   }
 
   function getUiMode() {
-    try {
-      return localStorage.getItem("ui_mode") === "advanced" ? "advanced" : "simple";
-    } catch {
-      return "simple";
-    }
+    // One complete desk for now; Simple mode will be revisited separately.
+    return "advanced";
   }
   function syncStickyOffsets() {
     const chrome = $("#paper-chrome");
@@ -222,7 +430,7 @@
           const active2 = !!cfg2.session_active;
           let hline = "Session on — watching watchlist headlines for you";
           if (_luckyLine && Date.now() < _luckyUntil) hline = _luckyLine;
-          else if (!active2) hline = "Not checking — press Start checking when ready";
+          else if (!active2) hline = activeWorkspace === "paper" ? "Paper research stopped — press Start paper research" : "Not checking — press Start checking when ready";
           else if (outside2) hline = (loop2.rth_only !== false) ? "Market closed — checks pause until the next open (US hours)" : "After hours — soft moonlight";
           hdr.textContent = hline;
         }
@@ -246,7 +454,7 @@
     const radarCount = radarOn
       ? (radar.count != null ? Number(radar.count) : (radar.movers || []).length)
       : 0;
-    const last = loop.last_decision || (data.decisions_preview && data.decisions_preview[0]) || null;
+    const last = deskCall(data);
     const now = Date.now();
 
     // Brief fill toast line — sticky a few seconds without flicker
@@ -270,7 +478,7 @@
       line = "A fill just kissed the ledger";
       key = "fill";
     } else if (!active || skip === "session_inactive") {
-      line = "Not checking — press Start checking when ready";
+      line = activeWorkspace === "paper" ? "Paper research stopped — press Start paper research" : "Not checking — press Start checking when ready";
       key = "off";
     } else if (outside || skip === "outside_rth") {
       line = rthOnly
@@ -325,7 +533,7 @@
   }
 
   function setUiMode(mode) {
-    mode = mode === "advanced" ? "advanced" : "simple";
+    mode = "advanced";
     const prev = getUiMode();
     try { localStorage.setItem("ui_mode", mode); } catch (_) {}
     document.body.classList.toggle("ui-simple", mode === "simple");
@@ -420,15 +628,16 @@
 
   // ---- Money / mode truth helpers (one place decides what the screen may claim)
   function brokerMode(cfg) {
-    const b = window.__brokerStatus || {};
-    return ["auto_live", "live_manual"].includes((cfg || state?.config || {}).mode) && !!b.configured;
+    return ["auto_live", "live_manual"].includes((cfg || state?.config || {}).mode);
   }
   function realMoney(cfg) {
     const b = window.__brokerStatus || {};
     return brokerMode(cfg) && b.paper_mode === false;
   }
   function moneyNoun(cfg) {
+    if (!cfg && activeWorkspace === "paper") return "simulated funds";
     if (realMoney(cfg)) return "REAL money";
+    if (brokerMode(cfg) && (window.__brokerStatus || {}).paper_mode == null) return "broker funds (mode unverified)";
     if (brokerMode(cfg)) return `${String((window.__brokerStatus || {}).broker || "broker").toUpperCase()} paper money`;
     return "paper money";
   }
@@ -467,6 +676,7 @@
       }
     }
     document.body.classList.toggle("is-stale", stale);
+    if (state) renderLiveTestReadiness(state);
     const b = $("#stale-banner");
     if (b) {
       b.hidden = !stale;
@@ -559,7 +769,7 @@
         throw te;
       }
       if (e instanceof TypeError && !e.status) {
-        const ne = new Error("Can't reach the desk. Is Tomahawk still running?");
+        const ne = new Error("Can't reach the desk. Is nadzeeɫ still running?");
         ne.offline = true;
         throw ne;
       }
@@ -579,8 +789,8 @@
     el.textContent =
       `${name}: size ${fmtPct(preset.max_position_pct)} | ` +
       `${preset.max_trades_per_day} trades/day | ` +
-      `max loss ${fmtPct(preset.max_daily_loss_pct)} | ` +
-      `stop ${preset.stop_r}R / target ${preset.target_r}R`;
+      `max loss ${fmtPct(preset.max_daily_loss_pct)}` +
+      (activeWorkspace === "paper" ? ` | paper stop ${preset.stop_r}R / target ${preset.target_r}R` : " · broker orders have no attached exits");
   }
 
 
@@ -592,20 +802,11 @@
   }
 
   function updateStartEnabled() {
-    const btn = $("#btn-start-session");
-    if (!btn) return;
-    const make = parsePositiveMoney($("#daily-target")?.value);
-    const bank = parsePositiveMoney($("#beginning-bank")?.value);
-    const ready = !!(make && bank);
-    btn.disabled = !ready;
-    if (!ready) {
-      const missing = [];
-      if (!make) missing.push("goal");
-      if (!bank) missing.push("starting cash");
-      btn.title = `Turn Auto paper on — enter ${missing.join(" and ")} first`;
-    } else {
-      btn.title = "Turn Auto paper on";
-    }
+    const button = $("#btn-start-session");
+    if (!button) return;
+    const ready = activeWorkspace === "live" && brokerMode(state?.config || {});
+    button.disabled = !ready || button.dataset.busy === "1";
+    button.title = ready ? "Start live research using the current broker execution mode" : "Select and verify a broker mode in live settings first";
   }
 
   function renderSessionChip(cfg, ledger, loop) {
@@ -614,7 +815,7 @@
     if (!chip) return;
     // Session chip follows session_active only (mode alone insufficient)
     const active = !!cfg.session_active;
-    const goal = cfg.daily_profit_target_usd;
+    const goal = brokerMode(cfg) ? null : cfg.daily_profit_target_usd;
     const rth = loop?.rth_only !== false;
     const outside = isOutsideRth(loop, cfg);
     // Short chill status — never long pipe strings that ellipsis mid-token
@@ -646,7 +847,7 @@
         chip.textContent = paused || parts.join(" · ");
         chip.classList.toggle("is-paused", !!paused);
         chip.title = paused
-          ? paused.replace("Paused · ", "No new trades: ") + ". Open positions still have their stop-loss."
+          ? paused.replace("Paused · ", "No new trades: ") + ". Existing positions are unchanged."
           : "Checking your watchlist every few minutes" +
             (rth ? " during market hours" : "") +
             (goal != null && Number(goal) > 0 ? ` · goal ${fmtMoney(goal)}` : "");
@@ -745,15 +946,63 @@
       const account = book.account_id ? ` · ${book.account_id}` : "";
       kind.textContent = book.paper_mode === false
         ? `(${provider} — REAL money${account})`
-        : `(${provider} paper${account})`;
+        : book.paper_mode === true ? `(${provider} paper${account})` : `(${provider} mode unverified)`;
     }
     panel.classList.toggle("is-live", book.paper_mode === false);
+    const balances = $("#broker-book-balances");
+    if (balances) {
+      if (book.ok) {
+        const chip = (k, v) => `<div class="bb-chip"><span class="bb-chip-k">${k}</span><span class="bb-chip-v">${v}</span></div>`;
+        balances.className = "bb-balance-strip";
+        balances.innerHTML = chip("Equity", fmtMoney(book.equity)) + chip("Cash", fmtMoney(book.cash)) + chip("Buying power", fmtMoney(book.buying_power));
+      } else {
+        balances.className = "muted";
+        balances.textContent = "Account balances unavailable";
+      }
+    }
+    const pnlDetail = $("#broker-book-pnl-detail");
+    if (pnlDetail) {
+      const pnl = book.ok && book.account_window_pnl;
+      const money = value => typeof value === "number" && Number.isFinite(value) ? fmtSigned(value) : "unavailable";
+      pnlDetail.textContent = pnl
+        ? `Account-window P&L (USD): realized ${money(pnl.realized)} · unrealized ${money(pnl.unrealized)}. These use a different basis from Daily P&L and do not satisfy the daily-loss check.`
+        : "";
+      pnlDetail.hidden = !pnlDetail.textContent;
+    }
+    const pnlFeed = $("#broker-book-pnl-feed");
+    if (pnlFeed) {
+      const feed = book.ok && book.pnl_diagnostics;
+      if (feed && feed.update_mode === "on_change") {
+        const status = feed.status === "ready" ? "active subscription"
+          : feed.status === "waiting" ? "waiting for first Gateway value"
+          : feed.status === "recovering" ? "recovering; waiting for a new Gateway value" : feed.status;
+        const valueAge = feed.last_update_age_seconds != null
+          ? `last value update ${Math.round(feed.last_update_age_seconds)}s ago`
+          : `waiting ${Math.round(feed.waiting_seconds)}s`;
+        const responseAge = feed.api_response_age_seconds != null
+          ? `Gateway responded ${Math.round(feed.api_response_age_seconds)}s ago`
+          : "Gateway response not yet confirmed";
+        pnlFeed.textContent = `Daily P&L feed: ${status} · value updates on change · ${feed.callbacks} update(s) on this subscription · ${feed.retries} automatic retry(s) · ${valueAge} · ${responseAge}`;
+      } else {
+        pnlFeed.textContent = feed
+          ? `Daily P&L feed: ${feed.status === "waiting" ? "waiting for Gateway" : feed.status} · ${feed.callbacks} update(s) on this subscription · ${feed.retries} automatic retry(s)${feed.last_update_age_seconds != null ? ` · last update ${Math.round(feed.last_update_age_seconds)}s ago` : ` · waiting ${Math.round(feed.waiting_seconds)}s`}`
+          : "";
+      }
+      pnlFeed.hidden = !pnlFeed.textContent;
+    }
+    const riskStatus = $("#broker-book-risk");
+    if (riskStatus) {
+      riskStatus.textContent = book.risk_error || "";
+      riskStatus.hidden = !riskStatus.textContent;
+    }
     const day = $("#broker-book-day");
     if (day) {
       const n = Number(data.broker_trades_today || 0);
       day.textContent = book.day_pnl_usd != null
         ? `Today ${fmtSigned(book.day_pnl_usd)} · ${n} order${n === 1 ? "" : "s"}`
-        : `${n} order${n === 1 ? "" : "s"} today`;
+        : `Daily P&L unavailable · ${n} order${n === 1 ? "" : "s"} today`;
+      const unresolved = (data.ledger?.pending_broker_orders || []).length;
+      if (unresolved) day.textContent += ` · ${unresolved} order(s) awaiting reconciliation — new submissions paused`;
     }
     const list = $("#broker-book-list");
     if (!list) return;
@@ -762,14 +1011,39 @@
       return;
     }
     const rows = book.positions || [];
-    list.innerHTML = rows.length
-      ? rows.map((p) => `
-          <div class="bb-row">
-            <strong>${escapeHtml(p.ticker)}</strong>
-            <span>${escapeHtml(String(p.shares))} shares${p.side === "short" ? " (short)" : ""} @ ${fmtMoney(p.avg_price)}</span>
-            <span>${p.last != null ? `last ${fmtMoney(p.last)} · ` : ""}<span class="money ${Number(p.open_pnl_usd) >= 0 ? "pos" : "neg"}">${p.open_pnl_usd != null ? fmtSigned(p.open_pnl_usd) : "P&L unavailable"}</span></span>
-          </div>`).join("")
-      : `<div class="empty">No positions at the broker.</div>`;
+    if (!rows.length) {
+      list.innerHTML = `<div class="empty">No positions at the broker.</div>`;
+      return;
+    }
+    const absPnls = rows.map(p => Math.abs(Number(p.open_pnl_usd))).filter(n => Number.isFinite(n));
+    const maxAbs = absPnls.length ? Math.max(...absPnls, 1) : 1;
+    list.innerHTML = rows.map((p) => {
+      const sideRaw = String(p.side || "").toLowerCase();
+      const isShort = sideRaw === "short" || Number(p.shares) < 0;
+      const sideCls = isShort ? "short" : "long";
+      const sideLabel = isShort ? "SHORT" : "LONG";
+      const pnlN = Number(p.open_pnl_usd);
+      const pnlKnown = p.open_pnl_usd != null && Number.isFinite(pnlN);
+      const pnlCls = !pnlKnown ? "is-unknown" : pnlN >= 0 ? "pos" : "neg";
+      const pnlTxt = pnlKnown ? fmtSigned(pnlN) : "Unavailable";
+      const mag = pnlKnown ? Math.max(4, Math.round((Math.abs(pnlN) / maxAbs) * 100)) : 0;
+      const sellBtn = data.config?.mode === "live_manual" && provider === "IBKR" && Number(p.shares) >= 1
+        ? `<button type="button" class="btn ghost" data-live-position="${escapeHtml(p.ticker)}" data-side="${escapeHtml(p.side)}" data-shares="${escapeHtml(String(p.shares))}">Prepare ${isShort ? "cover" : "sell"} ticket</button>`
+        : "";
+      return `<div class="bb-card bb-side-${sideCls}" data-side="${sideCls}">
+        <div class="bb-rail" aria-hidden="true"></div>
+        <div class="bb-body">
+          <div class="bb-top">
+            <strong class="bb-ticker">${escapeHtml(p.ticker)}</strong>
+            <span class="bb-side-chip ${sideCls}" title="${sideLabel}">${sideLabel}</span>
+            <span class="bb-meta">${escapeHtml(String(p.shares))} shares @ ${fmtMoney(p.avg_price)}${p.last != null ? ` · last ${fmtMoney(p.last)}` : ""}</span>
+          </div>
+          <div class="bb-pnl money ${pnlCls}" aria-label="Open P and L">${pnlTxt}</div>
+          <div class="bb-mag" role="presentation" aria-hidden="true"><div class="bb-mag-fill" style="width:${mag}%"></div></div>
+          ${sellBtn}
+        </div>
+      </div>`;
+    }).join("");
   }
 
   // ---- Light / dark theme (saved choice wins; otherwise follow the computer)
@@ -819,7 +1093,7 @@
     const tag = $("#stage-phase-tag");
     if (tag) {
       const txt = phase === "setup"
-        ? "From your last session — press Start checking to begin"
+        ? (activeWorkspace === "paper" ? "From your last paper session — press Start paper research" : "From your last session — press Start checking to begin")
         : phase === "recap"
           ? "Checking is stopped — this was the last call"
           : "";
@@ -830,10 +1104,11 @@
   }
 
   function firstPending() {
-    const opps = (state?.opportunities || []).filter((o) => isOppActionable(o));
+    const view = workspaceView(state);
+    const opps = (view.opportunities || []).filter((o) => isOppActionable(o));
     if (opps.length) return opps[0];
-    const bag = state?.signals || {};
-    return (bag.pending || [])[0] || null;
+    const bag = view.signals || {};
+    return (bag.pending || []).find((s) => s.actionable === true) || null;
   }
 
   function renderDecideCard(show) {
@@ -850,7 +1125,7 @@
     const sh = Number(s.suggested_shares || 0);
     const px = Number(s.signal_price || 0);
     const verb = String(s.side || "").toLowerCase() === "sell" ? "Sell" : "Buy";
-    const sig = [s.id, sh, px, n, realMoney()].join("|");
+    const sig = [s.id, sh, px, n, moneyNoun()].join("|");
     if (box.dataset.sig === sig) { box.hidden = false; return; }
     box.dataset.sig = sig;
     const why = plainify(s.why_plain || s.llm_thesis || s.thesis || s.reason || "");
@@ -879,22 +1154,6 @@
     if (reject) skipWithUndo(reject.dataset.reject, "Skipped by you", null);
   });
 
-  document.addEventListener("keydown", (ev) => {
-    if (ev.defaultPrevented || ev.ctrlKey || ev.metaKey || ev.altKey) return;
-    const tag = (ev.target && ev.target.tagName) || "";
-    if (/INPUT|TEXTAREA|SELECT/.test(tag) || (ev.target && ev.target.isContentEditable)) return;
-    if (document.querySelector(".modal:not(.hidden)")) return;
-    const box = $("#stage-decide");
-    if (!box || box.hidden) return;
-    const k = ev.key.toLowerCase();
-    if (k === "a") {
-      const b = box.querySelector("[data-approve]");
-      if (b) { ev.preventDefault(); openApprovePreview(b.dataset.approve); }
-    } else if (k === "s") {
-      const b = box.querySelector("[data-reject]");
-      if (b) { ev.preventDefault(); skipWithUndo(b.dataset.reject, "Skipped by you", null); }
-    }
-  });
 
   // ---- "The desk is thinking" — only while a decision is really in flight
   function syncThinking(loop) {
@@ -948,7 +1207,7 @@
         `Your last ${b.closed_trades} closed trades lost ${fmtMoney(Math.abs(b.net_usd))} in total after costs ` +
         `(trading results ${fmtSigned(b.realized_usd)}, fees −${fmtMoney(b.fees_usd)}). ` +
         `Small losses like this add up quietly, so no new trades will be placed until you choose to resume. ` +
-        `Stop-loss and take-profit on open positions keep working.`;
+        `Existing positions are unchanged. Verify broker protection at your broker.`;
     }
   }
   $("#btn-bleed-resume")?.addEventListener("click", async () => {
@@ -981,7 +1240,6 @@
     if (!modal || !body) return;
     body.innerHTML = '<p class="muted">Loading…</p>';
     modal.classList.remove("hidden");
-    $("#btn-report-close")?.focus();
     let r;
     try {
       r = await api("/api/report/weekly?days=7", { timeoutMs: 20000 });
@@ -1015,20 +1273,20 @@
     try {
       const s = await api("/api/brains/scoreboard", { timeoutMs: 15000 });
       if (!s || !s.compared_calls) {
-        if (s && s.claude_configured) {
-          body.insertAdjacentHTML("beforeend", '<p class="muted">Claude head-to-head: no scored calls yet.</p>');
-        }
+        body.insertAdjacentHTML("beforeend", `<p class="muted">Brain comparison: no verified paired outcomes yet.${s && !s.claude_configured ? " Claude is not configured." : ""}</p>`);
         return;
       }
       const pct = (d) => (d.hit_rate != null ? Math.round(d.hit_rate * 100) + "%" : "—");
       const main = escapeHtml(String(s.main_brain || "Main AI"));
       body.insertAdjacentHTML("beforeend", `
-        <p class="report-sub">Who called it better? (same ${s.compared_calls} decisions, last ${s.days} days)</p>
+        <p class="report-sub">Price direction on ${s.compared_calls} paired observations, last ${s.days} days</p>
         <table class="brain-table">
-          <tr><th></th><th>Right</th><th>Wrong</th><th>Hit rate</th></tr>
+          <tr><th></th><th>Helped</th><th>Hurt</th><th>Direction rate</th></tr>
           <tr><td>${main}</td><td>${s.main.helped}</td><td>${s.main.hurt}</td><td>${pct(s.main)}</td></tr>
           <tr><td>Claude</td><td>${s.claude.helped}</td><td>${s.claude.hurt}</td><td>${pct(s.claude)}</td></tr>
-        </table>`);
+        </table>
+        ${(s.cohorts || []).map(c => `<p class="muted">${escapeHtml(c.main_model)} vs ${escapeHtml(c.claude_model)}, ${c.horizon_min} min, ${c.samples} observations: modeled positive after-cost rate ${pct(c.main_net)} / ${pct(c.claude_net)}.</p>`).join("")}
+        <p class="muted">Holds are excluded from after-cost rates. These are horizon price observations, not broker returns or proof of an edge. Unverified older comparisons excluded: ${s.excluded_unverified || 0}.</p>`);
     } catch (_) { /* optional section */ }
   }
   // ---- Backtest: does the screener rule have an edge on past data?
@@ -1091,14 +1349,12 @@
     poll();
   }
   $("#btn-backtest")?.addEventListener("click", runBacktest);
-  $("#btn-report")?.addEventListener("click", openReport);
+  $("#btn-report")?.addEventListener("click", () => { $("#report-modal")?.scrollIntoView({behavior:"smooth", block:"start"}); openReport(); });
+  $("#btn-report-refresh")?.addEventListener("click", openReport);
   $("#btn-recap-report")?.addEventListener("click", () => {
     $("#recap-modal")?.classList.add("hidden");
     openReport();
-  });
-  $("#btn-report-close")?.addEventListener("click", () => $("#report-modal")?.classList.add("hidden"));
-  document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape") $("#report-modal")?.classList.add("hidden");
+    $("#report-modal")?.scrollIntoView({behavior:"smooth", block:"start"});
   });
 
   // ---- End-of-day recap (shown after Stop)
@@ -1152,6 +1408,8 @@
 
   function renderAll(data) {
     if (!data) return;
+    const canonical = data;
+    data = workspaceView(data);
     renderTop(data);
     renderOpenPnl(data);
     renderBrokerBook(data);
@@ -1172,19 +1430,36 @@
     renderPositions(data);
     updateDeskGuide(data);
     if (typeof scheduleSparks === "function") scheduleSparks(data);
+    renderWorkspaceChrome(canonical);
+  }
+
+  function renderStartupStatus(data) {
+    const startup = $("#startup-status");
+    if (startup) {
+      const broker = data.broker || {};
+      const book = data.broker_book;
+      startup.textContent = broker.paper_mode == null ? (broker.connection_error || data.startup?.message || "")
+        : book?.ok === false ? `Broker account identified; account data unavailable: ${book.error || "check Gateway"}`
+        : book?.risk_error ? `Broker account connected. ${book.risk_error}`
+        : "Broker account identified. Each order still passes account and risk checks.";
+      startup.hidden = !startup.textContent;
+    }
   }
 
   function renderTop(data) {
     const cfg = data.config || {};
     const ledger = data.ledger || {};
-    const daily = data.daily || {};
-    const recap = data.daily_recap || {};
+    const daily = data.paper_daily || {};
+    const recap = data.paper_daily_recap || {};
+    renderStartupStatus(data);
+    const queueHint = $("#signal-queue-hint");
+    if (queueHint) queueHint.textContent = brokerMode(cfg) ? "Broker mode: Review trade opens order review. Research-only ideas remain visible but cannot be submitted." : "Local paper simulation: review first, then confirm an eligible paper trade. Hold remains research only.";
     const pendingSummary = document.getElementById("execution-summary-pending");
-    const pendingCount = Array.isArray(data.signals?.pending) ? data.signals.pending.length : 0;
+    const pendingCount = Array.isArray(data.signals?.pending) ? data.signals.pending.filter((s) => s.actionable === true).length : 0;
     if (pendingSummary) {
       pendingSummary.textContent = pendingCount
         ? `${pendingCount} idea${pendingCount === 1 ? "" : "s"} need review`
-        : "No pending ideas";
+        : "No actionable ideas";
       pendingSummary.classList.toggle("attention", pendingCount > 0);
     }
     const modeLabel = {
@@ -1297,7 +1572,7 @@
 
     const modeSelect = $("#mode-select");
     const liveBox = $("#live-box");
-    if (modeSelect) modeSelect.value = cfg.mode || "manual";
+    if (modeSelect && modeSelect.dataset.dirty !== "1") modeSelect.value = cfg.mode || "manual";
     syncFillModeToggle(cfg);
     if (liveBox) {
       liveBox.classList.toggle(
@@ -1325,7 +1600,7 @@
     const wlEl = $("#watchlist");
     if (Array.isArray(cfg.watchlist)) {
       const wl = cfg.watchlist;
-      if (wlEl && document.activeElement !== wlEl) {
+      if (wlEl && wlEl.dataset.dirty !== "1" && document.activeElement !== wlEl) {
         wlEl.value = wl.join("\n");
       }
       renderWatchlistCount(wl);
@@ -1351,13 +1626,13 @@
       const ksLoss = $("#ks-loss");
       const ksTrades = $("#ks-trades");
       const ksPos = $("#ks-pos");
-      if (ksLoss && document.activeElement !== ksLoss && ks.max_daily_loss_usd != null) {
+      if (ksLoss && ksLoss.dataset.dirty !== "1" && document.activeElement !== ksLoss && ks.max_daily_loss_usd != null) {
         ksLoss.value = ks.max_daily_loss_usd;
       }
-      if (ksTrades && document.activeElement !== ksTrades && ks.max_trades_per_day != null) {
+      if (ksTrades && ksTrades.dataset.dirty !== "1" && document.activeElement !== ksTrades && ks.max_trades_per_day != null) {
         ksTrades.value = ks.max_trades_per_day;
       }
-      if (ksPos && document.activeElement !== ksPos && ks.max_position_size_usd != null) {
+      if (ksPos && ksPos.dataset.dirty !== "1" && document.activeElement !== ksPos && ks.max_position_size_usd != null) {
         ksPos.value = ks.max_position_size_usd;
       }
     }
@@ -1390,8 +1665,13 @@
           llmEl.textContent = simpleUi ? "Jev?" : "Jev needs API key";
           llmEl.classList.add("warn-pill");
           llmEl.classList.remove("ok-pill");
-          llmEl.title = simpleUi ? "Brain needs a key — using mock for now" : "Jev needs an API key — using mock brain until set";
+          llmEl.title = "Jev needs an API key. Unavailable research cannot authorize a trade.";
         }
+      } else if (brain === "claude") {
+        llmEl.textContent = llm.configured ? `Claude · ${llm.model || "configured model"}` : "Claude needs an API key";
+        llmEl.classList.toggle("warn-pill", !llm.configured);
+        llmEl.classList.toggle("ok-pill", !!llm.configured);
+        llmEl.title = llm.configured ? "Claude research brain" : "Set ANTHROPIC_API_KEY to use Claude research.";
       } else if (llm.configured) {
         const model = llm.model || "flash";
         llmEl.textContent = simpleUi ? "Gemini" : `Gemini · ${model}`;
@@ -1436,7 +1716,7 @@
       bits.push(`<span class="badge badge-llm" title="Brain lean (Buy/Sell/Hold) — research only">Brain ${escapeHtml(ls)}</span>`);
     }
     if (s.llm_error) {
-      bits.push(`<span class="badge badge-avoid" title="${escapeHtml(s.llm_error)}">Gemini error</span>`);
+      bits.push(`<span class="badge badge-avoid" title="${escapeHtml(s.llm_error)}">Brain error</span>`);
     }
     const rflags = s.research_flags || (s.research_flag ? [s.research_flag] : []);
     if (rflags.includes("halt_detected")) {
@@ -1457,7 +1737,7 @@
     const actions =
       s.status === "pending"
         ? `<div class="sig-actions">
-            <button type="button" class="btn good sm" data-approve="${escapeHtml(s.id)}" title="Do this paper trade">Approve</button>
+            ${s.actionable === true ? `<button type="button" class="btn good sm" data-approve="${escapeHtml(s.id)}" title="Open the account and order review; this button does not submit the order">Review trade</button>` : `<span class="muted">${escapeHtml(s.execution_block || "Research only")}</span>`}
             <button type="button" class="btn bad sm" data-reject="${escapeHtml(s.id)}" title="Pass on this idea">Skip</button>
           </div>`
         : s.reject_reason
@@ -1466,20 +1746,27 @@
             ? `<div class="sig-meta">Filled ${s.fill.shares}@${s.fill.price} (${escapeHtml(s.fill.source || "")})</div>`
             : "";
 
+    const sideRaw = String(s.side || "").toLowerCase();
+    const sideChipCls = sideRaw === "long" ? "buy" : sideRaw === "short" ? "sell" : sideRaw;
+    const sideChipLabel = sideRaw === "buy" || sideRaw === "long" ? "BUY"
+      : sideRaw === "sell" || sideRaw === "short" ? "SELL"
+      : sideRaw === "hold" ? "HOLD"
+      : String(s.side || "—").toUpperCase();
     return `<article class="signal-card ${escapeHtml(s.side)}">
       <div class="sig-head">
         <span class="sig-ticker">${escapeHtml(s.ticker)}</span>
-        <span class="sig-side ${escapeHtml(s.side)}">${escapeHtml(s.side)}</span>
+        <span class="sig-side sig-side-chip ${escapeHtml(sideChipCls)}" title="${escapeHtml(sideChipLabel)}">${escapeHtml(sideChipLabel)}</span>
       </div>
       ${signalBadges(s)}
-      <div class="conf-bar"><div class="conf-fill" style="width:${confPct}%"></div></div>
+      <div class="conf-bar" aria-label="Confidence ${confPct}%"><div class="conf-fill" style="width:${confPct}%"></div></div>
       <div class="sig-meta">
-        <span>${Math.round((s.confidence || 0) * 100)}% sure</span>
+        <span>${Math.round((s.confidence || 0) * 100)}% ${s.side === "hold" ? "hold confidence" : "research confidence"}</span>
         <span>${fmtMoney(s.signal_price)}</span>
         <span>${s.suggested_shares} sh</span>
       </div>
       <p class="sig-reason">${escapeHtml(s.reason || "")}</p>
-      ${s.llm_thesis ? `<p class="sig-llm"><span class="llm-label">Gemini</span> ${escapeHtml(s.llm_thesis)}</p>${citationsHtml(s.citations || s.screener_citations)}` : ""}
+      ${s.llm_thesis ? `<p class="sig-llm"><span class="llm-label">${escapeHtml(signalModelLabel(s))}</span> ${escapeHtml(s.llm_thesis)}</p>${citationsHtml(s.citations || s.screener_citations)}` : ""}
+      <p class="sig-meta">${escapeHtml(quoteLabel(s.quote))}</p>
       ${actions}
     </article>`;
   }
@@ -1491,6 +1778,24 @@
     ).join("")}</div>`;
   }
 
+  function signalModelLabel(s) {
+    const model = String(s.llm_model || "");
+    if (model.startsWith("mock") || s.brain_mode === "mock" || s.routed === "mock_cheap") return "Mock heuristic · no AI model";
+    return model || s.brain_mode || "Model not recorded";
+  }
+
+  function quoteLabel(q) {
+    if (!q || !q.market_time) return "Price time unknown · a fresh quote is required before execution";
+    const age = Math.max(0, Math.round((Date.now() - Date.parse(q.market_time)) / 1000));
+    return `${q.source || "Price"} · ${new Date(q.market_time).toLocaleString()} · ${age}s old${age > 120 || !q.fresh ? " · stale" : ""}`;
+  }
+
+  function deskCall(data) {
+    const key = activeWorkspace === "paper" ? "paper_desk_call" : "desk_call";
+    if (Object.prototype.hasOwnProperty.call(data, key)) return data[key];
+    return null; // Wait for a source- and age-qualified snapshot.
+  }
+
   function escapeHtml(str) {
     return String(str ?? "")
       .replace(/&/g, "&amp;")
@@ -1500,10 +1805,12 @@
   }
 
   function renderSignals(data) {
+    data = workspaceView(data);
     const bag = data.signals || {};
     const list = bag[activeTab] || [];
     const el = $("#signal-list");
     if (!el) return;
+    el.setAttribute("aria-labelledby", `signal-tab-${activeTab}`);
     const counts = {
       pending: (bag.pending || []).length,
       approved: (bag.approved || []).length,
@@ -1522,8 +1829,8 @@
     });
     if (!list.length) {
       const hints = {
-        pending: "Nothing waiting — start Auto paper or wait for the next scan.",
-        approved: "No paper fills yet.",
+        pending: activeWorkspace === "paper" ? (data.config?.paper_research_enabled ? "No paper ideas waiting. Research is running." : "No paper ideas waiting. Start paper research above.") : "No live ideas waiting. Start checking or wait for the next scan.",
+        approved: activeWorkspace === "paper" ? "No paper fills yet." : "No approved live ideas yet.",
         rejected: "Skipped ideas show up here.",
         expired: "Expired signals show up here.",
       };
@@ -1623,11 +1930,15 @@
 
   function render(data) {
     state = data;
+    window.dispatchEvent(new CustomEvent("desk:state", {detail: state}));
+    data = workspaceView(data);
     fullStateSeen = true;
     _liteSig = "";
     window.__oppEmptyStreak = 0;
     if (oppEmptyTimer) { clearTimeout(oppEmptyTimer); oppEmptyTimer = null; }
     renderTop(data);
+    renderBrokerBook(data);
+    renderOpenPnl(data);
     renderLoopPanel(data);
     renderSignals(data);
     renderPositions(data);
@@ -1641,10 +1952,12 @@
     renderOpportunities(data);
     renderEdgeSample(data);
     renderRiskCockpit(data);
+    renderLiveIntel(data);
     updateDeskGuide(data);
     maybeAlertFromState(data);
     consumeDeskAlerts(data && data.alerts);
     scheduleSparks(data);
+    renderWorkspaceChrome(state);
   }
 
 
@@ -1708,7 +2021,8 @@
     const summaryBroker = document.getElementById("execution-summary-broker");
     const summaryMode = document.getElementById("execution-summary-mode");
     const summarySession = document.getElementById("execution-summary-session");
-    const pm = b.paper_mode !== false; // default true when unknown
+    const unknown = b.configured && b.paper_mode == null;
+    const pm = b.paper_mode === true;
     const provider = String(b.broker || "broker").toUpperCase();
     const label = b.connected_label || (
       b.configured
@@ -1730,7 +2044,7 @@
     }
     if (chip) {
       chip.textContent = "Broker: " + label;
-      chip.title = b.configured
+      chip.title = unknown ? "Verify the connected account before enabling broker execution" : b.configured
         ? (pm
             ? `${provider} paper account connected — fake money`
             : `${provider} LIVE endpoint — real money; use with care`)
@@ -1739,7 +2053,7 @@
       chip.dataset.paperMode = pm ? "1" : "0";
       chip.classList.toggle("ok", !!b.configured && pm);
       chip.classList.toggle("live", !!b.configured && !pm);
-      chip.classList.toggle("warn", !b.configured);
+      chip.classList.toggle("warn", !b.configured || unknown);
     }
     if (chrome) {
       chrome.textContent = b.ui_badge || (
@@ -1752,7 +2066,9 @@
       chrome.title = label;
     }
     if (line) {
-      if (b.configured && pm) {
+      if (unknown) {
+        line.textContent = "Broker account mode is unverified. Apply the mode to verify the connected account before trading.";
+      } else if (b.configured && pm) {
         line.textContent =
           `${provider} paper account connected. Broker orders stay separate from the local paper book.`;
       } else if (b.configured && !pm) {
@@ -1766,7 +2082,7 @@
     const note = document.getElementById("chrome-note");
     if (note) {
       const live = !!b.configured && !pm && ["auto_live", "live_manual"].includes(state?.config?.mode);
-      note.textContent = live ? `REAL MONEY — orders go to your ${provider} account` : `Practice mode — ${pm && b.configured ? provider + " paper" : "local paper"} `;
+      note.textContent = unknown ? "BROKER UNVERIFIED — execution requires account verification" : live ? `REAL MONEY — orders go to your ${provider} account` : `Practice mode — ${pm && b.configured ? provider + " paper" : "local paper"} `;
       note.classList.toggle("is-live", live);
     }
     document.body.classList.toggle("money-live", !!b.configured && !pm && ["auto_live", "live_manual"].includes(state?.config?.mode));
@@ -1791,13 +2107,15 @@
   function brokerToastHint(broker, book, paperFallback, fill) {
     const b = broker || window.__brokerStatus || {};
     const pm = b.paper_mode !== false;
+    const provider = String(b.broker || "broker").toUpperCase();
     if (book === "broker_only") {
-      const where = pm ? "Alpaca paper account" : "your REAL Alpaca account";
+      const where = pm ? `${provider} paper account` : `your REAL ${provider} account`;
       const sh = fill && fill.shares;
       const px = fill && fill.price;
-      return sh && px
+      const result = sh && px
         ? `filled ${sh} ${fill.ticker || ""} at ${fmtMoney(px)} in ${where}`
         : `filled in ${where}`;
+      return fill?.broker_reconciled === false ? `${result}; remaining order is still being reconciled` : result;
     }
     if (paperFallback || book === "local_paper_fallback") {
       return "Broker failed — fell back to local paper sim";
@@ -1813,15 +2131,19 @@
   }
 
   let refreshSeq = 0;
+  let stateLiteGeneration = 0;
   let refreshInFlight = null;
   async function refresh() {
     // Coalesce: overlapping polls used to let an older /api/state land after a newer one.
     if (refreshInFlight) return refreshInFlight;
     const mySeq = ++refreshSeq;
+    const startedAtGeneration = stateLiteGeneration;
     refreshInFlight = (async () => {
       try {
         const data = await api("/api/state", { timeoutMs: fullStateSeen ? 12000 : 30000 });
-        if (mySeq !== refreshSeq) return;
+        // A stream update received during this request may be newer than its
+        // snapshot, including history omitted by the next compact delta.
+        if (mySeq !== refreshSeq || startedAtGeneration !== stateLiteGeneration) return;
         pollErrToasts = 0;
         noteFresh();
         render(data);
@@ -1868,7 +2190,11 @@
   }
 
   // Events
+  liveSettingsFields.forEach(selector => $(selector)?.addEventListener("input", () => {
+    liveSettingsFields.forEach(id => { const field = $(id); if (field) field.dataset.dirty = "1"; });
+  }));
   $("#mode-select")?.addEventListener("change", () => {
+    liveSettingsFields.forEach(id => { const field = $(id); if (field) field.dataset.dirty = "1"; });
     const _lb = $("#live-box"); const _ms = $("#mode-select"); if (_lb && _ms) _lb.classList.toggle("hidden", !["auto_live", "live_manual"].includes(_ms.value));
   });
 
@@ -1876,23 +2202,34 @@
     const modeSel = $("#mode-select");
     if (!modeSel) return;
     const mode = modeSel.value;
+    if (activeWorkspace !== "live" || !["auto_live", "live_manual"].includes(mode)) return;
     const body = { mode };
     if (mode === "auto_live" || mode === "live_manual") {
-      const b0 = window.__brokerStatus || {};
+      let b0;
+      try {
+        const verified = await api("/api/broker-identity", { method: "POST", body: "{}", timeoutMs: 15000 });
+        b0 = verified.broker || {};
+        renderBrokerStatus(b0);
+      } catch (e) {
+        toast(e.message, true);
+        return;
+      }
+      if (b0.paper_mode == null) { toast("Verify the broker account before changing live execution mode.", true); return; }
+      const provider = String(b0.broker || "broker").toUpperCase();
       if (b0.configured && b0.paper_mode === false) {
         const typed = prompt(
-          "This connects the desk to your REAL-MONEY Alpaca account.\n" +
+          `This connects the desk to your REAL-MONEY ${provider} account.\n` +
           (mode === "live_manual" ? "Each approved idea will place one real order.\n\n" : "Approvals and automatic trades will place real orders.\n\n") +
           "Type REAL to continue:"
         );
         if (String(typed || "").trim().toUpperCase() !== "REAL") {
-          toast("Not switched — still on paper");
+          toast("Execution mode unchanged");
           return;
         }
         body.live_confirm = "REAL";
       } else if (!confirm(mode === "live_manual"
-        ? "Switch to approve-first Alpaca mode? Each approved idea will be sent to your Alpaca paper account."
-        : "Switch to Auto + Alpaca? Trades will be sent to your Alpaca paper account.")) {
+        ? `Switch to approve-first ${provider} mode? Each approved idea will be sent to your broker paper account.`
+        : `Switch to Auto + ${provider}? Trades will be sent to your broker paper account.`)) {
         return;
       } else {
         body.live_confirm = "AUTO_LIVE";
@@ -1911,19 +2248,16 @@
       };
     }
     try {
+      const submittedFields = liveSettingsFields.map(id => $(id)?.value);
       const data = await api("/api/config", { method: "POST", body: JSON.stringify(body) });
+      if (liveSettingsFields.every((id, index) => $(id)?.value === submittedFields[index])) {
+        liveSettingsFields.forEach(id => { const field = $(id); if (field) delete field.dataset.dirty; });
+      }
       const b = data.broker || window.__brokerStatus || {};
       let msg = `Mode set to ${data.config?.mode || mode}`;
       if (mode === "auto_live" || mode === "live_manual") {
-        if (b.configured && b.paper_mode === false) {
-          msg = mode === "live_manual"
-            ? "Approve-first Alpaca — LIVE ENDPOINT (real money)"
-            : "Auto + Alpaca — LIVE ENDPOINT (ALPACA_PAPER=false, real money)";
-        } else if (b.configured) {
-          msg = "Auto + Alpaca — paper-api (broker-only on success; no dual local book)";
-        } else {
-          msg = "Auto + Alpaca — no keys; will use local paper until Alpaca is configured";
-        }
+        const venue = String(b.broker || "broker").toUpperCase();
+        msg = `${mode === "live_manual" ? "Approve each order" : "Automatic orders"} · ${venue} ${b.paper_mode === false ? "LIVE — real money" : b.paper_mode === true ? "broker paper" : "account unverified"}`;
       }
       toast(msg, !!((mode === "auto_live" || mode === "live_manual") && b.configured && b.paper_mode === false));
       await refresh();
@@ -1962,69 +2296,51 @@
   }
   updateStartEnabled();
 
-  $("#btn-start-session")?.addEventListener("click", async () => {
-    const make = parsePositiveMoney($("#daily-target")?.value);
-    const bank = parsePositiveMoney($("#beginning-bank")?.value);
-    if (!make || !bank) {
-      toast("Enter a goal and starting cash (both over 0)", true);
-      updateStartEnabled();
-      return;
-    }
-    const startBtn = $("#btn-start-session");
-    if (startBtn?.dataset.busy === "1") return;
-    const curMode = state?.config?.mode;
-    const body = {
-      make_today_usd: make,
-      beginning_bank_usd: bank,
-    };
-    // Keep the user's fill choice (Ask me first stays Ask me first).
-    if (curMode === "manual" || curMode === "auto_paper") body.mode = curMode;
-    const send = () => api("/api/session/start", {
-      method: "POST",
-      body: JSON.stringify(body),
-      timeoutMs: 30000,
-    });
-    if (startBtn) { startBtn.dataset.busy = "1"; startBtn.disabled = true; }
+  async function startLiveResearch() {
+    if (activeWorkspace !== "live" || !brokerMode(state?.config || {})) return;
+    const button = $("#btn-start-session");
+    if (button?.dataset.busy === "1") return;
+    if (button) { button.dataset.busy = "1"; button.disabled = true; }
     try {
-      let data;
-      try {
-        data = await send();
-      } catch (e) {
-        if (e.status === 409 && e.data?.needs_confirm) {
-          const d = e.data;
-          const lines = [];
-          if (d.open_positions) lines.push(`• ${d.open_positions} open paper position(s) will be closed out`);
-          if (d.fills_today) lines.push(`• ${d.fills_today} trade(s) move to history`);
-          if (!confirm(`Start a fresh paper day?\n\n${lines.join("\n")}\n\nYour new starting cash will be ${fmtMoney(bank)}.`)) {
-            toast("Start cancelled — nothing changed");
-            return;
-          }
-          body.confirm_reset = true;
-          data = await send();
-        } else {
-          throw e;
-        }
-      }
-      const m = data?.config?.mode || curMode;
-      if ($("#mode-select") && m) $("#mode-select").value = m;
-      if (window.EquityScoreboard && typeof window.EquityScoreboard.reset === "function") {
-        window.EquityScoreboard.reset();
-      }
-      const how = modeLabel(m);
-      let msg = `Checking started (${how}) — goal ${fmtMoney(make)}, starting with ${fmtMoney(bank)} of ${moneyNoun(data?.config)}`;
-      if (data.signal?.ticker) {
-        msg += ` · first look: ${data.signal.ticker}`;
-      }
-      toast(msg);
+      await api("/api/session/start", {method: "POST", body: "{}", timeoutMs: 30000});
+      toast("Live research checking started. Your existing broker execution mode is unchanged.");
+      await refresh();
+    } catch (error) { toast(error.message, true); }
+    finally { if (button) delete button.dataset.busy; updateStartEnabled(); }
+  }
+
+  $("#live-soft-goal")?.addEventListener("input", () => {
+    const el = $("#live-soft-goal");
+    if (el) el.dataset.dirty = "1";
+  });
+  $("#btn-live-soft-goal")?.addEventListener("click", async () => {
+    const el = $("#live-soft-goal");
+    if (!el) return;
+    const raw = String(el.value || "").trim();
+    let val = null;
+    if (raw !== "") {
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0) { toast("Soft goal must be a number ≥ 0", true); return; }
+      val = n === 0 ? null : n;
+    }
+    try {
+      await api("/api/config", {
+        method: "POST",
+        body: JSON.stringify({ daily_profit_target_usd: val }),
+      });
+      delete el.dataset.dirty;
+      toast(val == null
+        ? "Soft goal cleared (caps unchanged)"
+        : `Soft goal set to ${fmtMoney(val)} · pauses new risk when hit · caps unchanged`);
       await refresh();
     } catch (e) {
       toast(e.message, true);
-    } finally {
-      if (startBtn) { delete startBtn.dataset.busy; startBtn.disabled = false; updateStartEnabled(); }
     }
   });
+  $("#btn-start-session")?.addEventListener("click", startLiveResearch);
 
   async function stopSessionHandler() {
+    if (activeWorkspace !== "live") return;
     try {
       await stopSession();
     } catch (e) {
@@ -2171,11 +2487,13 @@
   });
 
   $("#btn-save-watchlist")?.addEventListener("click", async () => {
+    const field = $("#watchlist"), submitted = field.value;
     try {
       await api("/api/config", {
         method: "POST",
-        body: JSON.stringify({ watchlist: $("#watchlist").value }),
+        body: JSON.stringify({ watchlist: submitted }),
       });
+      if (field.value === submitted) delete field.dataset.dirty;
       toast("Watchlist saved");
       await refresh();
     } catch (e) {
@@ -2202,6 +2520,7 @@
       try {
         const data = await api("/api/watchlist/use-liquid", { method: "POST", body: "{}" });
         $("#watchlist").value = (data.watchlist || []).join("\n");
+        delete $("#watchlist").dataset.dirty;
         renderWatchlistCount(data.watchlist || []);
         toast(`Liquid US list loaded (${data.total || 0})`);
         await refresh();
@@ -2221,6 +2540,7 @@
       try {
         const data = await api("/api/watchlist/restore-google-finance", { method: "POST", body: "{}" });
         $("#watchlist").value = (data.watchlist || []).join("\n");
+        delete $("#watchlist").dataset.dirty;
         renderWatchlistCount(data.watchlist || []);
         toast(`Restored Google Finance list (${data.total || 0})`);
         await refresh();
@@ -2238,6 +2558,7 @@
         body: JSON.stringify({ text: $("#watchlist").value, mode, source: "paste" }),
       });
       $("#watchlist").value = (data.watchlist || []).join("\n");
+      delete $("#watchlist").dataset.dirty;
       renderWatchlistCount(data.watchlist || []);
       toast(`${mode === "merge" ? "Merged" : "Replaced"} ${data.added} ticker${data.added === 1 ? "" : "s"}`);
       await refresh();
@@ -2311,7 +2632,10 @@
   $("#btn-merge-watchlist")?.addEventListener("click", () => importWatchlist("merge"));
   $("#btn-replace-watchlist")?.addEventListener("click", () => importWatchlist("replace"));
 
-  $("#btn-evaluate-watchlist")?.addEventListener("click", async () => {
+  $("#btn-evaluate-watchlist")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    button.disabled = true;
     const text = $("#watchlist").value.trim();
     try {
       const body = text ? { tickers: text } : {};
@@ -2332,20 +2656,25 @@
       toast(msg);
     } catch (e) {
       toast(e.message, true);
+    } finally {
+      button.disabled = false;
     }
   });
 
-  $("#watchlist")?.addEventListener("input", (ev) => renderWatchlistCount(ev.target.value));
+  $("#watchlist")?.addEventListener("input", (ev) => { ev.target.dataset.dirty = "1"; renderWatchlistCount(ev.target.value); });
 
-  $("#btn-gen")?.addEventListener("click", async () => {
+  async function generateWorkspaceIdea(workspace) {
     try {
-      const data = await api("/api/signals/generate", { method: "POST", body: "{}" });
+      const data = await api("/api/signals/generate", { method: "POST", body: JSON.stringify({workspace}) });
       toast(`Signal ${data.signal?.ticker} ${data.signal?.side} (${data.signal?.status})`);
       await refresh();
     } catch (e) {
       toast(e.message, true);
     }
-  });
+  }
+
+  $("#btn-gen")?.addEventListener("click", () => generateWorkspaceIdea("live"));
+  $("#btn-paper-find-idea")?.addEventListener("click", () => generateWorkspaceIdea("paper"));
 
   $("#btn-reset-ledger")?.addEventListener("click", async () => {
     if (!confirm("Reset the paper account to your starting cash?")) return;
@@ -2391,7 +2720,32 @@
     return (state?.opportunities || []).find((o) => o.id === id) || null;
   }
 
-  function openApprovePreview(id) {
+  async function openApprovePreview(id, orderOptions = null) {
+    // Capture the opener before awaiting the broker review; list buttons have
+    // no IDs and may be replaced by a stream render while the request runs.
+    const opener = document.activeElement;
+    const candidate = findSignalById(id);
+    if (!candidate || candidate.actionable !== true) {
+      toast(candidate?.execution_block || "This is research only; request a fresh actionable idea", true);
+      return;
+    }
+    const paper = signalWorkspace(candidate) === "paper";
+    if (!paper && !brokerMode(state?.config || {})) {
+      toast("Live execution is not enabled. Select and verify a broker mode first.", true);
+      return;
+    }
+    let reviewed = null;
+    if (!paper) {
+      try {
+        const options = orderOptions || {type:"limit", limit_price: candidate.signal_price || candidate.quote?.price};
+        reviewed = await api(`/api/signals/${id}/review`, { method: "POST", body: JSON.stringify({order:options}), timeoutMs: 15000 });
+        if (!reviewed.order || !reviewed.review_token) throw new Error("Server did not return a complete order review; refresh after deployment.");
+        renderBrokerStatus(reviewed.broker);
+      } catch (e) {
+        toast(e.message, true);
+        return;
+      }
+    }
     if (!id || String(id).startsWith("loop-")) {
       toast("That idea is research-only — not ready to Approve", true);
       return;
@@ -2403,8 +2757,27 @@
     }
     pendingApproveId = id;
     const cfg = state?.config || {};
-    const live = realMoney(cfg);
-    const broker = brokerMode(cfg);
+    const live = !paper && realMoney(cfg);
+    const broker = !paper;
+    const brokerName = String(window.__brokerStatus?.broker || "broker").toUpperCase();
+    if (broker && window.__brokerStatus?.paper_mode == null) {
+      pendingApproveId = null;
+      toast("Broker account mode is unverified. Verify the account before reviewing an order.", true);
+      return;
+    }
+    approvalContext = {id, workspace: paper ? "paper" : "live", live,
+      ticker: String(s.ticker || "").toUpperCase(), quote: s.quote,
+      expires_at: reviewed?.expires_at || s.expires_at, mode: cfg.mode,
+      review_token: reviewed?.review_token, identity: reviewed?.identity,
+      side: s.side, shares: s.suggested_shares, order: reviewed?.order};
+    const brokerOptions = $("#broker-order-options");
+    if (brokerOptions) brokerOptions.hidden = paper;
+    if (!paper) {
+      $("#broker-order-type").value = reviewed.order.type;
+      $("#broker-order-limit").value = reviewed.order.limit || "";
+      $("#broker-order-limit").disabled = reviewed.order.type !== "limit";
+      $("#broker-order-terms-status").textContent = "These terms are bound to this review. Changes require another review.";
+    }
     const el = $("#approve-preview");
     if (el) {
       const thesis = plainify(s.why_plain || s.llm_thesis || s.thesis || s.reason || "Idea waiting on you");
@@ -2414,14 +2787,13 @@
       const cash = Number(state?.ledger?.cash);
       const verb = String(s.side || "").toLowerCase() === "sell" ? "Sell" : "Buy";
       const maths = total != null
-        ? `${verb} ${sh} share${sh === 1 ? "" : "s"} × ${fmtMoney(px)} ≈ <strong>${fmtMoney(total)}</strong> of ${escapeHtml(moneyNoun(cfg))}`
+        ? `${verb} ${sh} share${sh === 1 ? "" : "s"} × ${fmtMoney(px)} ≈ <strong>${fmtMoney(total)}</strong> of ${escapeHtml(paper ? "simulated funds" : moneyNoun(cfg))}`
         : `${verb} ${escapeHtml(String(s.suggested_shares ?? "-"))} shares`;
       const left = !broker && verb === "Buy" && total != null && Number.isFinite(cash)
         ? `<div class="row"><span class="k">After</span><span>Leaves about ${fmtMoney(Math.max(0, cash - total))} of your ${fmtMoney(cash)} paper cash</span></div>`
         : "";
-      const brokerName = String(window.__brokerStatus?.broker || "broker").toUpperCase();
       const brokerBook = state?.broker_book || {};
-      const brokerAccount = brokerBook.account_id ? escapeHtml(String(brokerBook.account_id)) : "Not available";
+      const brokerAccount = reviewed?.identity?.account_id ? escapeHtml(String(reviewed.identity.account_id)) : "Not available";
       const brokerFunds = brokerBook.buying_power != null
         ? `Buying power ${fmtMoney(brokerBook.buying_power)}`
         : brokerBook.equity != null ? `Equity ${fmtMoney(brokerBook.equity)}` : "Funds not available";
@@ -2436,17 +2808,20 @@
         ? `${tradesUsed}/${maxTrades} trades used${lossLimit ? ` · loss limit ${fmtMoney(lossLimit)}` : ""}`
         : "Review guardrails before placing";
       const warn = live
-        ? `<div class="approve-live-warn" role="alert"><strong>REAL MONEY.</strong> This sends a real market order to your ${brokerName} account. The fill price can differ from ${fmtMoney(px)}. Verify the account, quantity, and risk limits before placing it.</div>`
+        ? `<div class="approve-live-warn" role="alert"><strong>REAL MONEY.</strong> This sends a real ${escapeHtml(reviewed.order.type)} order to your ${brokerName} account. Verify the account, quantity, price and risk limits before placing it.</div>`
         : broker
           ? `<div class="approve-broker-note">Sends an order to your <strong>${brokerName} paper</strong> account (separate from this desk's local paper book).</div>`
           : "";
       el.innerHTML = `
         ${warn}
-        ${live || broker ? `<div class="row"><span class="k">Account</span><span>${brokerAccount} · ${escapeHtml(brokerFunds)}</span></div>` : ""}
+        ${live || broker ? `<div class="row"><span class="k">Account</span><span>${brokerAccount} · ${escapeHtml(brokerFunds)}</span></div>` : `<div class="approve-broker-note"><strong>SIMULATED FUNDS.</strong> This paper research approval cannot submit a broker order.</div>`}
         <div class="row"><span class="k">Stock</span><span>${escapeHtml(s.ticker)}</span></div>
         <div class="row"><span class="k">Trade</span><span>${maths}</span></div>
-        <div class="row"><span class="k">Data</span><span>${escapeHtml(freshness)}</span></div>
-        <div class="row"><span class="k">Today</span><span>${escapeHtml(riskText)}${Number.isFinite(dayPnl) ? ` · P&amp;L ${fmtMoney(dayPnl)}` : ""}</span></div>
+        <div class="row"><span class="k">Desk update</span><span>${escapeHtml(freshness)}</span></div>
+        <div class="row"><span class="k">Price time</span><span>${escapeHtml(quoteLabel(s.quote))}</span></div>
+        <div class="row"><span class="k">Research model</span><span>${escapeHtml(signalModelLabel(s))}</span></div>
+        <div class="row"><span class="k">Risk checks</span><span>${broker ? "Broker holdings, working orders and limits are checked on submission." : `${escapeHtml(riskText)}${Number.isFinite(dayPnl) ? ` · Paper P&amp;L ${fmtMoney(dayPnl)}` : ""}`}</span></div>
+        ${broker ? `<p class="approve-live-warn">${reviewed.order.type === "limit" ? `DAY limit ${fmtMoney(reviewed.order.limit)} per share · entry notional bound ${fmtMoney(reviewed.order.notional_bound)}. Unfilled quantity stays working until broker expiry or cancellation.` : "Market order: execution price is unbounded."} ${reviewed.costs?.commission_estimate != null ? `Estimated commission ${fmtMoney(reviewed.costs.commission_estimate)} ${escapeHtml(reviewed.costs.currency || "")}; estimates can change.` : "Broker fees are unknown."} No all-in budget guarantee. This order has no attached broker stop-loss, take-profit or trailing stop. Manage protective orders at your broker.</p>` : ""}
         ${left}
         <div class="row"><span class="k">Why</span><span>${escapeHtml(String(thesis).slice(0, 160))}</span></div>
       `;
@@ -2470,7 +2845,7 @@
       const verb = String(s.side || "").toLowerCase() === "sell" ? "Sell" : "Buy";
       cbtn.textContent = live ? `${verb} real order` : broker ? `${verb} on broker paper` : `${verb} on local paper`;
       cbtn.classList.toggle("danger", live);
-      cbtn.title = live ? "Sends a real-money market order" : "Fake money — practice trade";
+      cbtn.title = live ? "Sends the reviewed real-money order" : "Fake money — practice trade";
       cbtn.disabled = false;
       if (live && lastDataAt && Date.now() - lastDataAt > 25000) {
         cbtn.disabled = true;
@@ -2479,7 +2854,10 @@
       if (live && ackInput) cbtn.disabled = true;
     }
     $("#approve-modal")?.classList.toggle("is-live", live);
-    // P0.4 quiet stop / TP — blank → fill_px + 0.8%×stop_r geometry
+    const bracket = $("#approve-bracket");
+    if (bracket) bracket.hidden = broker;
+    $$("#approve-bracket input").forEach(input => { input.disabled = broker; });
+    // Paper exits never apply to broker orders.
     const stopIn = $("#approve-stop");
     const tpIn = $("#approve-tp");
     const noBr = $("#approve-no-bracket");
@@ -2489,7 +2867,7 @@
     const trIn = $("#approve-trail");
     if (trIn) trIn.value = "";
     if (noBr) noBr.checked = false;
-    const preset = (state && state.preset) || {};
+    const preset = paper ? (state?.presets?.[cfg.paper_risk_preset || "mid"] || {}) : ((state && state.preset) || {});
     const stopR = preset.stop_r != null ? Number(preset.stop_r) : 1;
     const tgtR = preset.target_r != null ? Number(preset.target_r) : 2.5;
     const stopPct = (0.8 * stopR);
@@ -2499,12 +2877,14 @@
     }
     const modal = $("#approve-modal");
     if (modal) {
+      if (modal.classList.contains("hidden")) {
+        approveReturnFocus = opener;
+        approveReturnSignalId = id;
+      }
       modal.classList.remove("hidden");
-      modal.dataset.returnFocus = document.activeElement && document.activeElement.id
-        ? document.activeElement.id
-        : "";
-      const confirmBtn = $("#btn-approve-confirm");
-      if (confirmBtn) confirmBtn.focus();
+      const first = live ? $("#live-ack-input") : $("#btn-approve-confirm");
+      if (first) first.focus();
+      updateApproveEligibility();
     }
   }
 
@@ -2512,79 +2892,105 @@
     const modal = $("#approve-modal");
     if (!modal) return;
     modal.classList.add("hidden");
-    const rid = modal.dataset.returnFocus;
-    if (rid) {
-      const prev = document.getElementById(rid);
-      if (prev && typeof prev.focus === "function") prev.focus();
+    const previous = approveReturnFocus?.isConnected ? approveReturnFocus :
+      $$("[data-approve]").find(button => button.dataset.approve === approveReturnSignalId);
+    if (previous && typeof previous.focus === "function") previous.focus();
+    else {
+      const queue = $("#signal-list") || $("#signal-queue-hint");
+      if (queue) { queue.setAttribute("tabindex", "-1"); queue.focus(); }
     }
-
-    document.addEventListener("keydown", (ev) => {
-      const modal = $("#approve-modal");
-      if (!modal || modal.classList.contains("hidden")) return;
-      if (ev.key === "Escape") {
-        ev.preventDefault();
-        pendingApproveId = null;
-        closeApproveModal();
-        return;
-      }
-      if (ev.key !== "Tab") return;
-      const focusable = Array.from(modal.querySelectorAll(
-        "button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])"
-      ));
-      if (!focusable.length) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (ev.shiftKey && document.activeElement === first) {
-        ev.preventDefault();
-        last.focus();
-      } else if (!ev.shiftKey && document.activeElement === last) {
-        ev.preventDefault();
-        first.focus();
-      }
-    });
-    modal.dataset.returnFocus = "";
+    approveReturnFocus = null; approveReturnSignalId = null;
   }
 
-  async function confirmApprove() {
+  function invalidateBrokerOrderReview() {
+    if (!approvalContext || approvalContext.workspace === "paper") return;
+    approvalContext.review_token = null;
+    $("#broker-order-limit").disabled = $("#broker-order-type").value !== "limit";
+    $("#broker-order-terms-status").textContent = "Terms changed. Review updated terms before submitting.";
+    updateApproveEligibility();
+  }
+  $("#broker-order-type")?.addEventListener("change", invalidateBrokerOrderReview);
+  $("#broker-order-limit")?.addEventListener("input", invalidateBrokerOrderReview);
+  $("#broker-order-review")?.addEventListener("click", () => {
     if (!pendingApproveId) return;
-    const id = pendingApproveId;
-    pendingApproveId = null;
-    const stopVal = ($("#approve-stop") && $("#approve-stop").value || "").trim();
-    const tpVal = ($("#approve-tp") && $("#approve-tp").value || "").trim();
-    const noBracket = !!( $("#approve-no-bracket") && $("#approve-no-bracket").checked );
-    const cbtn = $("#btn-approve-confirm");
-    const ackInput = $("#live-ack-input");
-    if (realMoney(state?.config || {}) && ackInput &&
-        String(ackInput.value || "").trim().toUpperCase() !== String(ackInput.dataset.ticker || "").toUpperCase()) {
-      toast("Type the ticker exactly to confirm the live order.", true);
-      pendingApproveId = id;
-      if (cbtn) cbtn.disabled = false;
-      ackInput.focus();
+    const options = {type: $("#broker-order-type").value};
+    if (options.type === "limit") options.limit_price = $("#broker-order-limit").value;
+    openApprovePreview(pendingApproveId, options);
+  });
+
+  function approvalIsAllowed(context, ack, deskUpdatedAt, now = Date.now()) {
+    if (!context) return false;
+    if (context.expires_at && (!Number.isFinite(Date.parse(context.expires_at)) || Date.parse(context.expires_at) <= now)) return false;
+    const quote = context.quote;
+    if (quote?.market_time) {
+      const age = (now - Date.parse(quote.market_time)) / 1000;
+      if (!Number.isFinite(age) || age > Number(quote.max_age_sec || 120) || age < -15 || quote.fresh === false) return false;
+    } else if (context.workspace === "live") return false;
+    if (context.live && (!deskUpdatedAt || now - deskUpdatedAt > 25000 || String(ack || "").trim().toUpperCase() !== context.ticker)) return false;
+    return true;
+  }
+
+  function updateApproveEligibility() {
+    const button = $("#btn-approve-confirm");
+    if (!button || !pendingApproveId) return;
+    button.disabled = (approvalContext?.workspace === "live" && !approvalContext?.review_token) || !approvalIsAllowed(approvalContext, $("#live-ack-input")?.value, lastDataAt);
+  }
+
+  function approvalBody(context, fields) {
+    if (context?.workspace !== "paper") return {review_token: context.review_token, ack_ticker: fields.ackTicker};
+    if (fields.noBracket) return {bracket_off: true, no_bracket: true};
+    const body = {};
+    if (fields.stop) body.stop_loss = fields.stop;
+    if (fields.target) body.take_profit = fields.target;
+    if (fields.trail) body.trail_pct = fields.trail;
+    return body;
+  }
+
+  function handleApproveKeydown(ev) {
+    const modal = $("#approve-modal");
+    if (!modal || modal.classList.contains("hidden")) return;
+    if (ev.key === "Escape") {
+      ev.preventDefault(); pendingApproveId = null; approvalContext = null; closeApproveModal(); return;
+    }
+    if (ev.key !== "Tab") return;
+    const focusable = Array.from(modal.querySelectorAll("button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])"))
+      .filter(el => !el.hidden && !el.closest("[hidden], .hidden"));
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (ev.shiftKey && document.activeElement === first) { ev.preventDefault(); last.focus(); }
+    else if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
+  }
+
+  $("#live-ack-input")?.addEventListener("input", updateApproveEligibility);
+  document.addEventListener("keydown", handleApproveKeydown);
+  setInterval(updateApproveEligibility, 1000);
+
+  async function confirmApprove() {
+    if (!pendingApproveId || !approvalContext) return;
+    const context = approvalContext;
+    if (!approvalIsAllowed(context, $("#live-ack-input")?.value, lastDataAt)) {
+      toast("Confirm the exact ticker and refresh stale research before approving.", true);
+      updateApproveEligibility();
       return;
     }
-
-    $("#live-ack-input")?.addEventListener("input", (ev) => {
-      const input = ev.currentTarget;
-      const live = realMoney(state?.config || {});
-      const button = $("#btn-approve-confirm");
-      if (button && live) {
-        button.disabled = String(input.value || "").trim().toUpperCase() !==
-          String(input.dataset.ticker || "").toUpperCase();
-      }
-    });
-    if (cbtn) cbtn.disabled = true; // no double submit
-    closeApproveModal();
-    const body = {};
-    if (noBracket) {
-      body.bracket_off = true;
-      body.no_bracket = true;
-    } else {
-      if (stopVal) body.stop_loss = stopVal;
-      if (tpVal) body.take_profit = tpVal;
-      const trVal = ($("#approve-trail") && $("#approve-trail").value || "").trim();
-      if (trVal) body.trail_pct = trVal;
-      // blank both → server uses risk-preset defaults
+    const current = findSignalById(pendingApproveId);
+    if (!current || signalWorkspace(current) !== context.workspace || current.actionable !== true ||
+        (context.workspace === "live" && (state?.config?.mode !== context.mode ||
+         JSON.stringify(state?.config?.broker_identity) !== JSON.stringify(context.identity) ||
+         current.side !== context.side || current.suggested_shares !== context.shares))) {
+      toast("This idea or execution mode changed. Close this review and open a fresh one.", true);
+      return;
     }
+    const id = pendingApproveId;
+    pendingApproveId = null;
+    approvalContext = null;
+    const noBracket = context.workspace === "paper" && !!$("#approve-no-bracket")?.checked;
+    const body = approvalBody(context, {noBracket, ackTicker: $("#live-ack-input")?.value,
+      stop: ($("#approve-stop")?.value || "").trim(), target: ($("#approve-tp")?.value || "").trim(),
+      trail: ($("#approve-trail")?.value || "").trim()});
+    const cbtn = $("#btn-approve-confirm");
+    if (cbtn) cbtn.disabled = true;
+    closeApproveModal();
     try {
       // Broker path can take ~20 s (submit + fill confirmation) — don't give up at 12 s.
       const appr = await api(`/api/signals/${id}/approve`, {
@@ -2615,29 +3021,21 @@
   $("#btn-approve-confirm")?.addEventListener("click", () => confirmApprove());
   $("#btn-approve-cancel")?.addEventListener("click", () => {
     pendingApproveId = null;
+    approvalContext = null;
     closeApproveModal();
   });
   document.addEventListener("keydown", (ev) => {
-    if (ev.key !== "Escape") return;
-    const howto = $("#howto-modal");
-    if (howto && !howto.classList.contains("hidden")) {
-      closeHowto();
-      return;
-    }
-    const modal = $("#approve-modal");
-    if (!modal || modal.classList.contains("hidden")) return;
-    pendingApproveId = null;
-    closeApproveModal();
+    if (ev.key === "Escape" && !$("#howto-modal")?.classList.contains("hidden")) closeHowto();
   });
 
-  $("#signal-list")?.addEventListener("click", async (ev) => {
+  $$("#signal-list, #paper-signal-list").forEach(list => list.addEventListener("click", async (ev) => {
     const approve = ev.target.closest("[data-approve]");
     const reject = ev.target.closest("[data-reject]");
     if (approve) {
       openApprovePreview(approve.dataset.approve);
     }
     if (reject) skipWithUndo(reject.dataset.reject, "Skipped by you", reject.closest(".opp-card, .signal-card, article, li"));
-  });
+  }));
 
   // Skip waits 5 s before telling the server, so a mis-tap can be undone.
   const pendingSkips = new Map();
@@ -2789,7 +3187,7 @@
 
   function gateWhyPlain(last, loop, cfg) {
     if (!last && (!cfg || !cfg.session_active)) {
-      return "Not checking right now — press Start checking when you're ready.";
+      return activeWorkspace === "paper" ? "Paper research is stopped — press Start paper research when ready." : "Not checking right now — press Start checking when you're ready.";
     }
     if (!last) return "";
     const err = String(last.error || last.reason || "").toLowerCase();
@@ -2886,7 +3284,7 @@
     const why = gateWhyPlain(last, loop, cfg);
     if (simpleUi && lineEl) {
       if (!last) {
-        lineEl.innerHTML = "Standing by — press <em>Start</em> when you wish";
+        lineEl.innerHTML = activeWorkspace === "paper" ? (cfg.paper_research_enabled ? "Waiting for the next paper scan" : "Standing by — press <em>Start paper research</em>") : (cfg.session_active ? "Waiting for the next live research scan" : "Standing by — press <em>Start checking</em>");
       } else if (!ticker) {
         lineEl.innerHTML = "<em>No fresh call right now.</em> " +
           (loop.outside_rth || loop.last_skip === "outside_rth" || last.event === "loop_skip_rth"
@@ -2993,11 +3391,18 @@
   }
 
   function renderLoopPanel(data) {
-    const loop = data.loop || {};
+    data = workspaceView(data);
     const cfg = data.config || {};
+    const originalLoop = data.loop || {};
+    const mossEnabled = !!cfg.moss_paper?.enabled;
+    const mossActive = mossEnabled && cfg.paper_research_enabled && cfg.paper_auto_approve;
+    const loop = mossEnabled ? {...originalLoop, running:!!mossActive, rth_only:true,
+      last_skip:!mossActive ? "session_inactive" : originalLoop.rth_ok ? null : "outside_rth"} : activeWorkspace === "paper" ? {...originalLoop,
+      running: !!cfg.paper_research_enabled,
+      last_skip: !cfg.paper_research_enabled ? "session_inactive" : originalLoop.outside_rth ? "outside_rth" : null} : originalLoop;
     const daily = data.daily || {};
     const ledger = data.ledger || {};
-    const last = loop.last_decision || (data.decisions_preview && data.decisions_preview[0]) || null;
+    const last = deskCall(data);
 
     const rthBanner = $("#loop-rth-banner");
     if (rthBanner) {
@@ -3014,7 +3419,7 @@
     }
     const gateLoss = $("#gate-loss");
     if (gateLoss) {
-      const maxLoss = cfg.max_session_loss_usd ?? loop.max_session_loss_usd;
+      const maxLoss = loop.max_session_loss_usd;
       const skipped = loop.last_skip === "max_loss";
       gateLoss.textContent = maxLoss != null ? `Max loss ${fmtMoney(maxLoss)}` : "Max loss -";
       gateLoss.className = "gate " + (skipped ? "bad" : "ok");
@@ -3033,11 +3438,12 @@
         mode_not_auto_paper: "wrong mode",
       };
       gateLoop.textContent = running
-        ? `Every ${loop.interval_sec || 60}s`
+        ? (activeWorkspace === "paper" ? (cfg.paper_auto_approve ? "Auto paper approval" : "Paper review") : `Every ${loop.interval_sec || 60}s`)
         : skip
           ? `Paused | ${skipLabel[skip] || skip}`
           : "Idle";
       gateLoop.className = "gate " + (running ? "ok" : skip ? "warn" : "");
+      if(mossEnabled) gateLoop.textContent = mossActive ? `Moss paper · every ${cfg.moss_paper.interval_sec}s` : 'Moss paper paused';
     }
 
     const lat = loop.latency || {};
@@ -3081,6 +3487,9 @@
       }
     }
     const posEl = $("#loop-pos");
+    if(mossEnabled && healthEl) healthEl.textContent = !mossActive ? 'Moss paused' : loop.rth_ok ? 'Moss scheduled' : 'Moss waiting for market';
+    const researchRules = $("#paper-research-rules");
+    if(researchRules) researchRules.textContent = mossEnabled ? 'Moss controls automatic paper entries. Mock or routed research, stale prices and unverified evidence are excluded. Stop paper research pauses new entries; fresh reducing exits can continue.' : 'Fresh directional mock research may simulate trades. Hold, invalid data and stale quotes remain blocked. Stopping new research does not close paper positions.';
     if (posEl) {
       const positions = ledger.positions || [];
       if (!positions.length) posEl.textContent = "None";
@@ -3091,18 +3500,19 @@
           .join(", ");
       }
     }
+    const paperDaily = data.paper_daily || {};
     const pnlEl = $("#loop-pnl");
     if (pnlEl) {
-      const pnl = Number(daily.pnl || 0);
+      const pnl = Number(paperDaily.pnl || 0);
       pnlEl.textContent = fmtMoney(pnl);
       pnlEl.classList.toggle("pos", pnl > 0);
       pnlEl.classList.toggle("neg", pnl < 0);
     }
     const goalEl = $("#loop-goal");
     if (goalEl) {
-      if (daily.target_usd == null) goalEl.textContent = "not set";
-      else if (daily.target_hit) goalEl.textContent = "Hit - paused";
-      else goalEl.textContent = `${daily.progress_pct ?? 0}% | ${fmtMoney(daily.remaining_usd)} to go`;
+      if (paperDaily.target_usd == null) goalEl.textContent = "not set";
+      else if (paperDaily.target_hit) goalEl.textContent = "Hit - paused";
+      else goalEl.textContent = `${paperDaily.progress_pct ?? 0}% | ${fmtMoney(paperDaily.remaining_usd)} to go`;
     }
 
     // Big action + probs
@@ -3268,7 +3678,12 @@
           if (statusOnly) {
             const closed = loop.outside_rth || loop.last_skip === "outside_rth" || last.event === "loop_skip_rth";
             bits.push(closed ? "market closed" : "loop paused");
-          } else if (last.ts) bits.push(fmtTimeShort(last.ts));
+          } else if (last.ts) bits.push(new Date(last.ts).toLocaleString());
+          if (last.call_source) bits.push(last.call_source);
+          bits.push(signalModelLabel(last));
+          if (last.execution_block) bits.push(`Research only: ${last.execution_block}`);
+          if (last.stale) bits.push("STALE · historical call");
+          else if (last.age_sec != null) bits.push(`${Math.floor(last.age_sec / 60)}m old`);
           else if (conf > 0) bits.push(`${Math.round(conf * 100)}%`);
           if (last?.late) bits.push("late");
           meta.textContent = bits.join(" · ") || (simpleUi ? "" : "Latest call");
@@ -3298,8 +3713,9 @@
   function renderBrainLedger(data) {
     const lb = data.ledger_brain || {};
     const totals = data.session_totals || (data.loop && data.loop.session_totals) || {};
-    const modelUsd = Number(lb.model_usd != null ? lb.model_usd : totals.model_usd || 0);
-    const paperPnl = Number(lb.paper_pnl != null ? lb.paper_pnl : (data.daily && data.daily.pnl) || 0);
+    const recordedCost = data.model_cost || (data.llm && data.llm.model_cost);
+    const modelUsd = recordedCost ? (recordedCost.model_usd == null ? null : Number(recordedCost.model_usd)) : Number(lb.model_usd != null ? lb.model_usd : totals.model_usd || 0);
+    const paperPnl = Number(data.paper_daily?.pnl ?? lb.paper_pnl ?? 0);
     const friction = Number(lb.friction_usd != null ? lb.friction_usd : totals.friction_usd || 0);
     const late = Number(lb.late_blocks != null ? lb.late_blocks : totals.late_blocks || 0);
     const elBrain = $("#ledger-brain");
@@ -3307,8 +3723,8 @@
     const elFric = $("#ledger-friction");
     const elLate = $("#ledger-late");
     if (elBrain) {
-      elBrain.textContent = `Brain $${modelUsd.toFixed(4)}`;
-      elBrain.title = "Estimated model API spend this session (research accounting)";
+      elBrain.textContent = modelUsd == null ? "Brain cost unavailable" : `Brain ~$${modelUsd.toFixed(4)}`;
+      elBrain.title = "Recorded model API estimate today; survives restarts. Earlier untracked calls and provider invoices may differ.";
     }
     if (elPnl) {
       elPnl.textContent = `Paper P&L $${paperPnl.toFixed(2)}`;
@@ -3527,6 +3943,8 @@
           }
           if (e.coherence_label === "coherent" || e.coherent === true) {
             badges.push(`<span class="badge-coherent" title="Thesis pieces agreed (research note)">coherent</span>`);
+          } else if (e.coherence_label === "unavailable") {
+            badges.push('<span class="badge-err" title="Audit did not return a valid answer">audit unavailable</span>');
           } else if (e.coherence_label === "incoherent" || e.coherent === false) {
             badges.push(`<span class="badge-incoherent" title="Thesis pieces disagreed (research note)">incoherent</span>`);
           }
@@ -3547,7 +3965,7 @@
         const lat = e.latency_ms != null ? `${e.latency_ms}` : e.latencyMs != null ? `${e.latencyMs}` : "-";
         const size = isFill
           ? e.size_at_price ||
-            (e.fill ? `${e.fill.shares}@${e.fill.price}` : "-")
+            (e.fill && Number.isFinite(Number(e.fill.shares)) && Number.isFinite(Number(e.fill.price)) && e.fill.shares != null && e.fill.price != null ? `${e.fill.shares}@${e.fill.price}` : "Incomplete legacy record")
           : e.mid != null
             ? `@${Number(e.mid).toFixed(2)}`
             : "-";
@@ -3574,7 +3992,7 @@
           ? `<span class="feed-micro adv-only">${escapeHtml(microBits.join(" | "))}</span>`
           : "";
         const micro = microCore + advMicro;
-        const modeLabel = isFill
+        const modeLabel = isFill && size === "Incomplete legacy record" ? "LEGACY · INCOMPLETE" : isFill
           ? `<span class="feed-sim">paper fill</span>`
           : `<span class="feed-sim">paper intent</span>`;
         const newCls = markNew && idx === 0 ? " is-new" : "";
@@ -3593,7 +4011,7 @@
         const tickerLabel = escapeHtml(e.ticker || skip || "-");
         return `<div class="loop-feed-row${newCls}" data-event="${escapeHtml(evKind)}" data-side="${sideAttr}" data-kind="${kindAttr}" data-seq="${escapeHtml(String(e.seq ?? ""))}">
           <span class="feed-seq">${e.seq ?? "-"}</span>
-          <span class="feed-time">${escapeHtml(fmtTimeShort(e.ts))}</span>
+          <span class="feed-time">${escapeHtml(e.ts ? new Date(e.ts).toLocaleString() : "Date unknown")}</span>
           <span class="feed-ticker"><span class="ticker-badge">${tickerLabel}</span></span>
           <span class="feed-act"><span class="act-pill ${pillKind} ${actClass}">${act}</span>${badges.join("")}</span>
           <span class="feed-conf" title="${confNum != null ? "Confidence " + confNum + "%" : "Confidence unknown"}">${confBar}</span>
@@ -3606,6 +4024,8 @@
   }
 
   async function pollLoopFeed() {
+    if (document.hidden || pollLoopFeed.busy) return;
+    pollLoopFeed.busy = true;
     try {
       const q = loopFeedSeq ? `?since_seq=${loopFeedSeq}&limit=40` : "?limit=40";
       const data = await api(`/api/loop/feed${q}`);
@@ -3631,15 +4051,17 @@
       }
     } catch (_) {
       /* ignore poll errors */
+    } finally {
+      pollLoopFeed.busy = false;
     }
   }
 
   async function stopSession() {
     const before = state ? JSON.parse(JSON.stringify(state)) : null;
     await api("/api/session/stop", { method: "POST", body: "{}" });
-    toast("Checking stopped. Open positions keep their stop-loss protection.");
+    toast("Checking stopped. Existing broker positions and orders remain at the broker.");
     await refresh();
-    try { showRecap(before, state); } catch (_) {}
+    if (activeWorkspace === "paper") { try { showRecap(before, state); } catch (_) {} }
   }
 
 
@@ -3786,8 +4208,8 @@
     const rth = $("#chrome-rth");
     if (!rth) return;
     const loop = data.loop || {};
-    const on = loop.rth_ok !== false;
-    rth.textContent = on ? "Market hours" : "Outside hours";
+    const on = loop.rth_ok === true && !loop.outside_rth;
+    rth.textContent = loop.rth_ok == null ? "Hours unknown" : on ? "Market open" : "Market closed";
     rth.title = on
       ? "US regular trading session is open"
       : "Outside US regular trading hours — Auto paper pauses until the market opens";
@@ -3797,7 +4219,7 @@
   }
 
   function isOppActionable(o) {
-    return !!(o && o.source === "pending" && o.id && !String(o.id).startsWith("loop-"));
+    return !!(o && o.actionable === true && o.source === "pending" && o.id && !String(o.id).startsWith("loop-"));
   }
 
   function sidePlain(side) {
@@ -3848,12 +4270,14 @@
     lastPendingCount = pendingCount;
     try { syncPhase(cfg.session_active !== undefined ? cfg : (state?.config || {}), pendingCount, data); } catch (_) {}
     // Background tab: show the waiting count in the browser tab itself.
-    document.title = pendingCount > 0 ? `(${pendingCount}) waiting · Tomahawk` : "Tomahawk";
+    document.title = pendingCount > 0 ? `(${pendingCount}) waiting · nadzeeɫ` : "nadzeeɫ";
     const hint = $("#opp-hint-simple");
     if (hint) {
       const m = cfg.mode || "manual";
-      if (m === "auto_paper") {
-        hint.textContent = "Auto fill On — paper fills can happen without Approve. Waiting stays quiet unless something still needs you.";
+      if (activeWorkspace === "live") {
+        hint.textContent = m === "auto_live" ? "Automatic live broker mode is active. Eligible live ideas may submit orders." : "Live ideas only. Approve opens broker order review; Skip passes.";
+      } else if (m === "auto_paper") {
+        hint.textContent = "Paper auto approval is on. Eligible ideas simulate automatically; other research remains blocked.";
       } else if (m === "auto_live") {
         hint.textContent = "Auto + Alpaca is on (Advanced mode). Approve or auto may hit the broker — not the same as Ask me first. Switch to Ask me first or Auto fill for paper-only.";
       } else {
@@ -3875,9 +4299,11 @@
     if (hintAdv) {
       const m = cfg.mode || "manual";
       if (m === "auto_paper") {
-        hintAdv.textContent = "Auto fill On — paper fills happen without Approve. Ranked research may still show for review; Approve/Skip only applies to pending Ask-me-first ideas.";
+        hintAdv.textContent = 'Paper auto approval is on. Turn off “Automatically approve eligible paper research” above to review each eligible paper idea.';
       } else if (m === "auto_live") {
-        hintAdv.textContent = "Auto + Alpaca — Approve and auto paths can submit to the broker (live if ALPACA_PAPER=false). This is not Ask me first / paper Waiting.";
+        hintAdv.textContent = "Automatic broker mode — eligible ideas can submit orders to the verified broker account.";
+      } else if (m === "live_manual") {
+        hintAdv.textContent = "Broker approval mode — Approve opens an order review for the verified broker account. Hold, mock and AVOID research cannot be submitted.";
       } else {
         hintAdv.textContent = "Ranked research ideas (Pass = worth a look, Watch = not ready). Approve or Skip only applies to pending ideas — not a live order ticket.";
       }
@@ -3916,7 +4342,7 @@
   function oppSignature(rows, modeKey) {
     // Stable sig: omit signal_price (jitters every tick → full rewrite flash)
     return modeKey + "|" + (rows || [])
-      .map((o) => `${o.id || ""}|${o.source || ""}|${o.verdict || ""}|${o.side || ""}|${o.ticker || ""}|${o.suggested_shares ?? ""}`)
+      .map((o) => `${o.id || ""}|${o.source || ""}|${o.verdict || ""}|${o.side || ""}|${o.ticker || ""}|${o.suggested_shares ?? ""}|${o.actionable}|${o.llm_model}|${o.execution_block}`)
       .join(";");
   }
 
@@ -3929,8 +4355,8 @@
     const autoOn = cfg.mode === "auto_paper" && !!cfg.session_active;
     if (simple) {
       if (autoOn) {
-        if (main) main.textContent = "Auto fill On — fills happen on their own.";
-        if (sub) sub.textContent = "Switch to Ask me first if you want ideas to wait here.";
+        if (main) main.textContent = "Paper auto approval is on — eligible ideas are simulated automatically.";
+        if (sub) sub.textContent = 'Turn off “Automatically approve eligible paper research” above if you want to review each paper idea.';
       } else {
         if (main) main.textContent = "Nothing waiting.";
         if (sub) sub.textContent = "When an idea needs you, it lands here.";
@@ -3951,6 +4377,7 @@
   }
 
   function renderOpportunities(data) {
+    data = workspaceView(data);
     const el = $("#opp-feed");
     const churnEl = $("#opp-churn");
     const emptyEl = $("#opp-empty");
@@ -3973,7 +4400,7 @@
     }
     rows = rows.slice(0, 16);
     const pendingCount = autoHidePending ? 0 : rows.filter(isOppActionable).length;
-    const modeKey = `${simple ? "s" : "a"}|${cfg.mode || ""}|${cfg.session_active ? 1 : 0}`;
+    const modeKey = `${activeWorkspace}|${simple ? "s" : "a"}|${cfg.mode || ""}|${cfg.session_active ? 1 : 0}|${moneyNoun(cfg)}`;
     const sig = oppSignature(rows, modeKey);
     const skipRewrite = sig === lastOppSig;
 
@@ -4016,18 +4443,19 @@
           oppEmptyTimer = setTimeout(() => {
             oppEmptyTimer = null;
             // Re-check: if actionable rows returned, abort empty
-            const cur = (state && state.opportunities) || [];
+            const currentView = workspaceView(state);
+            const cur = currentView.opportunities || [];
             const stillSimple = getUiMode() === "simple" || document.body.classList.contains("ui-simple");
-            const stillCfg = (state && state.config) || snapCfg;
+            const stillCfg = currentView.config || snapCfg;
             if (stillSimple && stillCfg.mode === "auto_paper") {
               // Only force-empty Auto fill when no pending ghosts remain
-              const pc = Number((state && state.pending_count) || 0);
+              const pc = Number(currentView.pending_count || 0);
               if (pc === 0) {
                 setOppEmpty(stillSimple, stillCfg);
                 lastOppSig = oppSignature([], `${stillSimple ? "s" : "a"}|${stillCfg.mode || ""}|${stillCfg.session_active ? 1 : 0}`);
                 oppPrevTickers = new Set();
                 oppRankMap = {};
-                updateOppHeader(state || { config: stillCfg }, 0);
+                updateOppHeader(currentView, 0);
                 return;
               }
             }
@@ -4041,7 +4469,7 @@
             lastOppSig = oppSignature([], `${stillSimple ? "s" : "a"}|${stillCfg.mode || ""}|${stillCfg.session_active ? 1 : 0}`);
             oppPrevTickers = new Set();
             oppRankMap = {};
-            updateOppHeader(state || { config: stillCfg }, 0);
+            updateOppHeader(currentView, 0);
           }, 700);
         }
         // Keep previous list painted; do not flip lastOppSig to empty yet
@@ -4092,10 +4520,10 @@
       const canAct = isOppActionable(o);
       const actions = canAct
         ? `<div class="opp-actions">
-             <button type="button" class="btn good sm" data-approve="${escapeHtml(o.id)}" title="Approve places this paper trade (fake money)">Approve</button>
+             <button type="button" class="btn good sm" data-approve="${escapeHtml(o.id)}" title="Review the account and order before approving">Approve</button>
              <button type="button" class="btn bad sm" data-reject="${escapeHtml(o.id)}" title="Skip passes — nothing is filled">Skip</button>
            </div>`
-        : `<div class="opp-actions"><span class="muted">research only</span></div>`;
+        : `<div class="opp-actions"><span class="muted">${escapeHtml(o.execution_block || "Research only")}</span>${o.source === "pending" ? `<button type="button" class="btn ghost sm" data-reject="${escapeHtml(o.id)}">Skip</button>` : ""}</div>`;
       const buzzBadge = (!simple && o.buzz_mentions != null && Number(o.buzz_mentions) > 0)
         ? `<span class="badge badge-buzz">buzz ${escapeHtml(String(o.buzz_mentions))}</span>` : "";
       const focusCls = focusTicker && focusTicker === t ? "focus" : "";
@@ -4118,7 +4546,7 @@
         }
       }
       const vg = simple ? verdictGloss(v) : "";
-      const thesisFull = String(o.thesis || "");
+      const thesisFull = `${signalModelLabel(o)} · ${String(o.thesis || "")}`;
       let thesisShown = thesisFull;
       let thesisTitle = "";
       if (simple) {
@@ -4144,12 +4572,35 @@
       const whyLine = simple && canAct
         ? `<span class="opp-why-line muted">Approve places it with ${escapeHtml(moneyNoun())} · Skip passes (5 s to undo)</span>`
         : "";
+      const confN = Number(o.confidence);
+      const confPct = Number.isFinite(confN) ? Math.max(0, Math.min(100, Math.round(confN * 100))) : null;
+      const sideChipLabel = sideCls === "buy" || sideRaw === "long" || sideRaw === "buy" ? "BUY"
+        : sideCls === "sell" || sideRaw === "short" || sideRaw === "sell" ? "SELL"
+        : String(sideLabel || "—").toUpperCase();
+      const confHtml = confPct == null ? "" : `<span class="opp-conf-micro" title="Confidence ${confPct}%"><span class="opp-conf-track" aria-hidden="true"><span class="opp-conf-fill" style="width:${confPct}%"></span></span><span class="opp-conf-pct">${confPct}%</span></span>`;
+      const scoreN = Number(o.priority_score);
+      const tier = String(o.priority_tier || "");
+      const reasons = Array.isArray(o.priority_reasons) ? o.priority_reasons : [];
+      const rankHtml = (!simple && Number.isFinite(scoreN))
+        ? `<span class="opp-rank-meta" title="${escapeHtml(reasons.join(", ") || "priority factors")}"><span class="opp-rank-score">${scoreN.toFixed(0)}</span>${tier ? `<span class="opp-rank-tier">${escapeHtml(tier.replace("_", " "))}</span>` : ""}${reasons.length ? `<span class="opp-rank-why">${escapeHtml(reasons.slice(0, 4).join(" · "))}</span>` : ""}</span>`
+        : "";
+      const checkHtml = (!simple && canAct)
+        ? `<span class="opp-take-check muted">${escapeHtml([
+            confPct != null ? `conf ${confPct}%` : "conf —",
+            tier || "unranked",
+            reasons.includes("late_entry") ? "late — skip bias" : "",
+            reasons.includes("high_confidence") ? "high conf" : "",
+          ].filter(Boolean).join(" · "))}</span>`
+        : "";
       return `<div class="opp-row ${simple ? "opp-simple" : ""} ${churnCls} ${moveCls} ${focusCls} ${muteCls}" data-ticker="${escapeHtml(t)}">
         <span class="ticker">${escapeHtml(o.ticker)}</span>
-        <span class="sig-side ${escapeHtml(sideCls || "")}">${escapeHtml(sideLabel)}</span>
+        <span class="sig-side opp-side-chip ${escapeHtml(sideCls || "")}" title="${escapeHtml(sideChipLabel)}">${escapeHtml(sideChipLabel)}</span>
+        ${confHtml}
         ${verdictHtml}
+        ${rankHtml}
         <span class="thesis"${thesisAttr}>${escapeHtml(thesisShown)}</span>
         ${whyLine}
+        ${checkHtml}
         ${actions}
       </div>`;
     }).join("");
@@ -4166,45 +4617,224 @@
     set("#edge-win", e.win_rate != null ? `${Math.round(e.win_rate * 100)}%` : "-");
   }
 
+
+  function renderLiveIntel(data) {
+    const strip = $("#live-intel-strip");
+    if (!strip) return;
+    const cfg = (data && data.config) || {};
+    const goal = (data && data.live_goal) || {};
+    const strat = (data && data.strategy_status) || {};
+    const book = (data && data.broker_book) || {};
+    // Fallback if older server without live_goal payload
+    const target = goal.target_usd != null ? Number(goal.target_usd)
+      : (cfg.daily_profit_target_usd != null ? Number(cfg.daily_profit_target_usd) : null);
+    const pnl = goal.pnl_usd != null ? Number(goal.pnl_usd)
+      : (typeof book.day_pnl_usd === "number" ? Number(book.day_pnl_usd) : null);
+    const hit = goal.target_hit != null ? !!goal.target_hit
+      : (target != null && target > 0 && pnl != null && pnl >= target);
+    let pct = goal.progress_pct;
+    if (pct == null && target != null && target > 0 && pnl != null) {
+      pct = Math.max(0, Math.min(100, (pnl / target) * 100));
+    }
+    pct = Number(pct || 0);
+
+    const pnlEl = $("#live-goal-pnl");
+    const tgtEl = $("#live-goal-tgt");
+    const fillEl = $("#live-goal-fill");
+    const subEl = $("#live-goal-sub");
+    const softEl = $("#live-soft-goal");
+    if (pnlEl) {
+      pnlEl.textContent = pnl == null || !Number.isFinite(pnl) ? "—" : fmtSigned(pnl);
+      pnlEl.classList.toggle("pos", pnl != null && pnl > 0);
+      pnlEl.classList.toggle("neg", pnl != null && pnl < 0);
+    }
+    if (tgtEl) {
+      tgtEl.textContent = target != null && target > 0 ? fmtMoney(target) : "no goal set";
+      tgtEl.classList.toggle("hit", hit);
+    }
+    if (fillEl) {
+      fillEl.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+      fillEl.classList.toggle("is-hit", hit);
+      fillEl.classList.toggle("is-near", !hit && pct >= 85);
+    }
+    if (subEl) {
+      if (pnl == null || !Number.isFinite(pnl)) {
+        subEl.textContent = book.risk_error || book.error || "Broker day P&L unavailable — meter waits (new risk stays blocked without it).";
+      } else if (target == null || !(target > 0)) {
+        subEl.textContent = `Broker day P&L ${fmtSigned(pnl)}. Set a soft goal to track progress (does not raise caps).`;
+      } else if (hit) {
+        subEl.textContent = `Goal reached · new broker risk paused by existing gate · caps unchanged.`;
+      } else {
+        const rem = goal.remaining_usd != null ? Number(goal.remaining_usd) : (target - pnl);
+        const pace = (goal.pace && goal.pace.status) || "";
+        subEl.textContent = `${fmtMoney(Math.max(0, rem))} to goal · ${Math.round(pct)}%` + (pace && pace !== "n/a" ? ` · pace ${pace.replace("_", " ")}` : "");
+      }
+    }
+    if (softEl && document.activeElement !== softEl && softEl.dataset.dirty !== "1") {
+      softEl.value = target != null && target > 0 ? String(target) : "";
+    }
+
+    // Strategy flags
+    const flagsEl = $("#live-strategy-flags");
+    const nextEl = $("#live-strategy-next");
+    const mode = strat.mode || cfg.mode || "—";
+    const laOn = strat.live_agent_enabled != null ? !!strat.live_agent_enabled : !!(cfg.live_agent && cfg.live_agent.enabled);
+    const pol = (cfg.live_agent && cfg.live_agent.policy) || {};
+    const ks = cfg.kill_switch || {};
+    const symbols = strat.symbols && strat.symbols.length ? strat.symbols
+      : (pol.symbols || []);
+    const spyOnly = strat.spy_only != null ? !!strat.spy_only
+      : (symbols.length === 1 && String(symbols[0]).toUpperCase() === "SPY");
+    const maxOrder = strat.max_order_usd != null ? Number(strat.max_order_usd)
+      : Number(pol.max_order_usd ?? ks.max_position_size_usd);
+    const maxLoss = strat.max_daily_loss_usd != null ? Number(strat.max_daily_loss_usd)
+      : Number(pol.max_daily_loss_usd ?? ks.max_daily_loss_usd);
+    const maxOrd = strat.max_orders_per_day != null ? Number(strat.max_orders_per_day)
+      : Number(pol.max_orders_per_day ?? ks.max_trades_per_day);
+    const used = strat.orders_used != null ? Number(strat.orders_used)
+      : Number(data.broker_trades_today ?? 0);
+    const left = strat.orders_left != null ? Number(strat.orders_left)
+      : (Number.isFinite(maxOrd) ? Math.max(0, maxOrd - (Number.isFinite(used) ? used : 0)) : null);
+    const minConf = strat.min_confidence != null ? Number(strat.min_confidence)
+      : (pol.min_confidence != null ? Number(pol.min_confidence) : null);
+    const ready = strat.risk_ready != null ? !!strat.risk_ready : book.risk_ready === true;
+    const flags = [];
+    flags.push({ ok: true, text: `Mode ${mode}${laOn ? " · Moss live agent on" : ""}` });
+    flags.push({
+      ok: spyOnly,
+      text: spyOnly ? "Universe: SPY-only (school rail)" : (symbols.length ? `Universe: ${symbols.slice(0, 6).join(", ")}${symbols.length > 6 ? "…" : ""}` : "Universe: not set"),
+    });
+    flags.push({
+      ok: Number.isFinite(maxOrder),
+      text: Number.isFinite(maxOrder) ? `Max order ${fmtMoney(maxOrder)}` : "Max order unset",
+    });
+    flags.push({
+      ok: Number.isFinite(maxLoss),
+      text: Number.isFinite(maxLoss) ? `Daily loss cap ${fmtMoney(maxLoss)}` : "Daily loss cap unset",
+    });
+    const ordersOk = left == null ? true : left > 0;
+    flags.push({
+      ok: ordersOk,
+      text: Number.isFinite(maxOrd)
+        ? `Orders ${Number.isFinite(used) ? used : 0}/${maxOrd} · ${left} left`
+        : "Order cap unset",
+    });
+    if (minConf != null && Number.isFinite(minConf)) {
+      flags.push({ ok: true, text: `Min confidence ${Math.round(minConf * 100)}%` });
+    }
+    flags.push({
+      ok: ready,
+      text: ready ? "risk_ready true" : `risk_ready false${strat.risk_error || book.risk_error ? ` · ${strat.risk_error || book.risk_error}` : ""}`,
+    });
+    if (flagsEl) {
+      flagsEl.innerHTML = flags.map((f) =>
+        `<li class="${f.ok ? "is-ok" : "is-block"}">${escapeHtml(f.text)}</li>`
+      ).join("");
+    }
+    if (nextEl) {
+      let next = "Stand by — no forced trade.";
+      if (!ready) next = "Do not take new risk until broker day P&L / risk_ready is available.";
+      else if (left === 0) next = "School 1-trade cap used — manage open risk / journal; no new entries today.";
+      else if (hit) next = "Goal hit — new risk paused. Journal the win; do not chase size.";
+      else if (spyOnly && left > 0) next = "One slot left under school rails — wait for a high-quality SPY PASS with fresh quote.";
+      else if (left > 0) next = "Slot available — prefer PASS + confidence above min; skip late/chasing entries.";
+      nextEl.textContent = next;
+    }
+  }
+
   function renderRiskCockpit(data) {
-    const r = data.risk_cockpit || {};
-    const x = data.execution_realism || {};
-    const p = data.promotion_gate || {};
-    const set = (id, value) => { const el = $(id); if (el) el.textContent = value; };
-    set("#risk-trade-allowed", r.trade_allowed ? "Allowed" : "Blocked");
-    set("#risk-exposure", fmtMoney(r.exposure_usd || 0));
-    set("#risk-slippage", x.avg_slippage_bps == null ? "-" : `${x.avg_slippage_bps} bps`);
-    set("#risk-promotion", p.eligible ? "Eligible" : "Not yet");
-    const note = [];
-    if (!r.data_files_healthy) note.push("repair corrupt data before trading");
-    if (r.kill_switch_armed) note.push("kill-switch armed");
-    if (p.samples != null) note.push(`${p.samples} closed sample fills`);
-    set("#risk-quality-note", note.join(" · "));
+    const grid = $("#risk-cockpit-grid");
+    const book = data.broker_book || {};
+    const broker = data.broker || {};
+    const cfg = data.config || {};
+    const ks = cfg.kill_switch || cfg.live_agent?.policy || {};
+    const dayPnl = book.day_pnl_usd;
+    const lossCap = Number(ks.max_daily_loss_usd ?? ks.max_daily_loss ?? $("#ks-loss")?.value);
+    const maxTrades = Number(ks.max_trades_per_day ?? ks.max_orders_per_day ?? $("#ks-trades")?.value);
+    const used = Number(data?.loop?.session_totals?.intents ?? data?.broker_trades_today ?? data?.daily?.trades ?? 0);
+    const rows = book.positions || [];
+    const priced = book.ok && rows.every(position => Number.isFinite(Number(position.last)) && position.last != null);
+    const exposure = priced ? rows.reduce((sum, position) => sum + Math.abs(Number(position.shares) * Number(position.last)), 0) : null;
+    const permission = broker.paper_mode == null ? "Identity unverified" : "Order checks required";
+    const accountState = !book.ok ? "Unavailable" : book.risk_error ? "Incomplete" : "Available";
+    const ready = book.ok && book.risk_ready === true && typeof dayPnl === "number" && Number.isFinite(dayPnl);
+    const readyWord = ready ? "Ready" : !book.ok ? "Blocked" : book.risk_ready === true ? "Partial" : "Blocked";
+    const readyCls = ready ? "is-ready" : readyWord === "Partial" ? "is-partial" : "is-blocked";
+
+    const pnlKnown = typeof dayPnl === "number" && Number.isFinite(dayPnl);
+    const lossKnown = Number.isFinite(lossCap) && lossCap > 0;
+    let lossUsedPct = 0;
+    let lossFillCls = "";
+    if (pnlKnown && lossKnown) {
+      const usedLoss = Math.max(0, -dayPnl);
+      lossUsedPct = Math.max(0, Math.min(100, Math.round((usedLoss / lossCap) * 100)));
+      if (lossUsedPct >= 85) lossFillCls = "is-danger";
+      else if (lossUsedPct >= 60) lossFillCls = "is-warn";
+    }
+    const tradesKnown = Number.isFinite(maxTrades) && maxTrades > 0;
+    const left = tradesKnown ? Math.max(0, maxTrades - (Number.isFinite(used) ? used : 0)) : null;
+    const tradePct = tradesKnown ? Math.max(0, Math.min(100, Math.round(((Number.isFinite(used) ? used : 0) / maxTrades) * 100))) : 0;
+    let tradeFillCls = "";
+    if (tradesKnown && tradePct >= 85) tradeFillCls = "is-danger";
+    else if (tradesKnown && tradePct >= 60) tradeFillCls = "is-warn";
+
+    const formatSigned = typeof fmtSigned === "function" ? fmtSigned : fmtMoney;
+    const pnlTxt = pnlKnown ? formatSigned(dayPnl) : "Unavailable";
+    const pnlCls = !pnlKnown ? "" : dayPnl >= 0 ? "pos" : "neg";
+    const lossSub = lossKnown
+      ? (pnlKnown ? `Loss budget used ${lossUsedPct}% of ${fmtMoney(lossCap)}` : `Cap ${fmtMoney(lossCap)} · day P&L unknown`)
+      : "Loss cap not set";
+    const tradeTxt = tradesKnown ? `${Number.isFinite(used) ? used : 0} / ${maxTrades}` : "Unavailable";
+    const tradeSub = tradesKnown ? `${left} trade${left === 1 ? "" : "s"} left today` : "Trade cap not set";
+    const expTxt = exposure == null ? "Unknown" : fmtMoney(exposure);
+    const note = book.error || book.risk_error || "Each live order separately verifies the account, positions, working orders, fresh price and limits before submission.";
+
+    if (grid?.classList) {
+      grid.classList.add("vp1-meter-grid");
+      grid.innerHTML = `
+        <div class="vp1-meter-tile" data-meter="day-pnl">
+          <span class="vp1-meter-lbl">Day P&amp;L vs loss cap</span>
+          <span class="vp1-meter-val ${pnlCls}" id="risk-slippage">${escapeHtml(pnlTxt)}</span>
+          <div class="vp1-meter-track" aria-hidden="true"><div class="vp1-meter-fill ${lossFillCls}" style="width:${lossKnown && pnlKnown ? lossUsedPct : 0}%"></div></div>
+          <span class="vp1-meter-sub">${escapeHtml(lossSub)}</span>
+        </div>
+        <div class="vp1-meter-tile" data-meter="trades">
+          <span class="vp1-meter-lbl">Trades used / left</span>
+          <span class="vp1-meter-val" id="risk-trade-allowed">${escapeHtml(tradeTxt)}</span>
+          <div class="vp1-meter-track" aria-hidden="true"><div class="vp1-meter-fill ${tradeFillCls}" style="width:${tradePct}%"></div></div>
+          <span class="vp1-meter-sub">${escapeHtml(tradeSub)} · ${escapeHtml(permission)}</span>
+        </div>
+        <div class="vp1-meter-tile" data-meter="exposure">
+          <span class="vp1-meter-lbl">Open exposure</span>
+          <span class="vp1-meter-val" id="risk-exposure">${escapeHtml(expTxt)}</span>
+          <div class="vp1-meter-track" aria-hidden="true"><div class="vp1-meter-fill" style="width:${exposure == null ? 0 : Math.min(100, 40)}%"></div></div>
+          <span class="vp1-meter-sub">${rows.length} open position${rows.length === 1 ? "" : "s"}</span>
+        </div>
+        <div class="vp1-meter-tile" data-meter="ready">
+          <span class="vp1-meter-lbl">Ready status</span>
+          <span class="vp1-meter-val" id="risk-promotion"><span class="vp1-ready-row"><span class="vp1-ready-dot ${readyCls} vp1-pulse" aria-hidden="true"></span><span>${escapeHtml(readyWord)}</span></span></span>
+          <span class="vp1-meter-sub">${escapeHtml(accountState)} · account data</span>
+        </div>`;
+    } else {
+      const set = (id, value) => { const el = $(id); if (el) el.textContent = value; };
+      set("#risk-trade-allowed", permission);
+      set("#risk-exposure", expTxt);
+      set("#risk-slippage", pnlTxt);
+      set("#risk-promotion", accountState);
+    }
+    const noteEl = $("#risk-quality-note");
+    if (noteEl) noteEl.textContent = note;
   }
 
   $("#btn-force-flatten")?.addEventListener("click", async () => {
-    const b = window.__brokerStatus || {};
-    const brokerName = String(b.provider || b.broker || "broker").toUpperCase();
-    const warn =
-      b.configured
-        ? `Force flatten local paper AND cancel/close ${brokerName} positions?`
-        : "Force flatten ALL paper positions at last price?";
-    if (!confirm(warn)) return;
+    if (activeWorkspace !== "paper") return;
+    if (!confirm("Close all local paper positions at their current available prices? This does not change broker positions.")) return;
     try {
-      const data = await api("/api/ledger/flatten", { method: "POST", body: "{}" });
-      const n = data.count ?? (data.closed || []).length;
-      const bf = data.broker_flatten || {};
-      let msg = `Flattened ${n} local paper position(s)`;
-      if (bf.attempted) {
-        msg += bf.ok
-          ? ` + ${brokerName} cancel/close OK`
-          : ` — ${brokerName} flatten FAILED (not complete for broker book)`;
-      }
-      toast(msg, !!(data.refuse_flatten_as_complete || (bf.attempted && !bf.ok)));
+      const data = await api("/api/ledger/flatten", {method: "POST", body: "{}"});
+      const count = data.count ?? (data.closed || []).length;
+      toast(`Closed ${count} paper position(s). Broker positions are unchanged.`, !!data.refuse_flatten_as_complete);
       await refresh();
-    } catch (e) {
-      toast(e.message, true);
-    }
+    } catch (error) { toast(error.message, true); }
   });
 
   $("#opp-feed")?.addEventListener("click", (ev) => {
@@ -4470,7 +5100,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
     const id = String(item.id || "");
     const body = String(item.message || item.kind || "Desk note").slice(0, 180);
     try {
-      const n = new Notification("Tomahawk", { body, tag: id || undefined });
+      const n = new Notification("nadzeeɫ", { body, tag: id || undefined });
       n.onclick = () => { try { window.focus(); n.close(); } catch (_) {} };
     } catch (_) { /* fail soft */ }
   }
@@ -4534,6 +5164,19 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
   function fireAlert(key, msg, isError, opts) {
     if (!alertDedupe(key, opts)) return;
     toast(msg, !!isError);
+    playAlertBeep();
+  }
+
+  function presentBuzzAlert(candidate, buzz) {
+    if (!alertDedupe("buzz_rise_" + candidate.ticker, { high: false })) return;
+    const event = new CustomEvent("moss:buzz", { cancelable: true, detail: {
+      ticker: candidate.ticker, source: candidate.source,
+      cachedAt: buzz.cached_at, stale: buzz.stale !== false,
+    } });
+    // A visible Fox owns this cosmetic cue; other layouts retain the normal alert.
+    if (!window.dispatchEvent(event)) return;
+    const n = Math.max(1, Math.round(candidate.mentions || candidate.score));
+    toast(`Buzz rising: ${candidate.ticker} (${n} mentions)`, false);
     playAlertBeep();
   }
 
@@ -4619,7 +5262,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
               const names = newly.map((e) => e.ticker);
               const shown = names.slice(0, 5).join(", ");
               const more = names.length > 5 ? ", ..." : "";
-              msg = `${newly.length} new paper ideas: ${shown}${more}`;
+              msg = `${newly.length} new ${activeWorkspace === "paper" ? "paper" : "live research"} ideas: ${shown}${more}`;
             }
             toast(msg, false);
             playAlertBeep();
@@ -4675,13 +5318,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
         const lastFire = buzzSpikeCooldown.get(c.ticker) || 0;
         if (now - lastFire < BUZZ_SPIKE_COOLDOWN_MS) continue;
         buzzSpikeCooldown.set(c.ticker, now);
-        const n = Math.max(1, Math.round(c.mentions || c.score));
-        fireAlert(
-          "buzz_rise_" + c.ticker,
-          `Buzz rising: ${c.ticker} (${n} mentions)`,
-          false,
-          { high: false }
-        );
+        presentBuzzAlert(c, buzz);
       }
       prevBuzzHitTickers = hitSet;
     } catch (_) { /* fail soft */ }
@@ -4704,7 +5341,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
     const daily = lite.daily || {};
     const last = loop.last_decision || lite.last_decision || {};
     const opp = Array.isArray(lite.opportunities) ? lite.opportunities : [];
-    const oppKey = opp.map((o) => (o && (o.id || o.ticker || "")) + ":" + (o && o.status || "")).join(",");
+    const oppKey = opp.map((o) => [o?.id || o?.ticker, o?.status, o?.actionable, o?.execution_block].join(":")).join(",");
     const pos = (lite.open_position && lite.open_position.items) || [];
     const posKey = pos.map((p) => String((p && p.ticker) || "") + ":" + String((p && p.shares) || "")).join(",");
     const sb = lite.scoreboard || {};
@@ -4722,18 +5359,24 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
       lite.radar_enabled, lite.heat_enabled,
       lite.radar && lite.radar.count,
       lite.buzz && lite.buzz.updated_at,
-      lite.brain_mode, lite.pace && lite.pace.status,
+      lite.brain_mode, lite.pace && lite.pace.status, lite.desk_call?.ts, lite.desk_call?.stale, Math.floor((lite.desk_call?.age_sec || 0) / 60),
       lite.open_pnl_usd, lite.broker_trades_today,
+      lite.broker?.configured, lite.broker?.paper_mode, lite.broker?.connected_label, lite.startup?.checked_at,
+      lite.desk_call?.execution_block, lite.desk_call?.quote?.fresh,
       lite.bleed && lite.bleed.paused, lite.bleed && lite.bleed.net_usd,
       lite.benchmark && lite.benchmark.ahead_usd,
       lite.broker_book && lite.broker_book.day_pnl_usd,
-      lite.broker_book && (lite.broker_book.positions || []).length,
+      JSON.stringify(lite.broker_book || null), JSON.stringify(lite.broker_ledger || null), JSON.stringify(lite.paper_ledger || null),
+      JSON.stringify(lite.config || null), JSON.stringify(lite.signals || null),
+      JSON.stringify(lite.paper_daily || null), JSON.stringify(lite.paper_daily_recap || null),
+      lite.paper_desk_call?.ts, lite.paper_desk_call?.execution_block, Math.floor((lite.paper_desk_call?.age_sec || 0) / 60),
       loop.decision_in_flight, loop.last_skip,
     ].join("|");
   }
 
   function applyStateLite(lite) {
     if (!lite || lite.ok === false) return;
+    stateLiteGeneration++;
     // Alerts: always attempt (id Set dedupes); do not depend on lite signature
     if (lite.alerts) consumeDeskAlerts(lite.alerts);
     const sig = liteSignature(lite);
@@ -4754,12 +5397,24 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
       };
       window.__oppEmptyStreak = 0;
     }
+    if (lite.config) state.config = {...state.config, ...lite.config};
+    if (lite.signals) state.signals = lite.signal_history_delta
+      ? {...state.signals, ...lite.signals} : lite.signals;
+    if (lite.broker_ledger) state.ledger = {...state.ledger, ...lite.broker_ledger};
+    if (lite.paper_ledger) state.ledger = {...state.ledger, ...lite.paper_ledger};
+    if (lite.paper_daily) state.paper_daily = lite.paper_daily;
+    if (lite.paper_daily_recap) state.paper_daily_recap = lite.paper_daily_recap;
+    if (Object.prototype.hasOwnProperty.call(lite, "paper_desk_call")) state.paper_desk_call = lite.paper_desk_call;
     if (lite.loop) state.loop = lite.loop;
     if (lite.daily) state.daily = lite.daily;
     if (lite.pace) state.pace = lite.pace;
     if (lite.open_pnl_usd !== undefined) state.open_pnl_usd = lite.open_pnl_usd;
     if (lite.broker_trades_today !== undefined) state.broker_trades_today = lite.broker_trades_today;
     state.broker_book = lite.broker_book || null;
+    state.desk_call = lite.desk_call || null;
+    state.startup = lite.startup || state.startup;
+    if (lite.broker) state.broker = lite.broker;
+    renderStartupStatus(state);
     if (lite.bleed !== undefined) state.bleed = lite.bleed;
     if (lite.benchmark !== undefined) state.benchmark = lite.benchmark;
     try {
@@ -4845,21 +5500,32 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
       if (lite.fee_bps != null) state.config.fee_bps = lite.fee_bps;
     }
     if (lite.model_cost) state.model_cost = lite.model_cost;
+    if (lite.live_goal) state.live_goal = lite.live_goal;
+    if (lite.strategy_status) state.strategy_status = lite.strategy_status;
+    if (lite.broker_book) state.broker_book = lite.broker_book;
+    if (lite.broker_trades_today != null) state.broker_trades_today = lite.broker_trades_today;
+    window.dispatchEvent(new CustomEvent("desk:state", {detail: state}));
+    const view = workspaceView(state);
     // Soft updates - never touch #watchlist from lite (no cfg.watchlist array)
-    renderSessionChip(state.config || {}, state.ledger || {}, state.loop);
-    renderLoopPanel(state);
-    renderBrainLedger(state);
-    renderPaperChrome(state);
-    renderBuzz(state);
-    renderHeat(state);
-    renderRadar(state);
-    renderPace(state);
-    renderOpportunities(state);
-    renderPositions(state);
-    syncTradeGlowLedger(state);
-    updateDeskGuide(state);
-    if (fullStateSeen) maybeAlertFromState(state);
-    scheduleSparks(state);
+    renderTop(view);
+    renderLoopPanel(view);
+    renderBrainLedger(view);
+    renderPaperChrome(view);
+    renderBuzz(view);
+    renderHeat(view);
+    renderRadar(view);
+    renderPace(view);
+    renderOpportunities(view);
+    try { renderLiveIntel(state); } catch (_) {}
+    renderPositions(view);
+    syncTradeGlowLedger(view);
+    updateDeskGuide(view);
+    if (fullStateSeen) maybeAlertFromState(view);
+    scheduleSparks(view);
+    renderSignals(view);
+    renderFills(view);
+    renderBrokerStatus(state.broker);
+    renderWorkspaceChrome(state);
     if (lite.last_decision && lite.last_decision.ticker) {
       const ev = Object.assign({ event: "decision" }, lite.last_decision);
       const seen = new Set(loopEvents.map((e) => e.seq));
@@ -4873,8 +5539,8 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
   }
 
   function renderPace(data) {
-    const daily = data.daily || {};
-    const pace = data.pace || daily.pace || {};
+    const daily = data.paper_daily || {};
+    const pace = daily.pace || {};
     const label = $("#pace-label");
     const mark = $("#pace-mark");
     const fill = $("#target-fill");
@@ -5022,7 +5688,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
       }
       return;
     }
-    const sig = movers.map((m) => `${m.ticker}|${m.pct_change}|${m.score}`).join(";");
+    const sig = movers.map((m) => `${m.ticker}|${m.pct_change}|${m.score}|${m.market_time}|${m.fresh}|${m.observation_status}|${(m.research_flags || []).join(",")}`).join(";");
     if (sig === lastRadarSig) return;
     lastRadarSig = sig;
     lane.innerHTML = movers.slice(0, 24).map((m) => {
@@ -5031,8 +5697,11 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
       const up = Number.isFinite(pct) && pct >= 0;
       const pctStr = Number.isFinite(pct) ? ((pct >= 0 ? "+" : "") + pct.toFixed(1) + "%") : "";
       const score = m.score != null ? Number(m.score).toFixed(0) : "";
-      const tip = [t, pctStr, m.rel_volume != null ? "relative volume " + m.rel_volume : "", "paper research — not a signal"].filter(Boolean).join(" · ");
-      return `<span class="radar-chip ${up ? "up" : "down"}" title="${escapeHtml(tip)}"><strong>${escapeHtml(t)}</strong><span class="radar-pct">${escapeHtml(pctStr)}</span>${score ? `<span class="radar-score">${escapeHtml(score)}</span>` : ""}</span>`;
+      const priorSession = m.observation_status === "prior_session" || (m.research_flags || []).includes("prior_session_quote");
+      const marketTime = Date.parse(m.market_time);
+      const observation = priorSession ? `Prior session · ${Number.isFinite(marketTime) ? new Date(marketTime).toLocaleString() : "market time unknown"}` : "";
+      const tip = [t, pctStr, observation, m.rel_volume != null ? "relative volume " + m.rel_volume : "", "paper research — not a signal"].filter(Boolean).join(" · ");
+      return `<span class="radar-chip ${up ? "up" : "down"}" title="${escapeHtml(tip)}"><strong>${escapeHtml(t)}</strong><span class="radar-pct">${escapeHtml(pctStr)}</span>${score ? `<span class="radar-score">${escapeHtml(score)}</span>` : ""}${observation ? `<span class="muted">${escapeHtml(observation)}</span>` : ""}</span>`;
     }).join("");
   }
 
@@ -5134,7 +5803,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
       const u = String(t || "").toUpperCase();
       if (u && !tickers.includes(u)) tickers.push(u);
     };
-    const last = (data.loop && data.loop.last_decision) || (data.decisions_preview && data.decisions_preview[0]) || data.last_decision;
+    const last = deskCall(data);
     if (last && last.ticker) push(last.ticker);
     if (focusTicker) push(focusTicker);
     const heat = data.heat || (data.buzz && data.buzz.heat) || [];
@@ -5177,6 +5846,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
   }
 
   function connectSSE() {
+    if (document.hidden) return;
     if (typeof EventSource === "undefined") {
       setLiveInd("polling");
       return;
@@ -5190,7 +5860,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
         clearTimeout(sseReconnectTimer);
         sseReconnectTimer = null;
       }
-      const q = loopFeedSeq ? `?since_seq=${loopFeedSeq}` : "";
+      const q = `?compact=1${loopFeedSeq ? `&since_seq=${loopFeedSeq}` : ""}`;
       const es = new EventSource("/api/loop/stream" + q);
       sseEs = es;
       es.addEventListener("hello", () => {
@@ -5296,12 +5966,12 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
 
   function restartStatePoll() {
     if (statePollTimer) clearInterval(statePollTimer);
-    statePollTimer = setInterval(refresh, statePollMs);
+    statePollTimer = document.hidden ? null : setInterval(refresh, statePollMs);
   }
 
   function restartLoopPoll() {
     if (loopPollTimer) clearInterval(loopPollTimer);
-    loopPollTimer = setInterval(pollLoopFeed, sseLive ? 60000 : 2500);
+    loopPollTimer = document.hidden ? null : setInterval(pollLoopFeed, sseLive ? 60000 : 2500);
   }
 
   // Only restart loop poll when live/polling mode actually changes
@@ -5316,9 +5986,24 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
   };
 
   window.addEventListener("pagehide", () => {
+    clearInterval(statePollTimer); clearInterval(loopPollTimer); clearInterval(sparkTimer);
     if (sseEs) { try { sseEs.close(); } catch (_) {} sseEs = null; }
     if (sseReconnectTimer) { clearTimeout(sseReconnectTimer); sseReconnectTimer = null; }
   });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (sseEs) { sseEs.close(); sseEs = null; }
+      clearTimeout(sseReconnectTimer); sseReconnectTimer = null;
+      restartStatePoll(); restartLoopPoll();
+    } else {
+      // A background tab must not retain an apparently fresh approval.
+      lastDataAt = 0; updateApproveEligibility();
+      refresh(); pollLoopFeed(); connectSSE(); restartStatePoll(); restartLoopPoll();
+    }
+  });
+  window.addEventListener("pageshow", e => { if (e.persisted) { refresh(); connectSSE(); restartStatePoll(); restartLoopPoll(); } });
+  window.addEventListener("desk:refresh", () => refresh());
 
   
   const brainSel = $("#brain-mode-select");
@@ -5331,7 +6016,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
           method: "POST",
           body: JSON.stringify({ brain_mode: mode }),
         });
-        toast(`Brain set to ${mode} (paper only)`);
+        toast(`Research brain set to ${mode} (live and paper research)`);
         await refresh();
       } catch (err) {
         toast(String(err.message || err), true);
@@ -5433,7 +6118,8 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
       if (friction.parentElement !== sheetBody) sheetBody.appendChild(friction);
     } else if (home) {
       if (alerts.parentElement !== home) home.appendChild(alerts);
-      if (friction.parentElement !== home) home.appendChild(friction);
+      const paperHome = $("#desk-paper .section-grid");
+      if (paperHome && friction.parentElement !== paperHome) paperHome.appendChild(friction);
     }
   }
 
@@ -5992,11 +6678,13 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
   }
 
   refresh();
+  openReport();
   refreshCuratedMeta();
   restartLoopPoll();
   restartStatePoll();
   connectSSE();
   sparkTimer = setInterval(() => {
+    if (document.hidden) return;
     if (state) scheduleSparks(state);
   }, 95000);
 })();

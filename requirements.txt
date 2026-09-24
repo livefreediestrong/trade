@@ -1,4 +1,5 @@
 Flask>=3.0.0
+pydantic>=2.13,<3  # Validated contracts for the isolated paper execution kernel
 waitress>=3.0.0
 yfinance>=0.2.40
 pandas>=2.0.0

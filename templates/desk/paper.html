@@ -1,0 +1,207 @@
+<section id="desk-paper" class="desk-section paper-section" aria-labelledby="desk-paper-title">
+<div class="section-heading"><h2 id="desk-paper-title">Paper research</h2><p>Simulated funds · independent sizing, approvals and results</p></div>
+{% if config.get('RESEARCH_STUDIO_AVAILABLE') %}{% include "desk/scanner_link.html" %}{% endif %}
+<div class="section-grid">
+<section class="panel" id="paper-loop-status"><h3>Local paper loop status</h3>
+      <div class="loop-gates adv-only" id="loop-gates" aria-label="Local paper loop gates" data-workspace-only="paper">
+        <span class="gate" id="gate-rth" title="Whether US regular trading hours are open">Hours...</span>
+        <span class="gate" id="gate-loss" title="Biggest paper loss allowed today before Auto paper pauses">Max loss...</span>
+        <span class="gate" id="gate-loop" title="Whether the scheduled check loop is running">Loop...</span>
+      </div>
+    <div class="loop-strip" id="loop-strip" data-workspace-only="paper">
+      <div class="strip-cell adv-only" title="How long the last check took (latency)"><span class="lbl">Speed</span><span class="val" id="loop-lat">-</span></div>
+      <div class="strip-cell" title="Is the local paper loop on or off"><span class="lbl">Paper loop</span><span class="val" id="loop-health">Off</span></div>
+      <div class="strip-cell" title="Local paper holdings; broker holdings are separate"><span class="lbl">Paper position</span><span class="val" id="loop-pos">None</span></div>
+      <div class="strip-cell strip-secondary" title="Today's paper profit or loss"><span class="lbl">Paper P&amp;L</span><span class="val" id="loop-pnl">-</span></div>
+      <div class="strip-cell strip-secondary" title="Your daily profit goal"><span class="lbl">Goal</span><span class="val" id="loop-goal">-</span></div>
+    </div>
+</section>
+<section class="panel paper-research-controls" data-workspace-only="paper" aria-labelledby="paper-research-title">
+    <div class="panel-head"><h2 id="paper-research-title">Paper research</h2><strong id="paper-research-status">Paper research stopped</strong></div>
+    <p>Simulated funds only. Paper approvals never submit broker orders or change live trading mode.</p>
+    <div class="paper-research-actions">
+      <button type="button" class="btn ghost" id="btn-paper-find-idea">Find paper idea</button>
+      <button type="button" class="btn primary" id="btn-paper-research-toggle">Start paper research</button>
+      <label class="chk"><input type="checkbox" id="paper-auto-approve" /> Automatically approve eligible paper research</label>
+      <label for="paper-risk-preset">Paper risk <select id="paper-risk-preset"><option value="low">Low</option><option value="mid">Mid</option><option value="high">High</option></select></label>
+    </div>
+    <button type="button" class="btn ghost dangerish" id="btn-reset-ledger" data-workspace-only="paper" title="Wipe paper positions, fills, and cash back to starting bank">Reset paper account</button>
+    {% if config.get('COMPANION_AVAILABLE') %}
+    <form id="paper-sizing-form" class="compact-form">
+      <label class="chk"><input id="paper-fractional" type="checkbox" /> Allow fractions of a share in paper practice</label>
+      <label>Dollars per paper entry<input id="paper-order-budget" type="number" min="0" max="100000" step="0.01" value="0" /></label>
+      <button type="submit" class="btn">Save paper sizing</button><span id="paper-sizing-status" role="status"></span>
+    </form>
+    <p class="hint-line">0 uses your risk preset. A dollar cap includes modeled entry fees. Selling an existing paper holding can still close its full remaining fraction.</p>
+    {% endif %}
+    <p class="muted" id="paper-account-totals">Simulated account loading…</p>
+    <p class="hint-line" id="paper-research-rules">Fresh directional mock research may simulate trades. Hold, invalid data and stale quotes remain blocked. Stopping new research does not close paper positions.</p>
+  </section>
+<div class="hero-stats" data-workspace-only="paper">
+      <div class="hero" title="Profit or loss today. 'Closed' is from finished trades; 'open' is what your current positions are worth right now versus what you paid.">
+        <span class="lbl">Paper today <span class="lbl-sub">closed</span></span>
+        <span class="val money" id="stat-pnl">-</span>
+        <span class="sub money" id="stat-pnl-open" hidden></span>
+      </div>
+      <div class="hero target-hero" title="Your daily profit goal">
+        <span class="lbl">Goal</span>
+        <span class="val" id="stat-target">not set</span>
+        <div class="target-bar race-meter" id="race-meter" aria-label="Goal race">
+          <div class="target-fill" id="target-fill"></div>
+          <div class="pace-mark" id="pace-mark" title="Expected progress through regular trading hours (informational only)"></div>
+        </div>
+        <span class="target-rem" id="stat-target-rem"></span>
+        <span class="pace-label adv-only" id="pace-label"></span>
+      </div>
+      <div class="hero" title="Paper trades today">
+        <span class="lbl">Trades</span>
+        <span class="val" id="stat-trades">0</span>
+      </div>
+    </div>
+<div class="stage-bleed" id="stage-bleed" data-workspace-only="paper" role="alert" hidden>
+        <strong>Paper simulations paused by the loss guard.</strong>
+        <p data-bleed-text></p>
+        <div class="bleed-actions">
+          <button type="button" class="btn sm" id="btn-bleed-resume">Resume anyway</button>
+          <span class="muted">Tip: look at the Positions and trade history first.</span>
+        </div>
+      </div>
+<div class="brain-ledger adv-only" id="brain-ledger" aria-label="Model cost versus paper profit and loss" data-workspace-only="paper">
+      <p class="hint-line quiet-hint ledger-caption">Brain ledger — model spend vs paper P&amp;L (research accounting, not a broker statement).</p>
+      <span class="ledger-pill" id="ledger-brain" title="Estimated model API spend this session">Brain $0</span>
+      <span class="ledger-pill" id="ledger-pnl" title="Today's paper profit or loss">Paper P&amp;L $0</span>
+      <span class="ledger-pill" id="ledger-friction" title="Paper slip and fee drag this session">Friction $0</span>
+      <span class="ledger-pill soft" id="ledger-late" title="Checks skipped because the move looked late">Late 0</span>
+
+    </div>
+<div class="paper-friction" id="paper-friction" data-workspace-only="paper" role="group" aria-label="Paper fill honesty">
+      <div class="friction-head">
+        <span class="friction-title"><span class="simple-only">Pretend trading costs</span><span class="adv-only">Paper friction</span></span>
+        <span class="friction-session muted" id="friction-session-hint" title="Pretend costs so far this session">So far $0.00</span>
+      </div>
+      <div class="friction-row">
+        <label class="friction-field" for="friction-slip" title="How much worse than mid-price the paper fill is, in basis points (1 bps = 0.01%)">
+          <span class="friction-lbl"><span class="simple-only">Fill penalty</span><span class="adv-only">Slip (bps)</span> <span class="title-ctx adv-only">(fill worse than mid)</span></span>
+          <input type="number" id="friction-slip" min="0" max="100" step="1" value="5" inputmode="decimal" />
+        </label>
+        <label class="friction-field" for="friction-fee" title="Extra cash drag per fill, in basis points of notional (1 bps = 0.01%)">
+          <span class="friction-lbl"><span class="simple-only">Fee per trade</span><span class="adv-only">Fee (bps)</span> <span class="title-ctx adv-only">(cash drag per fill)</span></span>
+          <input type="number" id="friction-fee" min="0" max="50" step="0.5" value="1" inputmode="decimal" />
+        </label>
+        <div class="friction-presets" role="group" aria-label="Friction presets">
+          <button type="button" class="btn ghost friction-preset" data-slip="0" data-fee="0" title="No extra costs (less realistic)">None</button>
+          <button type="button" class="btn ghost friction-preset" data-slip="5" data-fee="1" title="About what a real trade costs">Typical</button>
+          <button type="button" class="btn ghost friction-preset" data-slip="15" data-fee="3" title="Pessimistic costs — a tougher test">Tough</button>
+        </div>
+      </div>
+      <p class="friction-gloss muted"><span class="simple-only">Real trades cost a little: you rarely get the exact price, and brokers charge fees. These make practice honest. Example: fill penalty 5 means buying $1,000 of stock costs about $0.50 extra; fee 1 adds $0.10.</span><span class="adv-only">Slip = how much worse than mid the paper fill is. Fee = cash drag per fill. Both use bps (basis points: 1 bps = 0.01%). Presets: None / Typical / Tough. These are simulation assumptions, not verified broker costs.</span></p>
+    </div>
+<p class="bench-line" id="bench-line" data-workspace-only="paper" hidden title="Compares this desk with simply buying the S&amp;P 500 (SPY) with the same cash when you pressed Start checking."></p>
+<section class="panel" id="paper-ideas-panel" aria-labelledby="paper-ideas-title">
+  <h2 id="paper-ideas-title">Paper ideas &amp; latest call</h2>
+  <p class="hint-line">Simulated funds only. Paper auto approval and paper risk are controlled above.</p>
+  <div id="paper-latest-call" class="paper-latest-call"></div>
+  <label for="paper-signal-status">Show paper ideas <select id="paper-signal-status"><option value="pending">Waiting</option><option value="approved">Filled / approved</option><option value="rejected">Skipped</option><option value="expired">Expired</option></select></label>
+  <div class="signal-list" id="paper-signal-list"></div>
+</section>
+<section class="panel pos-row" id="positions-panel" data-workspace-only="paper">
+        <button type="button" class="pos-toggle simple-only" id="btn-pos-toggle" aria-expanded="false" title="Expand or collapse positions">
+          <span class="pos-chip" id="pos-chip">0 open</span>
+          <span>Positions</span>
+          <span class="pos-hint" id="pos-hint">tap to expand</span>
+        </button>
+        <div class="pos-body" id="pos-body">
+        <h2><span class="panel-ico" aria-hidden="true">▤</span> Positions <span class="title-ctx simple-only">(what you hold on paper)</span><span class="title-ctx adv-only">(open paper holdings)</span></h2>
+        <div id="pos-empty" class="empty hidden">No open positions<span class="empty-hint">Nothing held on paper yet.</span></div>
+        <div id="positions" class="table-wrap"></div>
+        </div>
+      </section>
+<section class="panel equity-score-panel viz-primary curve-strip" id="equity-score-panel" data-workspace-only="paper" aria-label="Day equity scoreboard">
+    <button type="button" class="curve-toggle simple-only" id="btn-curve-toggle" aria-expanded="false" title="Expand or collapse day curve">
+      <span class="chev" aria-hidden="true">▸</span>
+      <span class="curve-toggle-label">Day curve</span>
+      <span class="curve-meta" id="curve-strip-meta">—</span>
+    </button>
+    <div class="curve-body" id="curve-body">
+    <div class="panel-head equity-score-head">
+      <h2>
+        <span class="panel-ico" aria-hidden="true">⌒</span>
+        Day curve
+        <span class="title-ctx simple-only">(today's paper P&amp;L)</span>
+        <span class="title-ctx adv-only">(today's paper P&amp;L, biggest drop, and fills)</span>
+      </h2>
+      <div class="equity-score-stats" aria-label="Day stats">
+        <span class="eq-stat" title="Biggest drop from today's high"><span class="eq-lbl">Biggest drop</span><span class="eq-val" id="eq-dd">—</span></span>
+        <span class="eq-stat" title="How many paper trades filled today"><span class="eq-lbl">Fills today</span><span class="eq-val" id="eq-fills">0</span></span>
+        <span class="eq-stat" title="Share of calls that helped over the decision horizon (not fill W/L)"><span class="eq-lbl">Calls helped</span><span class="eq-val" id="eq-win">—</span></span>
+      </div>
+    </div>
+    <div class="equity-curve-shell" role="presentation">
+      <canvas id="equity-curve-canvas" width="640" height="72" role="img" aria-label="Session paper equity curve"></canvas>
+    </div>
+    <p class="equity-butler simple-only" id="eq-butler">Quiet so far — watching watchlist headlines for you</p>
+    <div class="radar-whisper-wrap" id="radar-whisper-wrap">
+      <p class="radar-butler-line muted hidden simple-only" id="radar-butler-line" aria-live="polite"></p>
+      <div class="radar-whisper simple-only" id="radar-whisper" aria-label="Top radar tickers" hidden></div>
+    </div>
+    </div><!-- /curve-body -->
+  </section>
+<section class="panel daily-recap-panel" id="daily-recap-panel" data-workspace-only="paper" aria-label="Daily after-hours recap">
+    <div class="panel-head">
+      <h2><span class="panel-ico" aria-hidden="true">◷</span> Daily recap <span class="title-ctx">(after the market closes)</span></h2>
+    </div>
+    <p class="daily-recap-headline muted" id="daily-recap-headline">Waiting for the day summary…</p>
+    <p class="daily-recap-detail muted" id="daily-recap-detail">No recap yet.</p>
+  </section>
+<section class="panel edge-panel adv-only" id="edge-panel" data-workspace-only="paper">
+    <div class="panel-head">
+      <h2>Edge check <span class="title-ctx">(sample metrics — not proof of edge)</span></h2>
+      <span class="sample-tag">sample only — not proof of edge</span>
+    </div>
+    <p class="hint-line quiet-hint">Small-sample stats from recent paper research. Use them to sanity-check the desk — they do not prove a trading edge.</p>
+    <div class="edge-grid" id="edge-grid">
+      <div class="edge-cell" title="How many sample decisions are in this window"><span class="lbl">Sample size</span><span class="val" id="edge-n">-</span></div>
+      <div class="edge-cell" title="Share of checks that stayed flat / abstained"><span class="lbl">Hold / abstain</span><span class="val" id="edge-hold">-</span></div>
+      <div class="edge-cell" title="Share marked Pass (worth a look) — research label, not a fill"><span class="lbl">Pass rate</span><span class="val" id="edge-pass">-</span></div>
+      <div class="edge-cell" title="Share that helped when an outcome was marked — still sample only"><span class="lbl">Win (when marked)</span><span class="val" id="edge-win">-</span></div>
+    </div>
+  </section>
+<section class="panel ops-panel adv-only" id="ops-panel" data-workspace-only="paper">
+    <div class="panel-head">
+      <h2>Paper controls <span class="title-ctx">(simulated positions only)</span></h2>
+    </div>
+    <div class="ops-row">
+      <button type="button" class="btn danger" id="btn-force-flatten" title="Close simulated positions only; broker positions remain unchanged">Close all paper positions</button>
+      <span class="hint-line quiet-hint">Closes local paper positions using available quotes. It never closes or cancels broker positions or orders.</span>
+    </div>
+    <div class="ops-row alert-sound-row">
+      <p class="hint-line quiet-hint">Sound and desktop notification controls are in the live research panel.</p>
+    </div>
+  </section>
+
+
+<section class="panel"><h2>Paper fills</h2><div id="fills" class="table-wrap"></div></section>
+<section class="panel wide-panel"><h2>Paper decision history</h2><div class="loop-feed-wrap adv-only" data-workspace-only="paper">
+      <p class="feed-caption">Decision log <span class="title-ctx">(history of checks — not a to-do list)</span></p>
+      <div class="loop-feed-head">
+        <span class="feed-seq" title="Sequence number">#</span><span class="feed-time" title="When the check happened">Time</span><span class="feed-ticker" title="Ticker symbol">Ticker</span><span class="feed-act" title="What the brain decided or filled">Action</span><span class="feed-conf" title="Confidence — how sure the brain was (0–100%)">Conf</span><span class="feed-ms adv-only" title="Latency — how long the check took (milliseconds)">ms</span><span class="feed-size" title="Share size or mid price">Size</span><span class="feed-mode adv-only" title="Brain/fill mode — paper intent vs paper fill">Mode</span>
+      </div>
+      <div id="loop-empty" class="feed-empty feed-empty-calm">
+        <p class="feed-empty-icon" aria-hidden="true">···</p>
+        <p class="feed-empty-main">No decisions yet.</p>
+        <p class="muted feed-empty-sub">Press Start — each scheduled check lands here as a history log, not a task list.</p>
+      </div>
+      <div class="loop-feed" id="loop-feed" aria-live="polite"></div>
+    </div></section>
+<div id="report-modal" data-workspace-only="paper" class="panel inline-report" aria-labelledby="report-title">
+    <div class="report-card">
+      <h3 id="report-title">This week's report card</h3>
+      <div id="report-body" class="report-body"><p class="muted">Loading…</p></div>
+      <div class="modal-actions">
+        <button type="button" class="btn ghost" id="btn-backtest" title="Replay the screener's buy rule on ~2 years of past prices for your watchlist">Test the rules on past data</button>
+        <button type="button" class="btn good" id="btn-report-refresh">Refresh report</button>
+      </div>
+    </div>
+  </div>
+{% include "desk/workbench_paper.html" %}
+</div></section>

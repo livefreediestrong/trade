@@ -1,0 +1,29 @@
+<section class="panel workbench-wide" id="saved-watchlists">
+  <h3>Saved watchlists</h3>
+  <form id="saved-watchlist-form" class="compact-tools">
+    <label>Name <input name="name" maxlength="60" required /></label>
+    <label>Symbols <input name="symbols" placeholder="AAPL, MSFT, SPY" required /></label>
+    <button type="submit" class="btn">Save watchlist</button>
+  </form>
+  <label for="saved-watchlist-select">Saved list</label>
+  <select id="saved-watchlist-select"><option value="">Load saved lists…</option></select>
+  <button type="button" id="saved-watchlist-load" class="btn ghost">Load saved lists</button>
+  <button type="button" id="saved-watchlist-apply" class="btn">Apply selected watchlist</button>
+  <p id="saved-watchlist-status" role="status">Applying a list changes research symbols; it does not submit an order.</p>
+</section>
+<section class="panel workbench-wide" id="trade-journal">
+  <h3>Trade journal &amp; CSV</h3>
+  <form id="journal-filter" class="compact-tools">
+    <label>Workspace <select name="workspace"><option value="">All</option><option value="live">Live</option><option value="paper">Local paper</option><option value="broker_paper">Broker paper</option></select></label>
+    <label>Record <select name="kind"><option value="">Orders and fills</option><option value="order">Orders</option><option value="fill">Fills</option></select></label>
+    <label>Symbol <input name="ticker" maxlength="10" /></label>
+    <label>Status <input name="status" placeholder="filled, pending…" /></label>
+    <label>Strategy / model <input name="strategy" /></label>
+    <label>From <input name="from" type="datetime-local" /></label>
+    <label>To <input name="to" type="datetime-local" /></label>
+    <button type="submit" class="btn">Filter journal</button>
+    <a id="journal-export" href="/api/workbench/journal?format=csv" download="desk-journal.csv">Export matching CSV</a>
+  </form>
+  <p id="journal-summary" role="status">Retained desk history only. Broker fills are cumulative per order; positions are shown in the broker and paper books above.</p>
+  <div id="journal-table" class="table-wrap"></div>
+</section>

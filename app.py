@@ -14,6 +14,7 @@ Broker routing supports Alpaca and Interactive Brokers Gateway.
 from __future__ import annotations
 
 import csv
+import copy
 import atexit
 import hashlib
 import hmac
@@ -27,9 +28,9 @@ import re
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from flask import Flask, jsonify, render_template, request
 
@@ -50,6 +51,7 @@ import desk_alerts
 import macro_calendar
 import edgar_client
 import options_flow
+import order_terms
 from risk_policy import RISK_PRESETS
 
 APP_DIR = Path(__file__).resolve().parent
@@ -66,8 +68,8 @@ LESSONS_PATH = DATA_DIR / "lessons.json"
 BACKTEST_PATH = DATA_DIR / "backtest.json"
 
 BANNER = (
-    "Tomahawk — Gemini research desk. Local paper by default; Alpaca optional "
-    "(ALPACA_PAPER=true → paper-api; ALPACA_PAPER=false → LIVE money endpoint)."
+    "Tomahawk — live trading and separate paper research. "
+    "Check the verified broker account before approving an order."
 )
 
 DEFAULT_WATCHLIST = ["AAPL", "MSFT", "NVDA", "TSLA", "AMD", "SPY", "QQQ"]
@@ -78,7 +80,7 @@ def yahoo_symbol(symbol: str) -> str:
     if not sym:
         return sym
     # Class shares: BRK.B / BRK/B → BRK-B
-    if re.match(r"^[A-Z]{1,5}[./][A-Z]$", sym):
+    if re.match(r"^[A-Z]{1,5}[./][AB]$", sym):
         return sym.replace(".", "-").replace("/", "-")
     return sym
 
@@ -163,7 +165,7 @@ def sanitize_watchlist(symbols: list[str] | None) -> list[str]:
         from paper_loop import equity_loop_symbols
         return equity_loop_symbols(parsed)
     except Exception:
-        return parsed
+        return []
 
 
 def parse_watchlist_import(value: Any) -> list[str]:
@@ -206,6 +208,9 @@ _parse_watchlist = parse_watchlist
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "mode": "manual",  # manual | auto_paper | auto_live
+    "paper_research_enabled": False,
+    "paper_auto_approve": False,
+    "paper_risk_preset": "mid",
     "risk_preset": "mid",
     "watchlist": list(DEFAULT_WATCHLIST),
     "paper_equity": 100_000.0,
@@ -269,6 +274,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 _lock = threading.RLock()
 app = Flask(__name__)
+# The local desk's templates can be redesigned without restarting the broker session.
+# Jinja checks template mtimes; this does not enable Flask's debugger or process reloader.
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 try:
     from werkzeug.middleware.proxy_fix import ProxyFix
     _proxy_hops = int(os.environ.get("TOMAHAWK_TRUSTED_PROXY_HOPS", "0") or 0)
@@ -388,6 +396,23 @@ def _static_cache_headers(resp):
     return resp
 
 
+@app.after_request
+def _compress_json_snapshot(resp):
+    """Compress large snapshots, never SSE or a streamed response."""
+    if (request.method == "GET" and request.accept_encodings["gzip"] > 0
+            and resp.mimetype == "application/json" and not resp.is_streamed
+            and not resp.direct_passthrough and not resp.headers.get("Content-Encoding")):
+        raw = resp.get_data()
+        if len(raw) >= 4096:
+            import gzip
+            packed = gzip.compress(raw, compresslevel=1, mtime=0)
+            if len(packed) < len(raw):
+                resp.set_data(packed)
+                resp.headers["Content-Encoding"] = "gzip"
+                resp.vary.add("Accept-Encoding")
+    return resp
+
+
 
 # ---------------------------------------------------------------------------
 # Persistence helpers
@@ -446,7 +471,7 @@ def _load_json(path: Path, default: Any) -> Any:
         # utf-8-sig: tolerate a BOM (PowerShell 5 Set-Content/Out-File adds one)
         with path.open("r", encoding="utf-8-sig") as f:
             return json.load(f)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         _mark_corrupt(path, str(exc))
         return default
     except OSError:
@@ -599,7 +624,9 @@ def _clean_kill_switch_in(ks_in: Any) -> dict[str, Any]:
             if k == "max_trades_per_day":
                 out[k] = int(out[k])
     if "armed" in ks_in:
-        out["armed"] = bool(ks_in["armed"])
+        if not isinstance(ks_in["armed"], bool):
+            raise BadNumber("armed must be true or false")
+        out["armed"] = ks_in["armed"]
     return out
 
 
@@ -661,12 +688,106 @@ def save_signals(signals: list[dict[str, Any]]) -> None:
     kept = [
         s
         for i, s in enumerate(signals)
-        if i < SIGNALS_KEEP or (isinstance(s, dict) and s.get("status") in ("pending", "approving"))
+        if i < SIGNALS_KEEP or (isinstance(s, dict) and s.get("status") in ("pending", "approving", "broker_pending"))
     ]
     _save_json(SIGNALS_PATH, kept)
 
 
-def _signal_ui_projection(signal: dict[str, Any]) -> dict[str, Any]:
+def signal_workspace(signal: dict[str, Any]) -> str:
+    if signal.get("workspace") in ("live", "paper"):
+        return signal["workspace"]
+    return "paper" if signal.get("mode_at_create") in ("manual", "auto_paper") else "live"
+
+
+def paper_research_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Local simulation settings; never changes the main broker mode/session."""
+    result = dict(cfg, mode="auto_paper" if cfg.get("paper_auto_approve") else "manual",
+                session_active=bool(cfg.get("paper_research_enabled")),
+                risk_preset=cfg.get("paper_risk_preset", "mid"),
+                daily_profit_target_usd=None, max_session_loss_usd=None,
+                kill_switch=dict(DEFAULT_CONFIG["kill_switch"]), _paper_research=True)
+    import moss_policy
+    p = moss_policy.settings(cfg)
+    if p["enabled"]:
+        result.update(rth_only=True, paper_fractional_enabled=True,
+                      kill_switch={"armed":True,"max_trades_per_day":p["max_trades_per_day"],
+                                   "max_daily_loss_usd":float(cfg.get("paper_equity") or 0)*p["max_daily_loss_pct"]/100,
+                                   "max_position_size_usd":p["max_order_usd"]})
+    return result
+
+
+def _size_paper_research(sig, cfg, ledger):
+    """Share the thesis, never the live workspace's suggested position size."""
+    preset = get_preset(cfg.get("risk_preset"))
+    px = _finite_float(sig.get("signal_price"), 0) or 0
+    from trade_planner import paper_quantity
+    fractional = bool(cfg.get("paper_fractional_enabled", False))
+    held = sum(float(p.get("shares") or 0) for p in ledger.get("positions", [])
+               if p.get("ticker") == sig.get("ticker") and p.get("side") == "long")
+    if sig.get("side") == "sell":
+        shares = held
+    elif px > 0:
+        equity = max(0, float(ledger.get("equity") or 0))
+        budget = max(0, equity * preset["max_position_pct"] / 100 - held * px)
+        dollar_cap = _finite_float(cfg.get("paper_order_budget"), 0) or 0
+        entry_px = px * (1 + float(cfg.get("slip_bps", 5)) / 10000)
+        fee_factor = 1 + _cfg_fee_bps(cfg) / 10000
+        quantity_cap = min(budget / entry_px,
+                           max(0, float(ledger.get("cash") or 0)) / (entry_px * fee_factor))
+        if dollar_cap > 0:
+            quantity_cap = min(quantity_cap, dollar_cap / (entry_px * fee_factor))
+        shares = paper_quantity(quantity_cap, fractional)
+    else:
+        shares = 0
+    multiplier = _finite_float(sig.get("advisory_size_mult"), 1.0)
+    shares = paper_quantity(shares * max(0, min(1, multiplier)), fractional or sig.get("side") == "sell")
+    sig.update(suggested_shares=shares, suggested_notional=round(shares * px, 2),
+               preset=cfg.get("risk_preset"), stop_r=preset["stop_r"], target_r=preset["target_r"])
+    # Paper protection must also use the paper preset when geometry is resolved.
+    sig.pop("stop", None)
+    sig.pop("target", None)
+
+
+def _pending_scan_blocks(signal: dict[str, Any], cfg: dict[str, Any]) -> bool:
+    if signal.get("status") in ("approving", "broker_pending"):
+        return True
+    if signal.get("status") != "pending":
+        return False
+    expected = "live" if cfg.get("mode") in ("live_manual", "auto_live") else "paper"
+    if signal_workspace(signal) != expected:
+        return False
+    quote = signal.get("quote")
+    if not isinstance(quote, dict):
+        return False
+    return not bool(signal_execution_block(signal, broker=expected == "live"))
+
+
+def signal_execution_block(signal: dict[str, Any], *, broker: bool = False) -> str | None:
+    """Research may be retained without becoming an executable instruction."""
+    if signal.get("llm_error"):
+        return "Brain error: wait for a new decision"
+    if signal.get("execution_block"):
+        return "Research gate: " + str(signal["execution_block"])
+    if signal.get("abstain") or str(signal.get("llm_side") or "").lower() in ("flat", "hold"):
+        return "Hold / flat decision: no order"
+    if str(signal.get("side") or "").lower() not in ("buy", "sell"):
+        return "No executable buy or sell decision"
+    if "demo" in (signal.get("sources") or []) or signal.get("synthetic"):
+        return "Synthetic research cannot be traded"
+    if isinstance(signal.get("quote"), dict):
+        import data_sources as ds
+        q = signal["quote"]
+        if not ds.quote_snapshot(q.get("price"), q.get("market_time"), q.get("source", "unknown"))["fresh"]:
+            return "Research price is stale or unverified; request a fresh scan"
+    if broker:
+        if str(signal.get("llm_model") or "").startswith("mock") or signal.get("brain_mode") == "mock" or "mock_brain" in (signal.get("llm_risks") or []):
+            return "Mock research is for paper practice only"
+        if str(signal.get("verdict") or "").upper() == "AVOID":
+            return "AVOID research cannot be sent to the broker"
+    return None
+
+
+def _signal_ui_projection(signal: dict[str, Any], cfg: dict | None = None) -> dict[str, Any]:
     """Keep state polls small without changing persisted signal fidelity."""
     fields = (
         "id", "ticker", "side", "status", "ts", "created_at", "expires_at",
@@ -674,8 +795,22 @@ def _signal_ui_projection(signal: dict[str, Any]) -> dict[str, Any]:
         "lateness_label", "entry_quality", "earnings", "rel_vol", "research_flags",
         "research_flag", "llm_side", "llm_error", "llm_thesis", "citations",
         "screener_citations", "gap_pct", "reject_reason", "size_mult_suggested",
+        "llm_model", "llm_confidence", "llm_risks", "brain_mode", "routed", "router_reason", "quote",
+        "workspace", "source_signal_id", "mode_at_create", "decision_record_id", "execution_block", "manual_order", "origin",
     )
     out = {key: signal[key] for key in fields if key in signal}
+    cfg = cfg or load_config()
+    out["workspace"] = signal_workspace(signal)
+    blocked = signal_execution_block(signal, broker=out["workspace"] == "live" and cfg.get("mode") in ("live_manual", "auto_live"))
+    out.update(actionable=not bool(blocked), execution_block=blocked)
+    if signal.get("llm_error") or signal.get("abstain") or signal.get("llm_side") in ("flat", "hold"):
+        out["side"] = "hold"
+        out["confidence"] = 0 if signal.get("llm_error") else signal.get("llm_confidence", signal.get("confidence", 0))
+    if isinstance(out.get("quote"), dict):
+        import data_sources as ds
+        q = out["quote"]
+        out["quote"] = ds.quote_snapshot(q.get("price"), q.get("market_time"), q.get("source", "unknown"))
+        out["quote"]["received_at"] = q.get("received_at")
     for key, limit in (("reason", 320), ("llm_thesis", 600), ("reject_reason", 240)):
         if key in out and out[key] is not None:
             out[key] = str(out[key])[:limit]
@@ -686,6 +821,10 @@ def _signal_ui_projection(signal: dict[str, Any]) -> dict[str, Any]:
                 for item in out[key][:8]
                 if isinstance(item, dict)
             ]
+            if not signal.get("quote"):
+                for item in out[key]:
+                    if item.get("key") == "as_of" or item.get("label") == "As of":
+                        item["label"] = "Legacy scan time (price time unknown)"
     fill = signal.get("fill")
     if isinstance(fill, dict):
         out["fill"] = {
@@ -869,6 +1008,7 @@ def _cap_shares_for_broker(
     *,
     equity_override: float | None = None,
     allow_fetch: bool = True,
+    existing_notional: float = 0.0,
 ) -> tuple[int, float, str | None]:
     """Apply same size / loss caps as paper path before broker qty submit.
 
@@ -907,8 +1047,8 @@ def _cap_shares_for_broker(
             sig["size_capped_for_atr_risk"] = True
             sig["atr_risk_budget_usd"] = round(risk_budget, 2)
             sig["atr_stop_distance_usd"] = round(risk_per_share, 4)
-    max_pos = equity * (float(preset["max_position_pct"]) / 100.0)
-    max_shares = max(1, int(max_pos / max(px, 0.01))) if max_pos > 0 else shares
+    max_pos = max(0.0, equity * (float(preset["max_position_pct"]) / 100.0) - existing_notional)
+    max_shares = int(max_pos / px)
     if shares > max_shares:
         shares = max_shares
         sig["suggested_shares"] = shares
@@ -918,7 +1058,7 @@ def _cap_shares_for_broker(
     if ks.get("armed") and ks.get("max_position_size_usd") is not None:
         try:
             ks_max = float(ks["max_position_size_usd"])
-            ks_shares = max(1, int(ks_max / max(px, 0.01))) if ks_max > 0 else shares
+            ks_shares = int(max(0, ks_max - existing_notional) / px)
             if shares > ks_shares:
                 shares = ks_shares
                 sig["suggested_shares"] = shares
@@ -926,11 +1066,42 @@ def _cap_shares_for_broker(
         except (TypeError, ValueError):
             pass
     notional = round(shares * px, 2)
+    if shares <= 0:
+        return 0, 0.0, "Position limit reached (including holdings and working orders)"
     return shares, notional, None
 
 
 _BROKER_SUBMIT_LOCK = threading.Lock()
+# Mode changes take this lock before _lock; slow account reads and fill polling
+# stay outside it so switching off broker execution can revoke an in-flight check.
+_BROKER_EXEC_LOCK = threading.RLock()
 BROKER_FILL_WAIT_SEC = float(os.environ.get("BROKER_FILL_WAIT_SEC", "6") or 6)
+_BROKER_REVIEWS: dict[str, dict] = {}
+
+
+def _review_terms(sig, cfg):
+    return {"signal": {key: sig.get(key) for key in
+                       ("id", "ticker", "side", "suggested_shares", "workspace", "expires_at", "quote", "signal_price", "manual_order")},
+            "mode": cfg.get("mode"), "identity": cfg.get("broker_identity")}
+
+
+def _execution_deadline(sig):
+    """An absolute deadline survives waits in the app and the broker owner queue."""
+    import data_sources as ds
+    quote = sig.get("execution_quote") or {}
+    if not ds.quote_snapshot(quote.get("price"), quote.get("market_time"), quote.get("source", "unknown"))["fresh"]:
+        raise ValueError("Execution quote is stale or unverified; request a fresh review")
+    deadlines = [datetime.fromisoformat(quote["market_time"].replace("Z", "+00:00")) + timedelta(seconds=120)]
+    for key in ("expires_at", "review_expires_at"):
+        if sig.get(key):
+            stamp = datetime.fromisoformat(str(sig[key]).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                raise ValueError("Signal expiry must include a timezone")
+            deadlines.append(stamp)
+    deadline = min(deadlines)
+    if deadline <= datetime.now(timezone.utc):
+        raise ValueError("Order review or signal expired; request a fresh review")
+    return deadline.isoformat()
 
 
 def _broker_fill_record(
@@ -983,6 +1154,9 @@ def _broker_fill_record(
         "confirmed": confirmed,
         "price_estimated": not confirmed,
         "order_id": broker_resp.get("order_id"),
+        "broker_identity": copy.deepcopy((broker_resp.get("order") or {}).get("broker_identity") or sig.get("review_identity")),
+        "execution_versions": copy.deepcopy(confirm.get("execution_versions") or {}),
+        "execution_correction": confirm.get("execution_correction") is True,
         "paper_mode": broker_resp.get("paper_mode"),
         "endpoint": broker_resp.get("endpoint"),
         "price_source": price_source,
@@ -1012,10 +1186,9 @@ def _broker_position_qty(ticker: str) -> tuple[float, str | None]:
     for p in res.get("positions") or []:
         if str(p.get("symbol") or "").upper() != sym:
             continue
-        try:
-            q = float(p.get("qty") or 0)
-        except (TypeError, ValueError):
-            q = 0.0
+        q = _finite_float(p.get("qty"))
+        if q is None:
+            return 0.0, "Invalid broker position quantity; cannot verify exposure"
         if str(p.get("side") or "").lower() == "short":
             q = -abs(q)
         return q, None
@@ -1037,7 +1210,11 @@ def _broker_book_cached() -> dict[str, Any] | None:
     if not _broker_is_configured():
         return None
     now = _t.monotonic()
-    if _BROKER_BOOK_CACHE["val"] is not None and now - _BROKER_BOOK_CACHE["at"] < _BROKER_BOOK_TTL:
+    import broker_router as broker
+    status = broker.public_status()
+    cache_key = (status.get("broker"), status.get("endpoint"), status.get("connected"),
+                 status.get("paper_mode"), json.dumps(load_config().get("broker_identity"), sort_keys=True))
+    if _BROKER_BOOK_CACHE.get("key") == cache_key and _BROKER_BOOK_CACHE["val"] is not None and now - _BROKER_BOOK_CACHE["at"] < _BROKER_BOOK_TTL:
         return _BROKER_BOOK_CACHE["val"]
     try:
         import broker_router as alpaca
@@ -1062,8 +1239,8 @@ def _broker_book_cached() -> dict[str, Any] | None:
             except (TypeError, ValueError):
                 continue
         try:
-            day_pnl = round(float(a.get("equity")) - float(a.get("last_equity") or a.get("equity")), 2)
-        except (TypeError, ValueError):
+            day_pnl = round(float(a["day_pnl"]), 2) if a.get("day_pnl") is not None else round(float(a["equity"]) - float(a["last_equity"]), 2)
+        except (KeyError, TypeError, ValueError):
             day_pnl = None
         val = {
             "ok": bool(acct.get("ok")) and bool(pos.get("ok")),
@@ -1072,17 +1249,22 @@ def _broker_book_cached() -> dict[str, Any] | None:
             "cash": _safe_money(a.get("cash")),
             "buying_power": _safe_money(a.get("buying_power")),
             "day_pnl_usd": day_pnl,
+            "risk_ready": acct.get("risk_ready", day_pnl is not None),
+            "risk_error": acct.get("risk_error"),
+            "account_window_pnl": a.get("account_window_pnl"),
+            "pnl_diagnostics": acct.get("pnl_diagnostics"),
             "positions": rows,
-            "account_id": acct.get("account_id"),
-            "error": None if (acct.get("ok") and pos.get("ok")) else "Couldn't reach configured broker",
+            "account_id": acct.get("account_id") or a.get("id"),
+            "error": None if (acct.get("ok") and pos.get("ok")) else acct.get("error") or pos.get("error") or "Couldn't reach configured broker",
         }
-    _BROKER_BOOK_CACHE.update(at=now, val=val)
+    _BROKER_BOOK_CACHE.update(at=now, val=val, key=cache_key)
     return val
 
 
 def _safe_money(v: Any) -> float | None:
     try:
-        return round(float(v), 2)
+        value = _finite_float(v)
+        return round(value, 2) if value is not None else None
     except (TypeError, ValueError):
         return None
 
@@ -1100,6 +1282,41 @@ def _money_snapshot(cfg: dict[str, Any]) -> dict[str, Any]:
     }
     if cfg.get("mode") in ("auto_live", "live_manual") or _broker_trades_today(ledger):
         out["broker_book"] = _broker_book_cached()
+    out["live_goal"] = _live_goal_view(cfg, out.get("broker_book"))
+    # Strategy rails snapshot for display strip (never authorizes orders).
+    la = cfg.get("live_agent") if isinstance(cfg.get("live_agent"), dict) else None
+    pol = (la or {}).get("policy") if isinstance((la or {}).get("policy"), dict) else {}
+    ks = cfg.get("kill_switch") if isinstance(cfg.get("kill_switch"), dict) else {}
+    book = out.get("broker_book") if isinstance(out.get("broker_book"), dict) else {}
+    trades_today = int(out.get("broker_trades_today") or 0)
+    max_trades = None
+    if la and pol.get("max_orders_per_day") is not None:
+        try:
+            max_trades = int(pol["max_orders_per_day"])
+        except (TypeError, ValueError):
+            max_trades = None
+    elif ks.get("armed") and ks.get("max_trades_per_day") is not None:
+        try:
+            max_trades = int(ks["max_trades_per_day"])
+        except (TypeError, ValueError):
+            max_trades = None
+    symbols = list(pol.get("symbols") or []) if la else []
+    out["strategy_status"] = {
+        "mode": cfg.get("mode"),
+        "live_agent_enabled": bool(la and la.get("enabled")),
+        "symbols": symbols,
+        "spy_only": symbols == ["SPY"] or (len(symbols) == 1 and str(symbols[0]).upper() == "SPY"),
+        "max_order_usd": _finite_float(pol.get("max_order_usd") if la else ks.get("max_position_size_usd")),
+        "max_daily_loss_usd": _finite_float(pol.get("max_daily_loss_usd") if la else ks.get("max_daily_loss_usd")),
+        "max_orders_per_day": max_trades,
+        "orders_used": trades_today,
+        "orders_left": (max(0, max_trades - trades_today) if max_trades is not None else None),
+        "min_confidence": _finite_float(pol.get("min_confidence")) if la else None,
+        "risk_ready": bool(book.get("risk_ready")) if book else False,
+        "risk_error": book.get("risk_error") if book else None,
+        "kill_switch_armed": bool(ks.get("armed")),
+        "note": "Status strip only — does not place orders or change caps.",
+    }
     return out
 
 
@@ -1266,91 +1483,228 @@ def _record_broker_trade() -> None:
         save_ledger(ledger)
 
 
-def _reconcile_pending_broker_orders() -> None:
-    """Reconcile broker orders that were still indeterminate after cancellation."""
-    try:
-        import broker_router as alpaca
-    except ImportError:
-        return
+def _broker_order_terminal(confirm: dict[str, Any]) -> bool:
+    if "terminal" in confirm:
+        return confirm["terminal"] is True
+    status = str(confirm.get("alpaca_status") or confirm.get("broker_status") or "").lower()
+    return confirm.get("state") == "filled" or status in {
+        "filled", "canceled", "cancelled", "expired", "rejected", "suspended", "stopped", "inactive", "apicancelled"
+    }
+
+
+def _preserve_broker_state(previous: dict[str, Any], replacement: dict[str, Any]) -> None:
+    """Paper lifecycle operations must never reset broker lifecycle records."""
+    for key, value in previous.items():
+        if key.startswith("broker_") or key == "pending_broker_orders":
+            replacement[key] = value
+
+
+def _apply_broker_update(sig, broker, confirm, source):
+    """Persist cumulative execution, pending remainder and count together.
+
+    Caller holds _BROKER_SUBMIT_LOCK. Updating an existing fill never counts it
+    as a new trade. Unknown/nonterminal states always remain in durable tracking.
+    """
+    order_id = str(broker["order_id"])
+    terminal = _broker_order_terminal(confirm)
+    quantity = _finite_float(confirm.get("filled_qty"), 0) or 0
+    price = _finite_float(confirm.get("filled_avg_price"), 0) or 0
     with _lock:
         ledger = load_ledger()
-        pending = list(ledger.get("pending_broker_orders") or [])
-    if not pending:
-        return
-    remaining = []
-    resolved_ids: set[str] = set()
-    processed_ids: set[str] = set()
-    changed = False
-    for item in pending[:20]:
-        order_id = str(item.get("order_id") or "")
-        if not order_id:
-            continue
-        processed_ids.add(order_id)
-        try:
-            age = time.time() - datetime.fromisoformat(
-                str(item.get("created_at") or "").replace("Z", "+00:00")
-            ).timestamp()
-        except (TypeError, ValueError, OSError):
-            age = 0
-        if age > 3600 and not item.get("stale_alerted"):
-            desk_alerts.emit(
-                "broker_order_stale",
-                f"Broker order {order_id} remains unresolved after {int(age // 60)} minutes.",
-                detail={"order_id": order_id},
-                level="warning",
-                dedupe_key=f"broker_order_stale:{order_id}",
-            )
-            item["stale_alerted"] = True
-        result = alpaca.wait_for_fill(order_id, timeout=0.25, interval=0.1)
-        state = result.get("state")
-        if state in ("filled", "partially_filled"):
-            sig = dict(item.get("signal") or {})
-            broker = dict(item.get("broker") or {})
-            fill = _broker_fill_record(sig, broker, source="reconciled_broker", confirm=result)
-            fill["broker_reconciled"] = True
-            with _lock:
-                current = load_ledger()
-                if any(str(existing.get("order_id") or "") == order_id for existing in current.get("broker_fills") or []):
-                    resolved_ids.add(order_id)
-                    continue
-                current.setdefault("broker_fills", []).insert(0, fill)
-                current["broker_fills"] = current["broker_fills"][:200]
-                save_ledger(current)
-                signals = load_signals()
-                for signal in signals:
-                    if str(signal.get("id") or "") == str(sig.get("id") or ""):
-                        signal["status"] = "approved"
-                        signal["fill"] = fill
-                        signal["reject_reason"] = None
-                        break
-                save_signals(signals)
-            _record_broker_trade()
-            append_journal("broker_fill_reconciled", {"order_id": order_id, "fill": fill})
-            changed = True
-            resolved_ids.add(order_id)
-        elif state in ("failed",):
-            append_journal("broker_order_reconciled_failed", {"order_id": order_id, "status": result.get("alpaca_status")})
-            changed = True
-            resolved_ids.add(order_id)
+        fills = ledger.setdefault("broker_fills", [])
+        prior = next((f for f in fills if str(f.get("order_id")) == order_id), None)
+        fill = prior
+        versions = confirm.get("execution_versions") or {}
+        old_versions = (prior or {}).get("execution_versions") or {}
+        pending_versions = (prior or {}).get("pending_execution_versions") or {}
+        versioned = isinstance(versions, dict) and bool(versions) and all(
+            isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool) and v > 0
+            for k, v in versions.items())
+        if pending_versions and (terminal or quantity > 0 or confirm.get("execution_correction")) and (
+                not versioned or any(versions.get(k, 0) < v for k, v in pending_versions.items())):
+            # An incomplete newer correction remains unresolved even if an older
+            # terminal snapshot arrives later (including cancellation/no fill).
+            return prior, False
+        if prior and old_versions and (quantity > 0 or confirm.get("state") == "filled") and (
+                not versioned or any(versions.get(k, 0) < v for k, v in old_versions.items())):
+            # A late report cannot resurrect a superseded execution revision.
+            return prior, bool(prior.get("broker_reconciled"))
+        corrected = (versioned and confirm.get("execution_correction") is True
+                     and confirm.get("execution_details_verified") is True
+                     and any(v > old_versions.get(k, 0) for k, v in versions.items()))
+        if ((quantity > 0 and price > 0 and (prior is None or quantity >= float(prior.get("shares") or 0) or corrected))
+                or (prior is not None and corrected and quantity == 0)):
+            fill = _broker_fill_record(sig, broker, source, confirm)
+            if corrected and quantity == 0:
+                fill.update(shares=0, price=0, notional=0, confirmed=True, price_estimated=False,
+                            price_source="broker_execution_bust", broker_fill_state="voided", fee_usd=0)
+            if prior:
+                fill["id"], fill["ts"] = prior["id"], prior["ts"]
+                fills[fills.index(prior)] = fill
+            else:
+                fills.insert(0, fill)
+            counted = ledger.setdefault("broker_counted_orders", {})
+            if order_id not in counted and prior is None:
+                day = _today_str()
+                counted[order_id] = day
+                stats = ledger.setdefault("broker_daily", {}).setdefault(day, {"trades": 0})
+                stats["trades"] = int(stats.get("trades") or 0) + 1
+        # Missing execution details cannot resolve an order known to have filled.
+        if (confirm.get("state") == "filled" and quantity <= 0 and not corrected) or (quantity > 0 and (fill is None or float(fill.get("shares") or 0) != quantity)):
+            terminal = False
+        if fill:
+            fill["broker_reconciled"] = terminal
+            fill["alpaca_status"] = confirm.get("alpaca_status") or fill.get("alpaca_status")
+            if confirm.get("execution_correction") and not confirm.get("execution_details_verified"):
+                terminal = False
+                fill["broker_reconciled"] = False
+                fill["confirmed"] = False
+                fill["reconciliation_error"] = confirm.get("error") or "Execution correction is awaiting complete broker evidence"
+                if versioned:
+                    fill["pending_execution_versions"] = {
+                        k: max(old_versions.get(k, 0), pending_versions.get(k, 0), versions.get(k, 0))
+                        for k in old_versions.keys() | pending_versions.keys() | versions.keys()
+                    }
+        pending = ledger.setdefault("pending_broker_orders", [])
+        intent_id = broker.get("intent_id")
+        item = next((x for x in pending if str(x.get("order_id")) == order_id
+                     or (intent_id and x.get("intent_id") == intent_id)), None)
+        if terminal:
+            ledger["pending_broker_orders"] = [x for x in pending if x is not item]
         else:
-            item["last_checked_at"] = _now_iso()
-            remaining.append(item)
-    if changed or len(remaining) != len(pending):
+            if item is None:
+                item = {"order_id": order_id, "created_at": _now_iso()}
+                pending.append(item)
+            item.update(order_id=order_id, signal=dict(sig), broker=dict(broker), last_checked_at=_now_iso())
+            if intent_id:
+                item["intent_id"] = intent_id
+        # Keep unresolved fill records even when trimming completed history.
+        active = {str(x.get("order_id")) for x in ledger["pending_broker_orders"]}
+        ledger["broker_fills"] = [f for i, f in enumerate(fills) if i < 200 or str(f.get("order_id")) in active]
+        save_ledger(ledger)
+        sig["live_response"] = copy.deepcopy(broker)
+        sig["status"] = "approved" if fill else ("rejected" if terminal else "broker_pending")
+        if fill:
+            sig["fill"] = fill
+            sig["reject_reason"] = None
+        elif terminal:
+            sig["reject_reason"] = "Broker order ended without a fill"
+        signals = load_signals()
+        for i, current in enumerate(signals):
+            if current.get("id") == sig.get("id"):
+                signals[i] = dict(sig)
+                break
+        save_signals(signals)
+    return fill, terminal
+
+
+_LAST_EXECUTION_CORRECTIONS_AT = 0.0
+
+
+def _reconcile_execution_corrections() -> None:
+    """Retained terminal executions can still receive broker corrections."""
+    global _LAST_EXECUTION_CORRECTIONS_AT
+    import broker_router as broker
+    if broker.public_status().get("broker") != "ibkr":
+        return
+    with _BROKER_SUBMIT_LOCK:
+        if time.monotonic() - _LAST_EXECUTION_CORRECTIONS_AT < 60:
+            return
+        _LAST_EXECUTION_CORRECTIONS_AT = time.monotonic()
         with _lock:
-            current = load_ledger()
-            current_pending = list(current.get("pending_broker_orders") or [])
-            replacement = {str(item.get("order_id") or ""): item for item in remaining}
-            current["pending_broker_orders"] = [
-                replacement.get(str(item.get("order_id") or ""), item)
-                for item in current_pending
-                if str(item.get("order_id") or "") not in resolved_ids
-                and str(item.get("order_id") or "") not in processed_ids - resolved_ids
-            ] + remaining
-            save_ledger(current)
+            identity = load_config().get("broker_identity")
+            if not identity or identity.get("broker") != "ibkr":
+                return
+            signals = {s.get("id"): s for s in load_signals()}
+            retained = {}
+            for fill in load_ledger().get("broker_fills") or []:
+                sig = signals.get(fill.get("signal_id"))
+                response = (sig or {}).get("live_response") or {}
+                if (not sig or (response.get("order") or {}).get("broker_identity") != identity
+                        or str(response.get("order_id")) != str(fill.get("order_id"))):
+                    continue
+                poll_id = str(response.get("permanent_order_id") or fill["order_id"])
+                retained[poll_id] = (sig, response, fill)
+                if len(retained) >= 50:
+                    break
+        if not retained:
+            return
+        import broker_ibkr
+        refreshed = broker_ibkr.refresh_execution_corrections(list(retained), identity)
+        if not refreshed.get("ok") or refreshed.get("identity") != identity:
+            return
+        with _lock:
+            if load_config().get("broker_identity") != identity:
+                return
+            for update in refreshed.get("orders") or []:
+                item = retained.get(str(update.get("order_id")))
+                versions = update.get("execution_versions") or {}
+                prior_versions = (item[2].get("execution_versions") or {}) if item else {}
+                if (not item or update.get("identity") != identity or not update.get("execution_correction")
+                        or not any(isinstance(v, int) and not isinstance(v, bool) and v > prior_versions.get(k, 0)
+                                   for k, v in versions.items())):
+                    continue
+                _apply_broker_update(dict(item[0]), dict(item[1]), update, "broker_execution_correction")
+
+
+def _reconcile_pending_broker_orders() -> None:
+    import broker_router as broker
+    with _BROKER_SUBMIT_LOCK:
+        with _lock:
+            pending = list(load_ledger().get("pending_broker_orders") or [])
+        pending.sort(key=lambda item: str(item.get("last_checked_at") or ""))
+        for item in pending[:20]:
+            if item.get("broker", {}).get("broker") not in (None, broker.public_status().get("broker")):
+                continue  # Never poll an order ID on a different provider.
+            try:
+                age = time.time() - datetime.fromisoformat(str(item.get("created_at") or "").replace("Z", "+00:00")).timestamp()
+            except (ValueError, TypeError, OSError):
+                age = 0
+            if age > 3600:
+                desk_alerts.emit("broker_order_stale", f"Broker order {item['order_id']} remains unresolved after {int(age // 60)} minutes.",
+                                 detail={"order_id": item["order_id"]}, level="warning", dedupe_key=f"broker_order_stale:{item['order_id']}")
+            try:
+                response = dict(item["broker"])
+                expected = response.get("order", {}).get("broker_identity")
+                context = broker.verify_execution_context()
+                if not expected or not context.get("ok") or context.get("identity") != expected:
+                    continue  # Never recover or resolve another account's order.
+                if str(item["order_id"]).startswith("intent:"):
+                    found = broker.find_order_by_signal(
+                        str((item.get("signal") or {}).get("id") or ""),
+                        expected_identity=response.get("order", {}).get("broker_identity"))
+                    if not found.get("ok") or not found.get("order_id"):
+                        # An absent order is not proof that a timed-out submission failed.
+                        result = {"state": "unknown", "terminal": False,
+                                  "error": found.get("error") or "Submission outcome remains unverified"}
+                    else:
+                        response.update(found)
+                        result = broker.wait_for_fill(str(response["order_id"]), timeout=0.25, interval=0.1)
+                else:
+                    poll_id = str(response.get("permanent_order_id") or item["order_id"])
+                    result = broker.wait_for_fill(poll_id, timeout=0.25, interval=0.1)
+                    if result.get("state") == "unknown" and response.get("broker") == "ibkr":
+                        found = broker.find_order_by_signal(str((item.get("signal") or {}).get("id") or ""), expected_identity=expected)
+                        if found.get("ok") and found.get("order_id"):
+                            # Keep the ledger's existing ID/count while recovering the
+                            # permanent ID of an order interrupted before acknowledgement.
+                            response["permanent_order_id"] = found["order_id"]
+                            result = broker.wait_for_fill(str(found["order_id"]), timeout=0.25, interval=0.1)
+            except Exception as exc:
+                result = {"state": "unknown", "terminal": False, "error": str(exc)[:200]}
+            fill, terminal = _apply_broker_update(dict(item.get("signal") or {}),
+                                                response, result, "reconciled_broker")
+            if terminal:
+                append_journal("broker_order_reconciled", {"order_id": item["order_id"], "fill": fill})
+    _reconcile_execution_corrections()
 
 
 def _broker_day_pnl() -> tuple[float | None, float | None, str | None]:
-    """(day_pnl, equity, error) from Alpaca account (equity - last_equity)."""
+    """Return verified equity even if only daily P&L is unavailable.
+
+    A positive equity with an error means identity/account checks passed and only
+    P&L is missing; a strictly reducing order may still close verified holdings.
+    """
     try:
         import broker_router as alpaca
 
@@ -1363,11 +1717,36 @@ def _broker_day_pnl() -> tuple[float | None, float | None, str | None]:
     if a.get("trading_blocked") or a.get("account_blocked"):
         return None, None, "Broker account is blocked from trading"
     try:
-        equity = float(a.get("equity"))
-        last = float(a.get("last_equity") or equity)
+        equity = _finite_float(a.get("equity"))
+        if equity is None or equity <= 0:
+            raise ValueError("invalid equity")
     except (TypeError, ValueError):
-        return None, None, "Broker account returned no equity — cannot check loss limits"
-    return equity - last, equity, None
+        return None, None, "Broker account returned no valid equity — cannot check loss limits"
+    day_pnl = _finite_float(a.get("day_pnl"))
+    if day_pnl is None:
+        last = _finite_float(a.get("last_equity"))
+        if last is None or last <= 0:
+            return None, equity, "Broker daily P&L unavailable — new risk is blocked"
+        day_pnl = equity - last
+    return day_pnl, equity, None
+
+
+def _broker_session_gate(cfg: dict[str, Any], notional: float, *, reducing: bool = False) -> tuple[bool, str]:
+    """Broker session/order checks never inspect the local paper book."""
+    if _CORRUPT_PATHS:
+        names = ", ".join(sorted(Path(k).name for k in _CORRUPT_PATHS))
+        return False, f"Data file corrupt ({names}) — repair before broker execution"
+    if not reducing and not (cfg.get("session_active") and load_config().get("session_active")):
+        return False, "Broker session not active — start checking before opening new risk"
+    if cfg.get("rth_only", True) and not paper_loop_mod.is_rth():
+        return False, "The market is closed. Broker orders wait for regular market hours."
+    if _finite_float(notional) is None or notional <= 0:
+        return False, "Invalid broker order notional"
+    ks = cfg.get("kill_switch") or {}
+    if not reducing and ks.get("armed") and ks.get("max_position_size_usd") is not None:
+        if notional > float(ks["max_position_size_usd"]):
+            return False, "Safety stop: this broker order exceeds your max position size"
+    return True, "ok"
 
 
 def _broker_risk_gate(
@@ -1379,9 +1758,11 @@ def _broker_risk_gate(
     ks = cfg.get("kill_switch") or {}
     if ks.get("armed") and ks.get("max_trades_per_day") is not None:
         max_trades = int(ks["max_trades_per_day"])
-    total = int(daily_stats(ledger).get("trades", 0) or 0) + _broker_trades_today(ledger)
+    if _finite_float(day_pnl) is None or _finite_float(equity) is None or equity <= 0:
+        return False, "Broker equity or daily P&L unavailable — new risk is blocked"
+    total = _broker_trades_today(ledger)
     if total >= max_trades:
-        return False, f"You've hit today's limit of {max_trades} trades (broker orders count too)."
+        return False, f"You've hit today's limit of {max_trades} broker trades."
     max_loss = equity * (float(preset["max_daily_loss_pct"]) / 100.0)
     if day_pnl <= -max_loss:
         return False, f"Your broker account hit today's loss limit ({preset['max_daily_loss_pct']}%)."
@@ -1395,221 +1776,305 @@ def _broker_risk_gate(
                 return False, "Your broker account hit today's max loss."
         except (TypeError, ValueError):
             pass
+    target = _finite_float(cfg.get("daily_profit_target_usd"))
+    if target is not None and target > 0 and day_pnl >= target:
+        return False, f"Your broker account reached today's profit target (${target:,.2f}); new risk is paused"
     return True, "ok"
 
 
-def execute_gated_broker_or_paper(
-    sig: dict[str, Any],
-    cfg: dict[str, Any],
-    *,
-    source: str,
-    via: str,
-) -> dict[str, Any]:
-    """Gate FIRST, then broker (if configured) OR local paper (no keys).
+def _broker_working_reservations(ticker: str, px: float) -> tuple[dict[str, float], str | None]:
+    """Reserve both opening notional and shares already committed to closing."""
+    reserved = {"buy_exposure": 0.0, "buy_qty": 0.0, "sell_qty": 0.0}
+    try:
+        import broker_router as broker
+        result = broker.get_open_orders()
+        if not result.get("ok"):
+            raise ValueError("Open broker orders unavailable; cannot check exposure")
+        for order in result["orders"]:
+            if str(order.get("symbol") or "").upper() != ticker.upper():
+                continue
+            # OPT open orders must not reserve stock shares/notional for the underlying.
+            asset = str(order.get("asset_type") or order.get("sec_type") or "STK").upper()
+            if asset and asset != "STK":
+                continue
+            side = str(order.get("side") or "").lower()
+            if side not in ("buy", "sell"):
+                raise ValueError("Invalid broker open-order side")
+            qty = _finite_float(order.get("qty"))
+            filled = _finite_float(order.get("filled_qty"), 0)
+            if qty is None or filled is None or qty < 0 or filled < 0 or filled > qty:
+                raise ValueError("Invalid broker open-order quantity")
+            remaining = qty - filled
+            reserved[side + "_qty"] += remaining
+            if side == "buy":
+                limit = _finite_float(order.get("limit_price"), px) or px
+                reserved["buy_exposure"] += remaining * max(px, limit)
+        return reserved, None
+    except Exception as exc:
+        return reserved, str(exc)[:200]
 
-    Dual-book ban: successful broker submit does NOT also paper_fill.
-    Broker fail -> honest failure. It is NOT booked as a local paper trade: a phantom
-    paper fill would show a position the broker account does not have.
-    Broker gate+submit+count is serialized so two approvals can't both pass the caps.
-    """
+
+def _broker_working_exposure(ticker: str, px: float) -> tuple[float, str | None]:
+    reserved, error = _broker_working_reservations(ticker, px)
+    return reserved["buy_exposure"], error
+
+
+def _broker_authorization_error(cfg, identity, current) -> str | None:
+    if cfg.get("mode") not in ("live_manual", "auto_live") or current.get("mode") != cfg.get("mode"):
+        return "Broker execution mode changed; review the order again"
+    if identity is not None and current.get("broker_identity") != identity:
+        return "Broker account authorization changed; review the account again"
+    return None
+
+
+def _persist_broker_intent(sig, order, provider):
+    """Durable unresolved intent exists before any request can reach the broker."""
+    from research_metrics import quote_benchmark
+    sig.setdefault("execution_benchmarks", {})["arrival"] = quote_benchmark(sig.get("execution_quote") or {}, _now_iso())
+    intent_id = str(uuid.uuid4())
+    response = {"order_id": "intent:" + intent_id, "intent_id": intent_id,
+                "broker": provider, "status": "submission_unverified", "order": dict(order)}
+    _apply_broker_update(sig, response, {"state": "unknown", "terminal": False}, "broker_submit_intent")
+    return response
+
+
+def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[str, Any]:
+    """Serialize account gates, submit, and durable order reconciliation."""
+    if signal_workspace(sig) == "paper":
+        return {"ok": False, "error": "Paper research cannot submit broker orders", "gated": True}
+    restriction = signal_execution_block(sig, broker=True)
+    if restriction:
+        return {"ok": False, "error": restriction, "abstain": True, "gated": True}
     if not _broker_is_configured():
-        return _execute_local_paper_no_broker(sig, cfg, source=source)
+        return {"ok": False, "error": "Broker unavailable; a live-account idea cannot fill the local paper book",
+                "abstain": True, "gated": True, "book": None, "broker": None, "paper_fallback": False}
+    import broker_router as broker
 
+    def blocked(error):
+        return {"ok": False, "error": error, "abstain": True, "book": None, "broker": None, "gated": True}
+
+    manual = sig.get("manual_order")
+    agent_order = sig.get("source") == "live_agent" or (cfg.get("mode") == "auto_live" and cfg.get("live_agent") is not None)
+    if manual and (cfg.get("mode") != "live_manual" or not sig.get("review_identity")
+                   or sig.get("review_order") != manual.get("order")):
+        return blocked("Direct tickets require their exact manual order review")
     with _BROKER_SUBMIT_LOCK:
-        # Network work first, outside _lock: quote, account P&L, current broker position.
-        if not float(sig.get("signal_price") or 0) > 0:
-            live = fetch_last_price(str(sig.get("ticker") or ""))
-            if live:
-                sig["signal_price"] = float(live)
-        day_pnl, broker_equity, acct_err = _broker_day_pnl()
-        held, pos_err = _broker_position_qty(str(sig.get("ticker") or ""))
-        side = str(sig.get("side") or "").lower()
-        reducing = False
-        side_err: str | None = pos_err
-        if not side_err and side == "sell":
-            if held <= 0:
-                side_err = (
-                    f"You don't own {str(sig.get('ticker') or '').upper()} at the broker, so there's "
-                    "nothing to sell. This desk never opens short sales with real orders."
-                )
-            else:
-                reducing = True
-        elif not side_err and side == "buy" and held < 0:
-            reducing = True  # buying back an existing short
-        if side_err:
-            return {"ok": False, "error": side_err, "abstain": True, "book": None, "broker": None, "gated": True}
+        identity = None
+        provider = broker.public_status().get("broker")
+        if provider in ("ibkr", "alpaca"):
+            context = broker.verify_execution_context()
+            if not context.get("ok"):
+                return blocked(context.get("error") or "Broker account could not be verified")
+            identity = context["identity"]
+            if cfg.get("broker_identity") != identity:
+                return blocked("Broker account changed or was not confirmed; select the broker mode again")
+            if sig.get("review_identity") is not None and sig["review_identity"] != identity:
+                return blocked("Broker account differs from the reviewed account; open a fresh review")
+        # Unknown prior outcomes must be reconciled before another order is sent.
         with _lock:
+            if load_ledger().get("pending_broker_orders"):
+                return blocked("A broker order is still unresolved; wait for reconciliation before another order")
+        px = fetch_last_price(str(sig.get("ticker") or ""))
+        if not px or not _finite_float(px) or px <= 0:
+            return blocked("no_real_quote")
+        with _MARKS_LOCK:
+            execution_quote = dict(_QUOTE_SNAPSHOTS.get(str(sig.get("ticker") or "").upper()) or {})
+        if agent_order:
+            if provider != "ibkr":
+                return blocked("Live agent requires the IBKR Gateway adapter")
+            try:
+                sig["review_order"] = live_agent.execution_terms(sig, cfg, px, execution_quote)
+                sig["suggested_shares"] = sig["review_order"]["shares"]
+            except ValueError as exc:
+                return blocked(str(exc))
+        reviewed_order = sig.get("review_order")
+        # Risk checks use the worst of the fresh mark and the reviewed entry
+        # limit. A limit below market must not understate existing holdings.
+        risk_px = max(float(px), float(reviewed_order.get("limit") or px)) if reviewed_order else float(px)
+        sig["signal_price"] = risk_px
+        sig["execution_quote"] = execution_quote
+        day_pnl, equity, acct_error = _broker_day_pnl()
+        manual = sig.get("manual_order")
+        is_opt = bool(sig.get("asset_type") == "OPT" or (manual and (manual.get("order") or {}).get("asset_type") == "OPT"))
+        side = str(sig.get("side") or "").lower()
+        if side not in ("buy", "sell"):
+            return blocked("Invalid order side")
+        if is_opt:
+            # Options: never use underlying stock qty or premium-as-stock-price caps.
+            held = 0.0  # stock qty unused for OPT sizing
+            reducing = side == "sell"  # STC only in v1
+            if side == "sell":
+                # Holding check is enforced again in broker_ibkr by con_id.
+                pass
+            reserved, open_error = {"buy_qty": 0.0, "sell_qty": 0.0, "buy_exposure": 0.0}, None
+            # Filter working OPT reservations by con_id later in the adapter.
+            day_pnl, equity, acct_error = day_pnl, equity, acct_error
+            if acct_error and not (reducing and day_pnl is None and equity is not None and equity > 0):
+                return blocked(acct_error)
+            reviewed_order = sig.get("review_order")
+            contracts = int((reviewed_order or {}).get("contracts") or (reviewed_order or {}).get("shares") or sig.get("suggested_shares") or 0)
+            premium = float((reviewed_order or {}).get("limit") or sig.get("signal_price") or 0)
+            from order_terms import option_notional
+            try:
+                notional = option_notional(contracts, premium, 100)
+            except ValueError as exc:
+                return blocked(str(exc))
+            shares = contracts  # quantity field carried as contracts
+            with _lock:
+                ledger = load_ledger()
+                if reviewed_order and shares != int(reviewed_order.get("contracts") or reviewed_order.get("shares") or 0):
+                    return blocked("Risk limits changed the reviewed quantity; open a fresh review")
+                sig["suggested_shares"] = shares
+                ok, reason = _broker_session_gate(cfg, notional, reducing=reducing)
+                if ok and not reducing:
+                    ok, reason = _broker_risk_gate(cfg, ledger, day_pnl, equity)
+                if not ok:
+                    return blocked(reason)
+            order = {"ticker": sig.get("ticker"), "side": side, "shares": shares, "contracts": shares,
+                     "limit": (reviewed_order or {}).get("limit"), "signal_id": sig.get("id"), "via": via,
+                     "type": (reviewed_order or {}).get("type") or "market", "broker_identity": identity,
+                     "asset_type": "OPT", "option_intent": (manual or {}).get("intent"),
+                     "right": (reviewed_order or {}).get("right"), "expiry": (reviewed_order or {}).get("expiry"),
+                     "strike": (reviewed_order or {}).get("strike"),
+                     "contract_identity": copy.deepcopy(sig.get("review_contract")),
+                     "position_intent": (manual or {}).get("intent"),
+                     "option_notional": notional}
+            if reviewed_order:
+                order.update({k: v for k, v in reviewed_order.items() if k not in order})
+            # Jump to submission by replacing the stock path with OPT order already built.
+            # Fall through: we set a marker and skip stock sizing below.
+            _opt_order_ready = order
+        else:
+            _opt_order_ready = None
+            held, pos_error = _broker_position_qty(str(sig.get("ticker") or ""))
+            if pos_error or _finite_float(held) is None:
+                return blocked(pos_error or "Invalid broker position quantity")
+            if side == "sell" and held <= 0:
+                return blocked("Nothing to sell at the broker; this desk never opens short sales")
+            reducing = (side == "sell" and held > 0) or (side == "buy" and held < 0)
+        if not is_opt:
+          if acct_error and not (reducing and day_pnl is None and equity is not None and equity > 0):
+            return blocked(acct_error)
+          if agent_order:
+            error = _live_agent.trade_error(sig, cfg, day_pnl, reducing)
+            if error:
+                return blocked(error)
+          reserved, open_error = _broker_working_reservations(str(sig.get("ticker") or ""), px)
+          if open_error:
+            return blocked(open_error)
+          if manual:
+            from live_ticket import position_error
+            intent_error = position_error(manual["intent"], held, reviewed_order["shares"], reserved)
+            if intent_error:
+                return blocked(intent_error)
+        if not is_opt:
+          with _lock:
             ledger = load_ledger()
             if reducing:
-                px = float(sig.get("signal_price") or 0)
-                if px <= 0:
-                    return {"ok": False, "error": "no_real_quote", "abstain": True, "book": None, "broker": None}
                 want = int(float(sig.get("suggested_shares") or 0)) or int(abs(held))
-                shares = max(1, min(want, int(abs(held))))
-                sig["suggested_shares"] = shares
-                notional = round(shares * px, 2)
-                cap_err = None
+                available = max(0.0, abs(held) - reserved[side + "_qty"])
+                shares = min(want, int(available))
+                if shares <= 0:
+                    return blocked("No whole shares available to close after working orders")
+                notional, cap_error = shares * px, None
             else:
-                shares, notional, cap_err = _cap_shares_for_broker(
-                    sig, cfg, ledger, equity_override=broker_equity, allow_fetch=False
-                )
-            if cap_err:
-                return {"ok": False, "error": cap_err, "abstain": True, "book": None, "broker": None}
-            ok, reason = can_take_trade(cfg, ledger, notional, reducing=reducing)
-            if ok and acct_err:
-                ok, reason = False, acct_err
+                shares, notional, cap_error = _cap_shares_for_broker(
+                    sig, cfg, ledger, equity_override=equity, allow_fetch=False,
+                    existing_notional=max(0, held) * px + reserved["buy_exposure"])
+            if cap_error:
+                return blocked(cap_error)
+            if agent_order:
+                reviewed_order["shares"] = shares
+                if reviewed_order.get("type") == "limit":
+                    reviewed_order["notional_bound"] = shares * reviewed_order["limit"]
+            if reviewed_order and shares != reviewed_order["shares"]:
+                return blocked("Risk limits changed the reviewed quantity; open a fresh review")
+            sig["suggested_shares"] = shares
+            ok, reason = _broker_session_gate(cfg, notional, reducing=reducing)
             if ok and not reducing:
-                ok, reason = _broker_risk_gate(cfg, ledger, float(day_pnl), float(broker_equity))
+                ok, reason = _broker_risk_gate(cfg, ledger, day_pnl, equity)
             if not ok:
-                return {
-                    "ok": False,
-                    "error": reason,
-                    "abstain": True,
-                    "book": None,
-                    "broker": None,
-                    "gated": True,
-                }
-
-        order = {
-            "ticker": sig.get("ticker"),
-            "side": sig.get("side"),
-            "shares": shares,
-            "limit": sig.get("signal_price"),
-            "signal_id": sig.get("id"),
-            "via": via,
-            "type": "market",
-        }
-        # Gates already passed — only now touch the broker
-        broker_resp = live_broker_place_order(order)
-        live_note = dict(broker_resp) if isinstance(broker_resp, dict) else {"status": "error"}
-        live_note.setdefault("via", via)
-        sig["live_response"] = live_note
-
-        submitted = bool(live_note.get("ok")) and live_note.get("status") in (
-            "paper_submitted",
-            "live_submitted",
-        )
-        confirm: dict[str, Any] = {}
-        if submitted and live_note.get("order_id"):
+                return blocked(reason)
+        if _opt_order_ready is not None:
+            order = _opt_order_ready
+        else:
+            order = {"ticker": sig.get("ticker"), "side": side, "shares": shares, "limit": px,
+                     "signal_id": sig.get("id"), "via": via, "type": "market", "broker_identity": identity}
+            if reviewed_order:
+                order.update(reviewed_order)
+            if manual:
+                order["position_intent"] = manual["intent"]
+                order["contract_identity"] = copy.deepcopy(sig.get("review_contract"))
+            elif agent_order:
+                order["position_intent"] = "sell" if side == "sell" else "cover" if held < 0 else "buy"
+                order["agent_policy"] = {"revision": sig["agent_revision"], "run_id": sig["agent_run_id"]}
+        with _BROKER_EXEC_LOCK:
+            with _lock:
+                current = load_config()
+                authorization_error = _broker_authorization_error(cfg, identity, current)
+                if authorization_error:
+                    return blocked(authorization_error)
+                if agent_order:
+                    error = _live_agent.trade_error(sig, current, day_pnl, reducing)
+                    if error:
+                        return blocked(error)
+                if not reducing and not is_opt:
+                    shares, notional, cap_error = _cap_shares_for_broker(
+                        sig, current, ledger, equity_override=equity, allow_fetch=False,
+                        existing_notional=max(0, held) * px + reserved["buy_exposure"])
+                    if cap_error:
+                        return blocked(cap_error)
+                    if reviewed_order and shares != reviewed_order["shares"]:
+                        return blocked("Risk limits changed the reviewed quantity; open a fresh review")
+                    sig["suggested_shares"] = shares
+                    order["shares"] = shares
+                # Re-run broker-only gates against the latest limits/session immediately
+                # before persisting intent; config POST uses this same outer lock.
+                ok, reason = _broker_session_gate(current, notional, reducing=reducing)
+                if ok and not reducing:
+                    ok, reason = _broker_risk_gate(current, ledger, day_pnl, equity)
+                if not ok:
+                    return blocked(reason)
+                try:
+                    order["valid_until"] = _execution_deadline(sig)
+                except (ValueError, TypeError, KeyError) as exc:
+                    return blocked(str(exc))
+                order["risk_authorization"] = {"day_pnl": day_pnl, "equity": equity, "reducing": reducing}
+                if agent_order:
+                    _live_agent.reserve(sig, current)
+                intent = _persist_broker_intent(sig, order, provider)
             try:
-                import broker_router as alpaca
-
-                confirm = alpaca.wait_for_fill(str(live_note["order_id"]), timeout=BROKER_FILL_WAIT_SEC)
-                if confirm.get("state") in ("pending", "partially_filled"):
-                    confirm = alpaca.reconcile_after_timeout(
-                        str(live_note["order_id"]), timeout=2.0
-                    )
-            except Exception as exc:  # noqa: BLE001
-                confirm = {"state": "unknown", "error": str(exc)[:200]}
-            live_note["fill_confirm"] = confirm
-            if confirm.get("state") not in ("filled", "partially_filled"):
-                submitted = False
-                live_note["ok"] = False
-                status = confirm.get("alpaca_status") or "failed"
-                live_note["error"] = f"Broker order {status} — no reconciled fill"
-
-        if not submitted:
-            if live_note.get("order_id") and confirm.get("state") in ("pending", "unknown"):
-                with _lock:
-                    ledger = load_ledger()
-                    pending = ledger.setdefault("pending_broker_orders", [])
-                    pending.insert(
-                        0,
-                        {
-                            "order_id": live_note["order_id"],
-                            "signal": dict(sig),
-                            "broker": dict(live_note),
-                            "created_at": _now_iso(),
-                        },
-                    )
-                    ledger["pending_broker_orders"] = pending[:100]
-                    save_ledger(ledger)
-            err = live_note.get("error") or live_note.get("message") or live_note.get("status") or "broker_failed"
-            append_journal(
-                "broker_order_failed",
-                {"signal_id": sig.get("id"), "source": source, "broker": live_note},
-            )
-            return {
-                "ok": False,
-                "error": f"Broker order not filled: {err}",
-                "broker": live_note,
-                "book": None,
-                "paper_fallback": False,
-            }
-
-        _record_broker_trade()
-
-    fill = _broker_fill_record(sig, live_note, source=f"{source}_broker", confirm=confirm)
-    fill["broker_reconciled"] = confirm.get("state") in ("filled", "partially_filled", "failed")
-    with _lock:
-        ledger = load_ledger()
-        ledger.setdefault("broker_fills", []).insert(0, fill)
-        ledger["broker_fills"] = ledger["broker_fills"][:200]
-        save_ledger(ledger)
-    sig["status"] = "approved"
-    sig["reject_reason"] = None
-    sig["fill"] = fill
-    append_journal(
-        "broker_fill" if fill.get("confirmed") else "broker_submitted_unconfirmed",
-        {
-            "signal_id": sig.get("id"),
-            "source": source,
-            "book": "broker_only",
-            "broker": live_note,
-            "fill": fill,
-        },
-    )
-    return {
-        "ok": True,
-        "fill": fill,
-        "broker": live_note,
-        "book": "broker_only",
-        "paper_fallback": False,
-    }
-
-
-def _execute_local_paper_no_broker(sig: dict[str, Any], cfg: dict[str, Any], *, source: str) -> dict[str, Any]:
-    """auto_live without Alpaca keys — local paper only (gate first)."""
-    with _lock:
-        ledger = load_ledger()
-        shares, notional, cap_err = _cap_shares_for_broker(sig, cfg, ledger)
-        if cap_err:
-            return {"ok": False, "error": cap_err, "abstain": True, "book": None, "broker": None}
-        ok, reason = can_take_trade(cfg, ledger, notional)
-        if not ok:
-            return {
-                "ok": False,
-                "error": reason,
-                "abstain": True,
-                "book": None,
-                "broker": None,
-                "gated": True,
-            }
-    result = paper_fill(sig, cfg, source=source)
-    if result.get("ok"):
-        append_journal(
-            "local_paper_fill_no_broker",
-            {
-                "signal_id": sig.get("id"),
-                "source": source,
-                "book": "local_paper",
-                "broker": {"status": "live_not_configured", "ok": False},
-            },
-        )
-        return {
-            "ok": True,
-            "fill": result.get("fill"),
-            "broker": {"status": "live_not_configured", "ok": False, "paper_mode": True},
-            "book": "local_paper",
-            "paper_fallback": False,
-            "ledger": result.get("ledger"),
-        }
-    return {
-        "ok": False,
-        "error": result.get("error"),
-        "broker": {"status": "live_not_configured", "ok": False},
-        "book": None,
-    }
+                response = live_broker_place_order(order)
+            except Exception as exc:
+                response = {"ok": False, "error": str(exc)[:200], "submission_attempted": True}
+        response = dict(response or {}, intent_id=intent["intent_id"])
+        response.setdefault("broker", provider)
+        response["order"] = dict(order)  # Keep the verified account for restart recovery.
+        sig["live_response"] = response
+        if not response.get("order_id"):
+            response["order_id"] = intent["order_id"]
+            definitive = response.get("submission_attempted") is False or response.get("definitive_rejection") is True
+            _apply_broker_update(sig, response, {"state": "failed" if definitive else "unknown", "terminal": definitive}, source)
+            return {"ok": False, "error": f"Broker order not filled: {response.get('error') or response.get('status')}",
+                    "broker": response, "book": None, "paper_fallback": False, "pending": not definitive}
+        # A known order identity remains tracked even if its submit response is an error.
+        _apply_broker_update(sig, response, {"state": "unknown", "terminal": False}, source)
+        try:
+            confirm = broker.wait_for_fill(str(response["order_id"]), timeout=BROKER_FILL_WAIT_SEC)
+            _apply_broker_update(sig, response, confirm, f"{source}_broker")
+            if not _broker_order_terminal(confirm) and order["type"] == "market":
+                confirm = broker.reconcile_after_timeout(str(response["order_id"]), timeout=2.0)
+        except Exception as exc:
+            confirm = {"state": "unknown", "terminal": False, "error": str(exc)[:200]}
+        response["fill_confirm"] = confirm
+        fill, terminal = _apply_broker_update(sig, response, confirm, f"{source}_broker")
+        append_journal("broker_fill" if fill else "broker_order_pending" if not terminal else "broker_order_failed",
+                       {"signal_id": sig.get("id"), "broker": response, "fill": fill})
+        if not fill:
+            return {"ok": False, "error": "Broker order has no reconciled fill; tracking continues" if not terminal else "Broker order ended without a reconciled fill",
+                    "broker": response, "book": None, "paper_fallback": False, "pending": not terminal}
+        return {"ok": True, "fill": fill, "broker": response, "book": "broker_only",
+                "paper_fallback": False, "pending": not terminal}
 
 
 def broker_flatten_if_configured() -> dict[str, Any]:
@@ -1691,45 +2156,27 @@ def fetch_last_price(ticker: str) -> float | None:
         if not _m.isfinite(v) or v <= 0:
             return None
         with _MARKS_LOCK:
-            _MARKS[(ticker or "").strip().upper()] = (v, _t.monotonic())
+            symbol = (ticker or "").strip().upper()
+            quote = _QUOTE_SNAPSHOTS.get(symbol) or {}
+            age = max(0, float(quote.get("age_sec") or 0))
+            _MARKS[symbol] = (v, _t.monotonic() - age)
         return v
     return None
 
 
+_QUOTE_SNAPSHOTS: dict[str, dict] = {}
+
+
 def _fetch_last_price_raw(ticker: str) -> float | None:
-    """Best-effort last price: yfinance → Yahoo quote batch → Finnhub."""
+    """Only timestamp-verified quotes can update marks or execution prices."""
+    import data_sources as ds
     ticker = (ticker or "").strip().upper()
     if not ticker:
         return None
-    ysym = yahoo_symbol(ticker)
-    try:
-        import yfinance as yf  # noqa: WPS433
-
-        t = yf.Ticker(ysym)
-        info = getattr(t, "fast_info", None)
-        if info is not None:
-            last = getattr(info, "last_price", None) or getattr(info, "lastPrice", None)
-            if last:
-                return float(last)
-        hist = t.history(period="1d", interval="1m")
-        if hist is not None and not hist.empty:
-            return float(hist["Close"].iloc[-1])
-    except Exception:
-        pass
-    try:
-        import data_sources as ds
-
-        batch = ds.yahoo_quote_batch([ticker])
-        q = batch.get(ticker) or batch.get(ysym) or {}
-        for key in ("regularMarketPrice", "postMarketPrice", "preMarketPrice"):
-            if q.get(key):
-                return float(q[key])
-        fh = ds.finnhub_quote(ticker)
-        if fh and fh.get("current"):
-            return float(fh["current"])
-    except Exception:
-        pass
-    return None
+    quote = ds.latest_quote(ticker)
+    with _MARKS_LOCK:
+        _QUOTE_SNAPSHOTS[ticker] = quote
+    return quote.get("price") if quote.get("fresh") else None
 
 
 def demo_price(ticker: str) -> float:
@@ -1820,7 +2267,9 @@ def _analysis_to_signal(
         verdict = "WATCH"
         research_flags.append("verdict_normalized")
 
-    price = float(analysis.get("price") or 0) or demo_price(analysis["ticker"])
+    price = _finite_float(analysis.get("price"))
+    if not price or price <= 0:
+        return None
     conf = _confidence_for_verdict(verdict, lateness_label)
     # AVOID / sector_dying: keep confidence low for study, never filter out.
     if verdict == "AVOID":
@@ -1875,6 +2324,7 @@ def _analysis_to_signal(
         "reason": reason,
         "signal_price": price,
         "analysis_price": analysis.get("price"),
+        "quote": analysis.get("quote"),
         "suggested_shares": shares,
         "suggested_notional": round(shares * price, 2),
         "size_mult": mult,
@@ -1997,6 +2447,11 @@ def _llm_cfg_for_calls(cfg: dict | None = None) -> dict[str, Any]:
 
 def _enrich_signal_with_llm(sig: dict[str, Any], analysis: dict, cfg: dict) -> dict[str, Any]:
     """Attach Gemini thesis fields; blend side/confidence/reason with playbook."""
+    if isinstance(analysis.get("quote"), dict) and not analysis["quote"].get("fresh"):
+        sig.update(side="hold", confidence=0, abstain=True, llm_side="hold",
+                   llm_error="stale_or_unverified_market_data", llm_thesis="Waiting for a fresh market quote.")
+        sig["citations"] = _screener_citations(analysis)
+        return sig
     if not cfg.get("llm_enabled", True) or not cfg.get("llm_on_scan", True):
         sig.setdefault("llm_thesis", None)
         sig.setdefault("llm_side", None)
@@ -2005,18 +2460,10 @@ def _enrich_signal_with_llm(sig: dict[str, Any], analysis: dict, cfg: dict) -> d
         sig.setdefault("llm_raw", None)
         return sig
 
-    llm_cfg = _llm_cfg_for_calls(cfg)
-    desk = dict(cfg)
-    desk["api_key"] = llm_cfg.get("api_key")
-    desk["llm_model"] = llm_cfg.get("model")
-    desk["configured"] = llm_cfg.get("configured")
-    desk["brain_mode"] = llm_trader.resolve_brain_mode(cfg)
-    if desk["brain_mode"] == "gemini":
-        desk["model"] = llm_cfg.get("model")
-    thesis = llm_trader.decide_trade_thesis(_with_lessons(analysis), desk, timeout_sec=12)
+    thesis = _research_thesis(analysis, cfg, source="scanner")
 
     playbook_conf = float(sig.get("confidence") or 0)
-    llm_side = thesis.get("side") or "flat"
+    llm_side = str(thesis.get("side") or "flat").lower()
     llm_conf = float(thesis.get("confidence") or 0)
     llm_thesis_text = thesis.get("thesis") or ""
     err = thesis.get("error")
@@ -2034,8 +2481,20 @@ def _enrich_signal_with_llm(sig: dict[str, Any], analysis: dict, cfg: dict) -> d
     sig["llm_risks"] = thesis.get("risks") or []
     sig["llm_playbook_agree"] = thesis.get("playbook_agree")
     sig["llm_error"] = err
+    sig["brain_mode"] = thesis.get("brain_mode") or llm_trader.resolve_brain_mode(cfg)
+    sig["routed"] = thesis.get("routed")
+    sig["router_reason"] = thesis.get("router_reason")
+    for key in ("decision_record_id", "shadow", "advisory", "execution_block", "advisory_size_mult"):
+        sig[key] = thesis.get(key)
+    multiplier = thesis.get("advisory_size_mult", 1.0)
+    if multiplier is not None and multiplier < 1:
+        sig["suggested_shares"] = max(0, int((sig.get("suggested_shares") or 0) * multiplier))
+        sig["suggested_notional"] = round(sig["suggested_shares"] * float(sig.get("signal_price") or 0), 2)
+    sig["abstain"] = bool(thesis.get("abstain") or llm_side in ("flat", "hold") or err)
 
     if err:
+        sig["side"] = "hold"
+        sig["confidence"] = 0
         # Screener-only mode continues; annotate reason
         if err == "missing_gemini_api_key":
             sig["reason"] = (sig.get("reason") or "") + " [LLM: missing API key — screener-only]"
@@ -2047,8 +2506,12 @@ def _enrich_signal_with_llm(sig: dict[str, Any], analysis: dict, cfg: dict) -> d
         )
         return sig
 
-    # Prefer LLM side when buy/sell; flat keeps playbook buy research default
-    if llm_side in ("buy", "sell"):
+    # A flat thesis is confidence in abstaining, never confidence in a buy.
+    if sig["abstain"]:
+        sig["side"] = "hold"
+        sig["confidence"] = llm_conf
+    # Directional theses may replace the playbook direction.
+    if not sig["abstain"] and llm_side in ("buy", "sell"):
         sig["side"] = llm_side
         # Recalculate stop/target direction if sell
         price = float(sig.get("signal_price") or 0)
@@ -2064,7 +2527,7 @@ def _enrich_signal_with_llm(sig: dict[str, Any], analysis: dict, cfg: dict) -> d
             sig["target"] = round(price + target_dist, 2)
 
     # Blend confidence: prefer LLM when present
-    if llm_conf > 0:
+    if llm_conf > 0 and not sig["abstain"]:
         blended = round(0.5 * playbook_conf + 0.5 * llm_conf, 3)
         sig["confidence"] = blended
         sig["confidence_playbook"] = playbook_conf
@@ -2095,6 +2558,7 @@ def generate_scan_signal(
     *,
     force: bool = False,
     ticker: str | None = None,
+    still_authorized: Callable[[], bool] | None = None,
 ) -> dict | None:
     """Scan watchlist with volume-screener rules; emit first eligible buy signal."""
     from screener_logic import analyze_ticker
@@ -2115,7 +2579,7 @@ def generate_scan_signal(
     pending_tickers = {
         s.get("ticker", "").upper()
         for s in signals
-        if s.get("status") == "pending"
+        if _pending_scan_blocks(s, cfg)
     }
 
     # Rotate start so background scans don't always hit the same names first
@@ -2130,6 +2594,8 @@ def generate_scan_signal(
     rank_lateness = {"early": 3, "fair": 2, "late": 1, "chasing": 0}
 
     for sym in watchlist:
+        if still_authorized is not None and not still_authorized():
+            return None
         sym = sym.strip().upper()
         if not sym:
             continue
@@ -2144,6 +2610,8 @@ def generate_scan_signal(
             errors.append(f"{sym}: {analysis['error']}")
             continue
 
+        if still_authorized is not None and not still_authorized():
+            return None
         verdict = (analysis.get("verdict") or "").upper()
         checks = analysis.get("checks") or {}
         if checks.get("sector_dying"):
@@ -2191,6 +2659,8 @@ def generate_scan_signal(
         if verdict == "PASS":
             sig = _analysis_to_signal(analysis, cfg, preset, force=force)
             if sig:
+                if still_authorized is not None and not still_authorized():
+                    return None
                 sig = _enrich_signal_with_llm(sig, analysis, cfg)
                 append_journal(
                     "scan_hit",
@@ -2211,6 +2681,8 @@ def generate_scan_signal(
                 best_watch = analysis
 
     if best_watch is not None:
+        if still_authorized is not None and not still_authorized():
+            return None
         # Queue best WATCH or AVOID research candidate when no PASS found
         sig = _analysis_to_signal(best_watch, cfg, preset, force=force)
         if sig:
@@ -2302,10 +2774,18 @@ def daily_stats(ledger: dict[str, Any]) -> dict[str, Any]:
 def daily_recap(cfg: dict[str, Any], ledger: dict[str, Any], *, day: str | None = None) -> dict[str, Any]:
     """Auditable after-hours summary; never presents a closed market as actionable."""
     day = day or _today_str()
+    def in_day(value):
+        try:
+            stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                return False  # Unknown timezone cannot establish a trading day.
+            return stamp.astimezone(paper_loop_mod.NY_TZ).date().isoformat() == day
+        except (ValueError, TypeError):
+            return False
     stats = dict(ledger.get("daily", {}).get(day) or {})
     fills = []
     for fill in list(ledger.get("fills") or []) + list(ledger.get("fills_archive") or []):
-        if str(fill.get("ts") or "").startswith(day):
+        if in_day(fill.get("ts")):
             fills.append(fill)
     realized = sum(_finite_float(f.get("realized_pnl"), 0.0) or 0.0 for f in fills)
     fees = sum(_finite_float(f.get("fee_usd"), 0.0) or 0.0 for f in fills)
@@ -2313,8 +2793,12 @@ def daily_recap(cfg: dict[str, Any], ledger: dict[str, Any], *, day: str | None 
     losses = sum(1 for f in fills if (_finite_float(f.get("realized_pnl"), 0.0) or 0.0) < 0)
     decisions = [
         d for d in _decision_ring.latest(500)
-        if str(d.get("ts") or d.get("timestamp") or "").startswith(day)
+        if in_day(d.get("ts") or d.get("timestamp"))
     ]
+    if cfg.get("_paper_research"):
+        decisions.extend(s for s in load_signals()
+                         if s.get("paper_research") and signal_workspace(s) == "paper"
+                         and in_day(s.get("ts")))
     actionable = [
         d for d in decisions
         if str(d.get("side") or d.get("decision") or "").lower() not in ("", "hold", "flat")
@@ -2328,7 +2812,7 @@ def daily_recap(cfg: dict[str, Any], ledger: dict[str, Any], *, day: str | None 
         datetime.now(getattr(paper_loop_mod, "NY_TZ", timezone.utc)).date()
     )
     now_et = datetime.now(getattr(paper_loop_mod, "NY_TZ", timezone.utc))
-    closed = close is None or now_et.time() >= close.time()
+    closed = close is None or now_et.time() >= close
     net = round(realized - fees, 2)
     return {
         "date": day,
@@ -2451,6 +2935,38 @@ def daily_target_progress(cfg: dict[str, Any], ledger: dict[str, Any]) -> dict[s
 
 
 
+
+def _live_goal_view(cfg: dict[str, Any], broker_book: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Display-only broker day P&L vs soft daily goal. Does not change caps or place orders.
+
+    Note: when day P&L reaches daily_profit_target_usd, _broker_risk_gate already pauses
+    new risk. This payload only exposes that progress for the UI meter.
+    """
+    target = _finite_float(cfg.get("daily_profit_target_usd"))
+    book = broker_book if isinstance(broker_book, dict) else None
+    pnl = _finite_float((book or {}).get("day_pnl_usd")) if book else None
+    risk_ready = bool((book or {}).get("risk_ready")) if book else False
+    out: dict[str, Any] = {
+        "target_usd": target if target is not None and target > 0 else None,
+        "pnl_usd": pnl,
+        "remaining_usd": None,
+        "progress_pct": None,
+        "target_hit": False,
+        "risk_ready": risk_ready,
+        "source": "broker_day_pnl" if pnl is not None else "unavailable",
+        "note": "Display only. Soft goal also pauses new broker risk when hit; it never raises order/loss/trade caps.",
+    }
+    if out["target_usd"] is not None and pnl is not None:
+        rem = out["target_usd"] - pnl
+        out["remaining_usd"] = round(rem, 2)
+        out["progress_pct"] = round(max(0.0, min(100.0, (pnl / out["target_usd"]) * 100.0)), 1)
+        out["target_hit"] = pnl >= out["target_usd"]
+        out["pace"] = rth_pace_progress(pnl, out["target_usd"])
+    else:
+        out["pace"] = rth_pace_progress(pnl or 0.0, None)
+    return out
+
+
 def _unrealized_mtm(ledger: dict[str, Any], marks: dict[str, float] | None = None) -> float:
     """Open MTM vs avg using actual marks; unknown positions are excluded."""
     marks = marks or {}
@@ -2564,7 +3080,7 @@ def check_paper_exit_intents(cfg: dict[str, Any] | None = None) -> list[dict[str
         if stop is None and tp is None:
             continue
         ticker = str(pos.get("ticker") or "").upper()
-        shares = int(pos.get("shares") or 0)
+        shares = float(pos.get("shares") or 0)
         if not ticker or shares <= 0:
             continue
         mark = fetch_last_price(ticker)
@@ -2662,121 +3178,96 @@ def check_paper_exit_intents(cfg: dict[str, Any] | None = None) -> list[dict[str
     return hits
 
 
+_outcome_check_lock = threading.Lock()
+
+
 def check_decision_outcomes(limit: int = 40) -> list[dict[str, Any]]:
-    """P0.3 — stamp helped/hurt/flat on due horizon decisions (paper only)."""
+    """Grade only quotes observed within the recorded horizon window."""
+    if not _outcome_check_lock.acquire(blocking=False):
+        return []
+    try:
+        return _check_decision_outcomes(limit)
+    finally:
+        _outcome_check_lock.release()
+
+
+def _check_decision_outcomes(limit: int) -> list[dict[str, Any]]:
     now = datetime.now(timezone.utc)
-    stamped: list[dict[str, Any]] = []
-    cfg = load_config()
-    default_hz = int(cfg.get("decision_horizon_min") or 20)
-    rows = _decision_ring.latest(max(20, min(limit, 120)))
-    for ev in rows:
-        if not ev.get("outcome_pending") or ev.get("outcome"):
-            continue
-        due_raw = ev.get("outcome_due_ts")
-        if not due_raw:
-            continue
-        try:
-            due = datetime.fromisoformat(str(due_raw).replace("Z", "+00:00"))
-            if due.tzinfo is None:
-                due = due.replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-        if now < due:
+    stamped = []
+    for ev in _decision_ring.pending_due(now, limit):
+        due = datetime.fromisoformat(str(ev["outcome_due_ts"]).replace("Z", "+00:00"))
+        if due.tzinfo is None:
+            due = due.replace(tzinfo=timezone.utc)
+        tolerance = min(120, max(0, int(ev.get("outcome_tolerance_sec", 120))))
+        missed = None
+        if (now - due).total_seconds() > tolerance:
+            missed = "missed_horizon_window"
+        elif ev.get("scoring_version") != "horizon-net-v2" or any(ev.get(k) is None for k in ("slip_bps", "fee_bps")):
+            missed = "legacy_missing_cost_snapshot"
+        if missed:
+            patched = _decision_ring.patch(ev["id"], {"outcome_pending": False,
+                "outcome_status": missed, "outcome_ts": _now_iso()})
+            if patched:
+                stamped.append(patched)
             continue
         ticker = str(ev.get("ticker") or "").upper()
         if not ticker:
             continue
         mid_now = fetch_last_price(ticker)
-        if mid_now is None or mid_now <= 0:
-            continue
+        quote = _QUOTE_SNAPSHOTS.get(ticker) or {}
         try:
-            mid_at = float(ev.get("mid_at_decision") or 0)
-        except (TypeError, ValueError):
-            mid_at = 0.0
-        if mid_at <= 0:
+            market_time = datetime.fromisoformat(str(quote.get("market_time") or "").replace("Z", "+00:00"))
+            if market_time.tzinfo is None:
+                market_time = market_time.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
             continue
-        intended = str(ev.get("outcome_intended_side") or ev.get("intended_side") or "flat")
+        # Timestamp, not just retrieval time, must belong to this horizon.
+        if not quote.get("fresh") or not due <= market_time <= min(now + timedelta(seconds=15), due + timedelta(seconds=tolerance)):
+            continue
+        mid_at = _finite_float(ev.get("mid_at_decision"), 0) or 0
+        mid_now = _finite_float(mid_now, 0) or 0
+        if mid_at <= 0 or mid_now <= 0:
+            continue
+        intended = str(ev.get("outcome_intended_side") or "flat")
+        cost_args = {"slip_bps": ev["slip_bps"], "fee_bps": ev["fee_bps"]}
         result = session_track.classify_horizon_outcome(
-            intended_side=intended,
-            mid_at=mid_at,
-            mid_now=float(mid_now),
-            path_prices=ev.get("outcome_path_prices"),
-            slip_bps=float(cfg.get("slip_bps") or 0),
-            fee_bps=float(cfg.get("fee_bps") or 0),
-        )
-        label = result.get("outcome")
-        if not label:
+            intended_side=intended, mid_at=mid_at, mid_now=mid_now,
+            path_prices=ev.get("outcome_path_prices"), **cost_args)
+        if not result.get("outcome"):
             continue
-        sh = ev.get("shadow_claude") or {}
-        if isinstance(sh, dict) and sh.get("side") and not sh.get("error"):
-            try:
-                r2 = session_track.classify_horizon_outcome(
-                    intended_side=str(sh.get("side")), mid_at=mid_at, mid_now=float(mid_now)
-                )
-                if r2.get("outcome"):
-                    ev = dict(ev, shadow_claude_outcome=r2["outcome"])
-            except Exception:
-                pass
+        shadow_result = {}
+        shadow = ev.get("shadow_claude") or {}
+        if shadow.get("side") and not shadow.get("error"):
+            shadow_result = session_track.classify_horizon_outcome(
+                intended_side=shadow["side"], mid_at=mid_at, mid_now=mid_now, **cost_args)
         updates = {
-            "outcome": label,
-            "outcome_pending": False,
-            "shadow_claude_outcome": ev.get("shadow_claude_outcome"),
-            "outcome_mid": result.get("mid_now"),
-            "outcome_move_bps": result.get("move_bps"),
-            "outcome_ts": _now_iso(),
-            "outcome_label": label,
-            "outcome_mfe_bps": result.get("mfe_bps"),
-            "outcome_mae_bps": result.get("mae_bps"),
+            "scoring_version": "horizon-net-v2",
+            "outcome": result["outcome"], "outcome_pending": False, "outcome_status": "scored",
+            "shadow_claude_outcome": shadow_result.get("outcome"),
+            "shadow_claude_net_outcome": shadow_result.get("net_outcome"),
+            "shadow_claude_executable_move_bps": shadow_result.get("executable_move_bps"),
+            "outcome_mid": result.get("mid_now"), "outcome_move_bps": result.get("move_bps"),
+            "outcome_ts": _now_iso(), "outcome_market_time": market_time.isoformat(),
+            "outcome_quote": copy.deepcopy(quote),
+            "outcome_delay_sec": round((market_time - due).total_seconds(), 3),
+            "outcome_label": result["outcome"], "net_outcome": result.get("net_outcome"),
+            "outcome_mfe_bps": result.get("mfe_bps"), "outcome_mae_bps": result.get("mae_bps"),
             "outcome_path_available": result.get("path_available"),
             "outcome_executable_move_bps": result.get("executable_move_bps"),
-            "outcome_cost_bps": result.get("round_trip_cost_bps"),
-            "paper_only": True,
+            "outcome_cost_bps": result.get("round_trip_cost_bps"), "paper_only": True,
         }
-        patched = _decision_ring.patch(str(ev.get("id") or ""), updates)
+        patched = _decision_ring.patch(ev["id"], updates)
         if not patched:
             continue
         stamped.append(patched)
-        try:
-            lessons.record_outcome(LESSONS_PATH, patched)
-        except Exception:
-            pass
-        try:
-            _decision_ring.append(
-                {
-                    "event": "outcome",
-                    "ticker": ticker,
-                    "decision": "hold",
-                    "side": "hold",
-                    "action": f"Outcome {label}",
-                    "intended_side": intended,
-                    "outcome": label,
-                    "outcome_label": label,
-                    "outcome_move_bps": result.get("move_bps"),
-                    "mid_at_decision": mid_at,
-                    "mid": result.get("mid_now"),
-                    "ref_seq": ev.get("seq"),
-                    "ref_id": ev.get("id"),
-                    "horizon_min": ev.get("horizon_min") or default_hz,
-                    "hold": True,
-                    "filled": False,
-                    "sim": True,
-                    "dry_run": True,
-                    "simulated": True,
-                    "paper_only": True,
-                    "butler_note": session_track.outcome_butler_note(label, ticker),
-                }
-            )
-        except Exception:
-            pass
-        append_journal(
-            "decision_outcome",
-            {
-                "ticker": ticker,
-                "outcome": label,
-                "move_bps": result.get("move_bps"),
-                "ref_id": ev.get("id"),
-            },
-        )
+        lessons.record_outcome(LESSONS_PATH, patched)
+        _decision_ring.append({"event": "outcome", "ticker": ticker, "ref_id": ev["id"],
+            "ref_seq": ev.get("seq"), "decision": "hold", "side": "hold", "hold": True,
+            "filled": False, "simulated": True, "paper_only": True, **updates,
+            "action": "Horizon price observation", "horizon_min": ev.get("horizon_min"),
+            "butler_note": "Price direction and modeled costs; this is not a broker fill."})
+        append_journal("decision_outcome", {"ticker": ticker, "ref_id": ev["id"],
+            "outcome": result["outcome"], "net_outcome": result.get("net_outcome")})
     return stamped
 
 
@@ -2834,7 +3325,8 @@ def can_take_trade(
     # START session required for NEW risk. Pure exits (stop/target/close) are always
     # allowed in market hours — pressing STOP must not disable stop-loss protection.
     # Check the file too: `cfg` may be a snapshot taken before STOP was pressed.
-    if not reducing and not (cfg.get("session_active") and load_config().get("session_active")):
+    active_key = "paper_research_enabled" if cfg.get("_paper_research") else "session_active"
+    if not reducing and not (cfg.get("session_active") and load_config().get(active_key)):
         return False, "Session not active — checking is off. Press Start checking first."
 
     preset = get_preset(cfg.get("risk_preset"))
@@ -2967,6 +3459,11 @@ def paper_fill(
     bypass_gates=True for force flatten (skips max-loss/target/kill/session/RTH).
     Naked shorts are banned (sell only closes longs).
     """
+    if signal.get("workspace") == "live":
+        return {"ok": False, "error": "Live ideas cannot be filled in the paper workspace"}
+    restriction = signal_execution_block(signal)
+    if restriction:
+        return {"ok": False, "error": restriction, "abstain": True}
     slip_bps = float(cfg.get("slip_bps", 5))
     side = signal["side"]
     ticker = str(signal.get("ticker") or "").upper()
@@ -2976,27 +3473,18 @@ def paper_fill(
     if live:
         px = float(live)
     elif not allow_demo_price and not bypass_gates:
-        has_analysis = signal.get("analysis_price") not in (None, "", 0, 0.0)
-        has_mid = signal.get("mid") not in (None, "", 0, 0.0)
-        if not has_analysis and not has_mid:
-            return {"ok": False, "error": "no_real_quote", "abstain": True}
-        price_source = "signal_analysis"
-        if has_mid and not live:
-            try:
-                px = float(signal["mid"])
-            except (TypeError, ValueError):
-                pass
-        elif has_analysis:
-            try:
-                px = float(signal["analysis_price"])
-            except (TypeError, ValueError):
-                pass
+        return {"ok": False, "error": "no_real_quote", "abstain": True}
     if not px or px <= 0:
         return {"ok": False, "error": "no_real_quote", "abstain": True}
 
     slip = px * (slip_bps / 10_000.0)
     fill_px = round(px + slip, 4) if side == "buy" else round(px - slip, 4)
-    shares_req = max(0, int(signal.get("suggested_shares") or 1))
+    from trade_planner import paper_quantity
+    fractional = bool(cfg.get("paper_fractional_enabled", False)) or side == "sell" or bypass_gates
+    try:
+        shares_req = paper_quantity(signal.get("suggested_shares", 1), fractional)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
     atr = _finite_float(signal.get("atr_usd"))
     risk_pct = _finite_float(cfg.get("risk_per_trade_pct"), 0.0) or 0.0
     atr_multiple = _finite_float(cfg.get("atr_stop_multiple"), 1.0) or 1.0
@@ -3005,7 +3493,7 @@ def paper_fill(
     if atr and atr > 0 and risk_pct > 0:
         atr_risk_budget = float(cfg.get("paper_equity") or 0) * risk_pct / 100.0
         atr_stop_distance = atr * atr_multiple
-        risk_shares = int(atr_risk_budget / atr_stop_distance) if atr_stop_distance > 0 else 0
+        risk_shares = paper_quantity(atr_risk_budget / atr_stop_distance, fractional) if atr_stop_distance > 0 else 0
         if risk_shares <= 0 and not bypass_gates:
             return {"ok": False, "error": "risk_budget_below_one_share", "abstain": True}
         if risk_shares > 0:
@@ -3017,16 +3505,61 @@ def paper_fill(
 
     with _lock:
         ledger = load_ledger()
+        if source == "auto_paper" and not cfg.get("_paper_research") and not bypass_gates:
+            current_paper = load_config()
+            if current_paper.get("mode") != "auto_paper":
+                return {"ok": False, "error": "Paper automation was turned off; review manually", "requires_review": True}
+            if any(current_paper.get(key) != cfg.get(key) for key in
+                   ("risk_preset", "risk_per_trade_pct", "atr_stop_multiple", "slip_bps", "fee_bps",
+                    "paper_fractional_enabled", "paper_order_budget", "moss_paper", "paper_equity")):
+                return {"ok": False, "error": "Paper risk settings changed; request fresh research", "requires_review": True}
+            cfg = current_paper
+        if cfg.get("_paper_research") and not bypass_gates:
+            current_paper = paper_research_config(load_config())
+            if source == "auto_paper" and not current_paper.get("paper_auto_approve"):
+                return {"ok": False, "error": "Paper auto approval was turned off; review manually", "requires_review": True}
+            if any(current_paper.get(key) != cfg.get(key) for key in
+                   ("risk_preset", "risk_per_trade_pct", "atr_stop_multiple", "slip_bps", "fee_bps", "paper_fractional_enabled", "paper_order_budget", "moss_paper")):
+                return {"ok": False, "error": "Paper risk settings changed; request fresh research", "requires_review": True}
+            cfg = current_paper
+        if signal.get("moss_exit") or (side == "sell" and any(p.get("ticker")==ticker and p.get("moss_owned_shares") for p in ledger.get("positions",[]))):
+            import moss_policy
+            reason = moss_policy.quote_error(_QUOTE_SNAPSHOTS.get(ticker), datetime.now(timezone.utc), moss_policy.settings(cfg)["max_quote_age_sec"])
+            if reason:
+                return {"ok":False,"error":reason}
+            if signal.get("moss_exit"):
+                owned = sum(float(pos.get("moss_owned_shares") or 0) for pos in ledger.get("positions",[]) if pos.get("ticker")==ticker)
+                shares_req = min(shares_req, owned)
+                if side != "sell" or shares_req <= 0:
+                    return {"ok":False,"error":"No Moss paper holding to close"}
+                notional = round(shares_req * fill_px, 2)
+        if (cfg.get("moss_paper") or {}).get("enabled") and source == "auto_paper" and side == "buy" and not signal.get("moss_policy_version"):
+            return {"ok":False,"error":"Moss owns automatic paper entries; request a qualified Moss decision"}
+        if signal.get("moss_policy_version") and side == "buy":
+            import moss_paper, moss_policy
+            confidence = _finite_float(signal.get("confidence"), 0) or 0
+            minimum = max(float(llm_trader.min_decision_confidence(cfg)), float(get_preset(cfg.get("risk_preset")).get("min_confidence") or 0))
+            if confidence < minimum:
+                return {"ok":False,"error":"Moss paper confidence is below the configured minimum"}
+            reason = moss_paper.entry_error(signal, cfg, ledger, _QUOTE_SNAPSHOTS.get(ticker), datetime.now(timezone.utc))
+            if reason:
+                return {"ok":False,"error":reason}
+            p = moss_policy.settings(cfg)
+            total_exposure = notional + sum(float(pos.get("shares") or 0)*float(risk_marks.get(pos.get("ticker")) or 0) for pos in ledger.get("positions",[]))
+            if total_exposure > max(0, _ledger_equity_mtm(ledger, risk_marks))*p["max_total_exposure_pct"]/100:
+                return {"ok":False,"error":"Moss total paper exposure limit"}
+            if notional*(1+_cfg_fee_bps(cfg)/10000) > min(p["max_order_usd"],float(signal.get("moss_budget") or 0))+.001:
+                return {"ok":False,"error":"Price moved beyond the approved paper budget; collect a new decision"}
         positions_snap = ledger.get("positions") or []
         # Pure reduce/cover: sell <= long shares or buy <= short shares for this ticker.
         # Mixed (close + reverse) keeps full gates so new risk still respects size caps.
         open_long = sum(
-            int(p.get("shares") or 0)
+            float(p.get("shares") or 0)
             for p in positions_snap
             if p.get("ticker") == ticker and (p.get("side") or "").lower() == "long"
         )
         open_short = sum(
-            int(p.get("shares") or 0)
+            float(p.get("shares") or 0)
             for p in positions_snap
             if p.get("ticker") == ticker and (p.get("side") or "").lower() == "short"
         )
@@ -3039,6 +3572,15 @@ def paper_fill(
             (side == "sell" and open_long > 0 and shares_req <= open_long)
             or (side == "buy" and open_short > 0 and shares_req <= open_short)
         )
+        # Cap the simulated entry at the current paper-only dollar setting,
+        # including modeled entry fees. Never cap a reducing exit.
+        dollar_cap = _finite_float(cfg.get("paper_order_budget"), 0) or 0
+        if dollar_cap > 0 and not reducing:
+            shares_req = min(shares_req, paper_quantity(dollar_cap /
+                (fill_px * (1 + _cfg_fee_bps(cfg) / 10000)), fractional))
+            notional = round(shares_req * fill_px, 2)
+            if shares_req <= 0:
+                return {"ok": False, "error": "Paper budget is too small for the selected share size"}
         # Size caps apply to the whole position, not just this order.
         exposure = notional
         if side == "buy" and not reducing:
@@ -3069,7 +3611,7 @@ def paper_fill(
                 if remaining <= 0:
                     break
                 if p.get("ticker") == ticker and (p.get("side") or "").lower() == "short":
-                    close_sh = min(remaining, int(p["shares"]))
+                    close_sh = min(remaining, float(p["shares"]))
                     pnl = round((float(p["avg_price"]) - fill_px) * close_sh, 2)
                     realized_pnl += pnl
                     cash = round(cash - close_sh * fill_px, 2)
@@ -3084,7 +3626,7 @@ def paper_fill(
             if remaining > 0:
                 # Leave room for the fee so cash can't go negative
                 fee_mult = 1.0 + _cfg_fee_bps(cfg) / 10_000.0
-                can_buy = int(cash / max(fill_px * fee_mult, 0.01))
+                can_buy = paper_quantity(max(0, cash) / max(fill_px * fee_mult, 0.01), fractional)
                 long_sh = min(remaining, max(0, can_buy))
                 if long_sh <= 0 and filled <= 0:
                     return {"ok": False, "error": "Not enough practice cash for this trade."}
@@ -3121,7 +3663,7 @@ def paper_fill(
                     break
                 if p.get("ticker") == ticker and (p.get("side") or "").lower() == "long":
                     position_id = str(p.get("position_id") or position_id or "")
-                    close_sh = min(remaining, int(p["shares"]))
+                    close_sh = min(remaining, float(p["shares"]))
                     pnl = round((fill_px - float(p["avg_price"])) * close_sh, 2)
                     realized_pnl += pnl
                     cash = round(cash + close_sh * fill_px, 2)
@@ -3181,6 +3723,18 @@ def paper_fill(
             "atr_stop_distance_usd": round(atr_stop_distance, 4) if atr_stop_distance else None,
             "atr_risk_budget_usd": round(atr_risk_budget, 2) if atr_risk_budget else None,
         }
+        if signal.get("moss_policy_version"):
+            fill.update(decision_record_id=signal.get("decision_record_id"), moss_policy_version=signal["moss_policy_version"],
+                        reference_quote=copy.deepcopy(_QUOTE_SNAPSHOTS.get(ticker)), moss_weight_snapshot=signal.get("moss_weight_snapshot"))
+            if side == "buy":
+                import moss_policy
+                horizon=moss_policy.settings(cfg)["horizon_min"]
+                for pos in positions:
+                    if pos.get("ticker")==ticker:
+                        pos.update(moss_owned_shares=filled,moss_exit_at=(datetime.now(timezone.utc)+timedelta(minutes=horizon)).isoformat())
+        for pos in positions:
+            if pos.get("ticker")==ticker and pos.get("moss_owned_shares"):
+                pos["moss_owned_shares"]=min(float(pos["moss_owned_shares"]),float(pos["shares"]))
         if realized_pnl:
             fill["realized_pnl"] = round(realized_pnl, 2)
 
@@ -3201,7 +3755,7 @@ def paper_fill(
                 open_side = None
                 entry_ref = fill_px
                 for p in positions:
-                    if p.get("ticker") == ticker and int(p.get("shares") or 0) > 0:
+                    if p.get("ticker") == ticker and float(p.get("shares") or 0) > 0:
                         open_side = (p.get("side") or "long").lower()
                         try:
                             entry_ref = float(p.get("avg_price") or fill_px)  # add-on → new average
@@ -3273,7 +3827,44 @@ def paper_fill(
         return {"ok": True, "fill": fill, "ledger": ledger}
 
 
-def ingest_signal(sig: dict[str, Any], *, research_only: bool = False) -> dict[str, Any]:
+def ingest_signal(sig: dict[str, Any], *, research_only: bool = False,
+                  expected_config: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Keep live ideas and independent paper experiments separately identified."""
+    from research_metrics import quote_benchmark
+    sig.setdefault("execution_benchmarks", {}).setdefault("decision", quote_benchmark(sig.get("quote") or {}, _now_iso()))
+    with _lock:
+        cfg = copy.deepcopy(load_config())
+        if expected_config is not None and cfg != expected_config:
+            return None
+    primary = "live" if cfg.get("mode") in ("live_manual", "auto_live") else "paper"
+    workspace = sig.get("workspace") or primary
+    sig["workspace"] = workspace
+    sig.setdefault("mode_at_create", cfg.get("mode"))
+    if workspace == "paper" and primary == "live":
+        sig["paper_research"] = True
+        return _ingest_one_signal(sig, research_only=research_only,
+                                  cfg_override=paper_research_config(cfg))
+    # Copy before live execution can mutate status/order identity. A paper experiment
+    # has its own ID and never reuses a broker approval or broker result.
+    paper = None
+    if primary == "live" and cfg.get("paper_research_enabled") and not (cfg.get("moss_paper") or {}).get("enabled"):
+        paper = copy.deepcopy(sig)
+        paper.update(id=str(uuid.uuid4()), workspace="paper", paper_research=True,
+                     source_signal_id=sig["id"], mode_at_create="auto_paper" if cfg.get("paper_auto_approve") else "manual")
+        for key in ("live_response", "broker_order_id", "broker_order", "fill"):
+            paper.pop(key, None)
+        with _lock:
+            _size_paper_research(paper, paper_research_config(cfg), load_ledger())
+    result = _ingest_one_signal(sig, research_only=research_only, cfg_override=cfg)
+    if paper:
+        paper["source_signal_id"] = result["id"]
+        _ingest_one_signal(paper, research_only=research_only,
+                           cfg_override=paper_research_config(cfg))
+    return result
+
+
+def _ingest_one_signal(sig: dict[str, Any], *, research_only: bool = False,
+                       cfg_override: dict[str, Any] | None = None) -> dict[str, Any]:
     """Add signal to queue; auto-handle based on mode.
 
     Research desk: AVOID / late / chasing / low confidence are annotations
@@ -3284,7 +3875,7 @@ def ingest_signal(sig: dict[str, Any], *, research_only: bool = False) -> dict[s
     paper_fill / live stub outside lock; brief lock to persist signal updates.
     """
     with _lock:
-        cfg = dict(load_config())
+        cfg = dict(cfg_override if cfg_override is not None else load_config())
         preset = get_preset(cfg.get("risk_preset"))
         risk = cfg.get("risk_preset", "mid")
         verdict = (sig.get("verdict") or "").upper()
@@ -3313,6 +3904,7 @@ def ingest_signal(sig: dict[str, Any], *, research_only: bool = False) -> dict[s
         cooldown = max(0, int(_finite_float(cfg.get("alert_cooldown_sec"), 0) or 0))
         now = datetime.now(timezone.utc)
         fingerprint = hashlib.sha256(json.dumps({
+            "workspace": signal_workspace(sig),
             "ticker": str(sig.get("ticker") or "").upper(),
             "side": str(sig.get("side") or "").lower(),
             "verdict": verdict,
@@ -3326,6 +3918,8 @@ def ingest_signal(sig: dict[str, Any], *, research_only: bool = False) -> dict[s
                 if (
                     prior.get("status") == "pending"
                     and prior.get("alert_fingerprint") == fingerprint
+                    and isinstance(prior.get("quote"), dict)
+                    and not signal_execution_block(prior, broker=signal_workspace(prior) == "live")
                 ):
                     try:
                         age = (now - datetime.fromisoformat(str(prior.get("created_at") or prior.get("ts")).replace("Z", "+00:00"))).total_seconds()
@@ -3354,6 +3948,12 @@ def ingest_signal(sig: dict[str, Any], *, research_only: bool = False) -> dict[s
 
         mode = cfg.get("mode", "manual")
         signals = load_signals()
+        for prior in signals:
+            if (prior.get("status") == "pending"
+                    and signal_workspace(prior) == signal_workspace(sig)
+                    and prior.get("ticker") == sig.get("ticker")):
+                prior.update(status="expired", reject_reason="Superseded by fresh research",
+                             superseded_by=sig["id"])
         signals.insert(0, sig)
         save_signals(signals)  # save_signals prunes old resolved ones, keeps pending
         append_journal(
@@ -3362,7 +3962,7 @@ def ingest_signal(sig: dict[str, Any], *, research_only: bool = False) -> dict[s
              "research_only": research_only},
         )
         # research_only (New signal / Lucky buttons): always wait for Approve, never fill.
-        if mode == "manual" or research_only:
+        if mode == "manual" or research_only or signal_execution_block(sig, broker=mode in ("auto_live", "live_manual")):
             return sig
 
     # --- fills / live stub OUTSIDE lock ---
@@ -3382,7 +3982,7 @@ def ingest_signal(sig: dict[str, Any], *, research_only: bool = False) -> dict[s
         result = paper_fill(sig, cfg, source="auto_paper")
         with _lock:
             if not result.get("ok"):
-                sig["status"] = "rejected"
+                sig["status"] = "pending" if result.get("requires_review") else "rejected"
                 sig["reject_reason"] = result.get("error", "auto_paper blocked")
                 append_journal("auto_paper_blocked", {"signal_id": sig["id"], "error": result.get("error")})
             signals = load_signals()
@@ -3432,7 +4032,7 @@ def ingest_signal(sig: dict[str, Any], *, research_only: bool = False) -> dict[s
                     },
                 )
             else:
-                sig["status"] = "rejected"
+                sig["status"] = "broker_pending" if result.get("pending") else "rejected"
                 sig["reject_reason"] = result.get("error", "auto_live blocked")
                 append_journal(
                     "auto_live_blocked",
@@ -3476,7 +4076,7 @@ def reverse_paper_fill(fill: dict[str, Any], cfg: dict[str, Any] | None = None) 
         "ticker": fill["ticker"],
         "side": opp,
         "signal_price": float(fill.get("price") or 0),
-        "suggested_shares": int(fill.get("shares") or 0),
+        "suggested_shares": float(fill.get("shares") or 0),
         "status": "pending",
         "confidence": 1.0,
         "analysis_price": float(fill.get("price") or 0),
@@ -3608,6 +4208,8 @@ def execute_loop_decision(
     Effective min_confidence floor 0.55 for loop path (override 0.0 presets).
     Confidence gate uses the same blended conf persisted on the signal.
     """
+    if thesis.get("error") or thesis.get("abstain") or thesis.get("execution_block"):
+        return {"ok": False, "abstain": True, "reason": thesis.get("execution_block") or thesis.get("error") or "brain_abstain"}
     side = (thesis.get("side") or "flat").lower()
     if side not in ("buy", "sell"):
         return {"ok": False, "abstain": True, "reason": "flat_abstain"}
@@ -3645,13 +4247,15 @@ def execute_loop_decision(
 
     # Prism soft size (ADVISORY_SOFT_SIZE=1 only) — half size; never flips side
     try:
-        adv_mult = float(thesis.get("advisory_size_mult") or 1.0)
+        adv_mult = _finite_float(thesis.get("advisory_size_mult", 1.0), 0)
     except (TypeError, ValueError):
-        adv_mult = 1.0
+        adv_mult = 0.0
+    if not 0 < adv_mult <= 1:
+        return {"ok": False, "abstain": True, "reason": "advisory_zero_or_invalid_size"}
     if 0 < adv_mult < 1.0:
         cur_m = float(sig.get("size_mult") or 1.0)
         sig["size_mult"] = round(cur_m * adv_mult, 4)
-        shares = max(1, int(int(sig.get("suggested_shares") or 1) * adv_mult))
+        shares = max(0, int(int(sig.get("suggested_shares") or 0) * adv_mult))
         sig["suggested_shares"] = shares
         px = float(sig.get("signal_price") or 0)
         sig["suggested_notional"] = round(shares * px, 2)
@@ -3675,16 +4279,18 @@ def execute_loop_decision(
         return {"ok": False, "abstain": True, "reason": "session_not_active"}
 
     ledger = load_ledger()
+    if cfg.get("paper_fractional_enabled") or cfg.get("paper_order_budget"):
+        _size_paper_research(sig, cfg, ledger)
     ticker = str(sig.get("ticker") or "").upper()
-    shares_req = max(0, int(sig.get("suggested_shares") or 0))
+    shares_req = max(0, float(sig.get("suggested_shares") or 0))
     positions_snap = ledger.get("positions") or []
     open_long = sum(
-        int(p.get("shares") or 0)
+        float(p.get("shares") or 0)
         for p in positions_snap
         if p.get("ticker") == ticker and (p.get("side") or "").lower() == "long"
     )
     open_short = sum(
-        int(p.get("shares") or 0)
+        float(p.get("shares") or 0)
         for p in positions_snap
         if p.get("ticker") == ticker and (p.get("side") or "").lower() == "short"
     )
@@ -3730,6 +4336,7 @@ def execute_loop_decision(
     # Also when macro_force_ask_first on Fed/CPI/earnings day
     if mode == "manual" or macro_force:
         sig["status"] = "pending"
+        sig["workspace"] = "paper" if cfg.get("_paper_research") or mode in ("manual", "auto_paper") else "live"
         sig["mode_at_create"] = "manual" if mode == "manual" else "macro_ask_first"
         sig["fill"] = None
         if macro_force and mode != "manual":
@@ -3831,7 +4438,7 @@ def midday_risk_check(cfg: dict[str, Any] | None = None, *, force: bool = False,
         if chg <= -MIDDAY_CUT_PCT:
             sig = {
                 "id": str(uuid.uuid4()), "ticker": t, "side": "sell",
-                "suggested_shares": int(float(pos.get("shares") or 0)),
+                "suggested_shares": float(pos.get("shares") or 0),
                 "signal_price": mark, "mid": mark, "analysis_price": mark,
                 "status": "pending", "reason": "midday_cut", "bracket_off": True, "no_bracket": True,
             }
@@ -3972,7 +4579,7 @@ def api_report_daily():
     return jsonify({"ok": True, "recap": daily_recap(cfg, ledger, day=day)})
 
 
-def _with_lessons(analysis: dict) -> dict:
+def _with_lessons(analysis: dict, cfg: dict | None = None) -> dict:
     """Attach this desk's own track record for the setup (numbers only)."""
     if not isinstance(analysis, dict):
         return analysis
@@ -3983,6 +4590,7 @@ def _with_lessons(analysis: dict) -> dict:
             ticker=str(analysis.get("ticker") or ""),
             verdict=analysis.get("verdict"),
             lateness=(eq.get("label") if isinstance(eq, dict) else None) or analysis.get("lateness_label"),
+            scope=_research_scope(cfg) if cfg is not None else None,
         )
         note = lessons.prompt_note(rec)
     except Exception:
@@ -3994,6 +4602,7 @@ def _with_lessons(analysis: dict) -> dict:
     # Keep the numeric evidence available to the decision engine; prose alone
     # can be misunderstood and cannot be audited after a decision.
     out["learning_context"] = {
+        "scope": rec.get("scope"),
         "setup": rec.get("setup"),
         "sample_count": rec.get("setup_count", 0),
         "side_stats": rec.get("side_stats", {}),
@@ -4035,11 +4644,14 @@ def brain_scoreboard(days: int = 30) -> dict[str, Any]:
     from datetime import timedelta as _td
 
     cutoff = (datetime.now(timezone.utc) - _td(days=days)).isoformat()
-    rows = [r for r in lessons.recent(LESSONS_PATH, 1000)
-            if r.get("claude_outcome") and str(r.get("ts") or "") >= cutoff]
-    def tally(key):
+    candidates = [r for r in lessons.recent(LESSONS_PATH, 1000)
+                  if r.get("claude_outcome") and str(r.get("ts") or "") >= cutoff]
+    rows = [r for r in candidates if r.get("scoring_version") == "horizon-net-v2"
+            and r.get("outcome_status") == "scored" and not r.get("mock") and not r.get("routed")
+            and all(r.get(k) is not None for k in ("llm_model", "shadow_claude_model", "prompt_version", "horizon_min", "input_hash"))]
+    def tally(key, samples=None):
         d = {"helped": 0, "hurt": 0, "flat": 0}
-        for r in rows:
+        for r in rows if samples is None else samples:
             o = r.get(key)
             if o in d:
                 d[o] += 1
@@ -4047,6 +4659,13 @@ def brain_scoreboard(days: int = 30) -> dict[str, Any]:
         d["hit_rate"] = round(d["helped"] / dec, 3) if dec else None
         return d
     main_names = sorted({str(r.get("brain") or "main") for r in rows})
+    groups = {}
+    for row in rows:
+        key = (row["llm_model"], row["shadow_claude_model"], row["prompt_version"], row["horizon_min"])
+        groups.setdefault(key, []).append(row)
+    cohorts = [{"main_model": key[0], "claude_model": key[1], "prompt_version": key[2],
+                "horizon_min": key[3], "samples": len(values), "main_net": tally("net_outcome", values),
+                "claude_net": tally("shadow_claude_net_outcome", values)} for key, values in groups.items()]
     return {
         "ok": True,
         "days": days,
@@ -4054,6 +4673,9 @@ def brain_scoreboard(days: int = 30) -> dict[str, Any]:
         "main_brain": ", ".join(main_names) or None,
         "main": tally("outcome"),
         "claude": tally("claude_outcome"),
+        "main_net": tally("net_outcome"), "claude_net": tally("shadow_claude_net_outcome"),
+        "cohorts": cohorts, "excluded_unverified": len(candidates) - len(rows),
+        "metric": "Price direction plus modeled after-cost result; holds excluded from net statistics. Not broker returns.",
         "claude_configured": claude_brain.is_configured(),
         "claude_model": claude_brain.model_name(),
     }
@@ -4102,8 +4724,33 @@ def api_brains_scoreboard():
     return jsonify(brain_scoreboard())
 
 
+def _research_scope(cfg: dict) -> dict[str, Any]:
+    brain = llm_trader.resolve_brain_mode(cfg)
+    model = claude_brain.model_name() if brain == "claude" else _llm_cfg_for_calls(cfg).get("model") if brain == "gemini" else brain
+    return {"brain": brain, "requested_model": model, "llm_model": model, "prompt_version": llm_trader.PROMPT_VERSION,
+            "horizon_min": llm_trader.decision_horizon_min(cfg), "scoring_version": "horizon-net-v2"}
+
+
 def _loop_trade_thesis(analysis: dict, cfg: dict) -> dict[str, Any]:
-    """Single-brain thesis for loop (gemini|mock|jev). Timeout/error → hold/abstain or mock fallback."""
+    return _research_thesis(analysis, cfg, source="loop")
+
+
+def _research_thesis(analysis: dict, cfg: dict, *, source: str) -> dict[str, Any]:
+    """Shared research/audit record; execution remains in the workspace adapters."""
+    if source in ("moss_paper", "moss_notebook"):
+        import research_library
+        analysis = copy.deepcopy(analysis)
+        context = dict(analysis.get("companion_context") or {})
+        context["reference_library"] = research_library.context(DATA_DIR, "volume pullback execution spread uncertainty")
+        analysis["companion_context"] = context
+        if source == "moss_paper":
+            import research_studio
+            protocol = research_studio.active_protocol(__import__("sys").modules[__name__])
+        else:
+            protocol = None
+    else:
+        protocol = None
+    started = _now_iso()
     brain = llm_trader.resolve_brain_mode(cfg)
     # mock always available; gemini/jev honor llm_enabled for paid brains
     if brain != "mock" and (
@@ -4118,7 +4765,8 @@ def _loop_trade_thesis(analysis: dict, cfg: dict) -> dict[str, Any]:
             "brain_mode": brain,
         }
     llm_cfg = _llm_cfg_for_calls(cfg)
-    analysis = _with_lessons(analysis)
+    analysis = _with_lessons(analysis, cfg)
+    analysis = dict(analysis, research_evidence=news_stream.cached_evidence(analysis.get("ticker") or ""))
     desk = dict(cfg)
     desk["api_key"] = llm_cfg.get("api_key")
     # Keep Gemini model name off resolve_brain_mode fallback (brain_mode is authoritative)
@@ -4131,36 +4779,92 @@ def _loop_trade_thesis(analysis: dict, cfg: dict) -> dict[str, Any]:
     else:
         desk.pop("model", None)
     try:
-        a2 = _with_lessons(analysis)
+        a2 = analysis
         hz = int(cfg.get("decision_horizon_min") or 20)
         shadow = None
         if cfg.get("claude_shadow") and brain != "claude" and claude_brain.is_configured():
             shadow = _ClaudeShadow(a2, hz)  # runs in parallel with the main brain
-        if brain == "claude":
-            main = claude_brain.decide(a2, horizon_min=hz)
-        else:
-            main = llm_trader.decide_trade_thesis(a2, desk, timeout_sec=12)
+        main = llm_trader.decide_trade_thesis(a2, desk, timeout_sec=12)
         if shadow is not None:
             res = shadow.result(timeout=10)
-            if res:
-                main = dict(main)
-                main["shadow_claude"] = {
+            res = res or {"error": "claude_shadow_timeout"}
+            main = dict(main)
+            main["shadow_claude"] = {
                     "side": res.get("side"),
                     "confidence": res.get("confidence"),
                     "error": res.get("error"),
                     "model": res.get("llm_model"),
                     "cost_usd": res.get("model_cost_usd"),
                 }
-        return main
     except Exception as exc:  # noqa: BLE001
-        return {
+        main = {
             "side": "flat",
             "confidence": 0.0,
-            "thesis": f"Brain error — abstain ({exc})",
-            "error": str(exc),
+            "thesis": "Brain error — abstain",
+            "error": f"brain_error:{type(exc).__name__}",
             "llm_model": llm_cfg.get("model"),
             "brain_mode": brain,
         }
+    main = dict(main)
+    main.update(prompt_version=llm_trader.PROMPT_VERSION, shadow=None, advisory=None)
+    if not main.get("error"):
+        side = str(main.get("side") or "flat")
+        text = main.get("thesis") or ""
+        try:
+            if main.get("brain_mode") == "mock":
+                main["shadow"] = llm_trader._heuristic_shadow_audit(side, text)
+            else:
+                main["shadow"] = llm_trader.shadow_audit_decision(side, text, analysis=analysis, cfg=cfg)
+        except Exception as exc:
+            main["shadow"] = {"coherent": None, "label": "unavailable", "reason": type(exc).__name__}
+        try:
+            audit_cfg = dict(cfg, brain_mode=main.get("brain_mode") or brain)
+            main["advisory"] = llm_trader.run_advisory_panel(side, text, analysis=analysis, cfg=audit_cfg)
+        except Exception as exc:
+            main["advisory"] = llm_trader.unavailable_advisory("error", type(exc).__name__)
+        if llm_trader.shadow_gate_enabled() and main["shadow"].get("coherent") is not True:
+            main["execution_block"] = "shadow_not_verified"
+        if llm_trader.advisory_soft_size_enabled():
+            multiplier = _finite_float(main["advisory"].get("size_mult"), 0) or 0
+            main["advisory_size_mult"] = max(0, min(1, multiplier))
+            if main["advisory_size_mult"] == 0:
+                main["execution_block"] = "advisory_kill_or_unavailable"
+    if main.get("execution_block"):
+        main["abstain"] = True
+
+    facts = json.loads(llm_trader._analysis_context_blob(analysis))
+    scope = _research_scope(cfg)
+    quote = analysis.get("quote") or {}
+    ev = {"event": "decision", "ts": started, "ticker": analysis.get("ticker"),
+          "source": source, "workspace": "research", "execution_attempted": False,
+          "brain_mode": main.get("brain_mode") or brain, **scope,
+          "llm_model": main.get("llm_model"), "mock": main.get("brain_mode") == "mock",
+          "routed": main.get("routed"), "router_reason": main.get("router_reason"),
+          "intended_side": main.get("side"), "confidence": main.get("confidence"),
+          "thesis": main.get("thesis"), "llm_raw": main.get("llm_raw"),
+          "error": main.get("error"), "execution_block": main.get("execution_block"),
+          "shadow": main.get("shadow"), "advisory": main.get("advisory"),
+          "shadow_claude": main.get("shadow_claude"), "model_cost_usd": main.get("model_cost_usd"),
+          "verdict": analysis.get("verdict"), "lateness_label": (analysis.get("entry_quality") or {}).get("label"),
+          "mid": quote.get("price") or analysis.get("price"), "quote": copy.deepcopy(quote),
+          "slip_bps": float(cfg.get("slip_bps", 5) or 0), "fee_bps": _cfg_fee_bps(cfg),
+          "inputs": facts, "input_hash": hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest(),
+          "outcome_tolerance_sec": 120, "paper_only": True, "filled": False}
+    if quote.get("fresh") and not main.get("error"):
+        if protocol:
+            ev["research_hypothesis_id"] = protocol["hypothesis_id"]
+            ev["research_protocol_id"] = protocol["id"]
+        session_track.schedule_decision_outcome(ev)
+    else:
+        ev["outcome_status"] = "ineligible_error_or_unverified_quote"
+    try:
+        saved = _decision_ring.append(ev)
+        main["decision_record_id"] = saved["id"]
+        from desk_operations import EvidenceStore, scope as evidence_scope
+        main["evidence_id"] = EvidenceStore(DATA_DIR).put("decision", evidence_scope(saved, "research"), saved["id"], saved)
+    except Exception:
+        main.update(side="flat", confidence=0, abstain=True, error="research_record_unavailable")
+    return main
 
 
 def _drain_pending_for_autofill(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -4172,7 +4876,7 @@ def _drain_pending_for_autofill(cfg: dict[str, Any] | None = None) -> dict[str, 
     cfg = dict(cfg or load_config())
     with _lock:
         signals = load_signals()
-        pending_ids = [s["id"] for s in signals if s.get("status") == "pending"]
+        pending_ids = [s["id"] for s in signals if s.get("status") == "pending" and signal_workspace(s) == "paper"]
     if not pending_ids:
         return {"drained": 0, "filled": 0, "expired": 0}
     filled = 0
@@ -4231,7 +4935,7 @@ def _cancel_pending_signals_for_ticker(ticker: str, reason: str) -> int:
     with _lock:
         signals = load_signals()
         for s in signals:
-            if s.get("status") != "pending":
+            if s.get("status") != "pending" or signal_workspace(s) != "paper":
                 continue
             if str(s.get("ticker") or "").upper() != ticker:
                 continue
@@ -4316,6 +5020,31 @@ def ensure_paper_loop_started() -> None:
 _bg_stop = threading.Event()
 
 
+def _scheduled_scan_enabled(cfg: dict[str, Any]) -> bool:
+    """Scheduled ideas obey the session clock; explicit research stays available."""
+    return bool(cfg.get("session_active") or cfg.get("paper_research_enabled")) and (
+        not cfg.get("rth_only", True) or paper_loop_mod.is_rth(datetime.now(timezone.utc))
+    )
+
+
+def _scheduled_scan_config(cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """Choose one authorized research owner without borrowing the live session."""
+    moss_owns_paper = bool((cfg.get("moss_paper") or {}).get("enabled"))
+    if cfg.get("session_active") and cfg.get("mode") in ("live_manual", "auto_live"):
+        if cfg.get("live_agent") is not None:
+            return None  # The live agent is the sole scheduled broker owner, even when paused.
+        selected = cfg
+    elif cfg.get("session_active") and cfg.get("mode") in ("manual", "auto_paper"):
+        if moss_owns_paper or cfg.get("loop_enabled"):
+            return None
+        selected = cfg
+    elif cfg.get("paper_research_enabled") and not moss_owns_paper:
+        selected = paper_research_config(cfg)
+    else:
+        return None
+    return copy.deepcopy(selected) if _scheduled_scan_enabled(selected) else None
+
+
 def _bg_loop() -> None:
     """Background watchlist scan loop (volume-screener rules).
 
@@ -4323,13 +5052,15 @@ def _bg_loop() -> None:
     generate_scan_signal (yfinance + Gemini) outside the lock so /api/state
     and other routes stay responsive. ingest_signal takes its own lock.
     """
+    next_scan_at = 0.0
     while not _bg_stop.wait(timeout=5):
         try:
             _reconcile_pending_broker_orders()
+            _live_agent.tick()
             cfg = None
             should = False
             with _lock:
-                cfg = dict(load_config())
+                cfg = copy.deepcopy(load_config())
                 signals_snap = list(load_signals())
             try:
                 signals = expire_stale_signals(signals_snap)
@@ -4341,50 +5072,42 @@ def _bg_loop() -> None:
                     or cfg.get("demo_signal_interval_sec")
                     or 120
                 )
-                pending = [s for s in signals if s.get("status") == "pending"]
-                last_ts = signals[0]["ts"] if signals else None
-                if not last_ts:
-                    should = True
-                else:
+                scan_cfg = _scheduled_scan_config(cfg)
+                pending = [s for s in signals if _pending_scan_blocks(s, scan_cfg or cfg)]
+                # A manual draft or malformed legacy timestamp cannot stop the
+                # scheduler or reset its research cadence.
+                now = datetime.now(timezone.utc)
+                stamps = []
+                expected = "live" if (scan_cfg or cfg).get("mode") in ("live_manual", "auto_live") else "paper"
+                for signal in signals:
+                    if signal.get("source") == "manual_ticket" or signal_workspace(signal) != expected:
+                        continue
                     try:
-                        last = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
-                        age = (datetime.now(timezone.utc) - last).total_seconds()
-                        should = age >= interval
-                    except ValueError:
-                        should = True
-                if should and len(pending) >= 8:
-                    should = False
-                # One brain: pause background scan while paper loop is the active decision path.
-                if (
-                    should
-                    and cfg.get("session_active")
-                    and cfg.get("loop_enabled")
-                    and cfg.get("mode") in ("auto_paper", "manual")
-                ):
-                    should = False
-                    # Journal occasionally (not every 5s wake)
-                    now_mono = datetime.now(timezone.utc).timestamp()
-                    last = getattr(_bg_loop, "_last_pause_journal_ts", 0.0)
-                    if now_mono - last >= 120:
-                        _bg_loop._last_pause_journal_ts = now_mono  # type: ignore[attr-defined]
-                        append_journal(
-                            "scan_paused_for_loop",
-                            {
-                                "session_active": True,
-                                "loop_enabled": True,
-                                "mode": cfg.get("mode"),
-                            },
-                        )
+                        stamp = datetime.fromisoformat(str(signal.get("ts") or signal.get("created_at") or "").replace("Z", "+00:00"))
+                        if stamp.tzinfo is not None and stamp <= now:
+                            stamps.append(stamp)
+                    except (ValueError, TypeError):
+                        continue
+                due = not stamps or (now-max(stamps)).total_seconds() >= interval
+                should = scan_cfg is not None and due and len(pending) < 8 and time.monotonic() >= next_scan_at
             # Network I/O must not hold `_lock`
             if cfg is not None and bool(cfg.get("radar_enabled")):
                 try:
                     market_radar.maybe_refresh(cfg)
                 except Exception:
                     pass
-            if should and cfg is not None:
-                sig = generate_scan_signal(cfg, force=False)
-                if sig:
-                    ingest_signal(sig)
+            if should and scan_cfg is not None:
+                # Empty results and provider failures also consume a cycle.
+                next_scan_at = time.monotonic() + max(5, interval)
+                def still_authorized():
+                    return _scheduled_scan_config(load_config()) == scan_cfg
+                sig = generate_scan_signal(scan_cfg, force=False, still_authorized=still_authorized)
+                # Stop, account, mode and other settings changes invalidate work
+                # collected under the previous policy.
+                if sig and still_authorized():
+                    if scan_cfg.get("_paper_research"):
+                        sig.update(workspace="paper", paper_research=True)
+                    ingest_signal(sig, expected_config=cfg)
         except Exception as exc:  # noqa: BLE001
             append_journal("bg_error", {"error": str(exc)})
 
@@ -4398,6 +5121,23 @@ _INSTANCE_LOCK_FD: int | None = None
 def _instance_pid_is_running(pid: int) -> bool:
     if pid <= 0 or pid == os.getpid():
         return pid == os.getpid()
+    if os.name == "nt":
+        # os.kill(pid, 0) uses TerminateProcess on Windows; it is not a probe.
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE only
+        if not handle:
+            return ctypes.get_last_error() != 87  # invalid PID; access denied stays live
+        try:
+            return kernel.WaitForSingleObject(handle, 0) != 0
+        finally:
+            kernel.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -4569,18 +5309,29 @@ def _risk_cockpit(cfg: dict[str, Any], ledger: dict[str, Any]) -> dict[str, Any]
         equity = _finite_float(cfg.get("paper_equity"), 100000.0) or 100000.0
         test_notional = equity * float(get_preset(cfg.get("risk_preset")).get("max_position_pct") or 0) / 100.0
         allowed, reason = can_take_trade(cfg, ledger, max(test_notional, 0.01)) if cfg.get("session_active") else (False, "session_not_active")
+        broker_mode = cfg.get("mode") in ("auto_live", "live_manual")
+        # General local limits cannot authorize an unspecified broker order.
+        # The real gate checks the exact order and broker account at submission.
+        broker_status = _broker_public_status()
+        permission = "Paper limits clear" if allowed else "Blocked"
+        if broker_mode:
+            permission = "Unverified" if broker_status.get("paper_mode") is None or not broker_status.get("configured") else "Order checks required"
+            allowed = False
+            reason = "Verify broker account, holdings, working orders and the exact order before submission"
         return {
             "session_active": bool(cfg.get("session_active")),
             "mode": cfg.get("mode"),
             "trade_allowed": allowed,
             "trade_gate_reason": reason,
+            "permission_label": permission,
+            "scope": "broker" if broker_mode else "local_paper",
             "test_order_notional_usd": round(test_notional, 2),
-            "open_positions": len(positions),
-            "exposure_usd": round(exposure, 2),
-            "daily_pnl_usd": round(_finite_float(daily.get("pnl"), 0) or 0, 2),
+            "open_positions": None if broker_mode else len(positions),
+            "exposure_usd": None if broker_mode else round(exposure, 2),
+            "daily_pnl_usd": None if broker_mode else round(_finite_float(daily.get("pnl"), 0) or 0, 2),
             "max_session_loss_usd": cfg.get("max_session_loss_usd"),
             "kill_switch_armed": bool(ks.get("armed")),
-            "broker_position_check": "available" if _broker_public_status().get("configured") else "not_configured",
+            "broker_position_check": "order_check_required" if broker_status.get("configured") else "not_configured",
             "data_files_healthy": not bool(_CORRUPT_PATHS),
         }
 
@@ -4745,10 +5496,13 @@ def _ranked_opportunities(
             continue
         v = (s.get("verdict") or "WATCH").upper()
         bm = buzz_sources.buzz_mentions_for_ticker(str(s.get("ticker") or ""), buzz)
+        view = _signal_ui_projection(s)
         row = {
             "id": s.get("id"),
+            "workspace": view["workspace"],
+            "source_signal_id": s.get("source_signal_id"),
             "ticker": s.get("ticker"),
-            "side": s.get("side"),
+            "side": view.get("side"),
             "verdict": v,
             "confidence": s.get("confidence"),
             "lateness_label": s.get("lateness_label") or (s.get("entry_quality") or {}).get("label"),
@@ -4757,6 +5511,15 @@ def _ranked_opportunities(
             "signal_price": s.get("signal_price"),
             "source": "pending",
             "research_flag": s.get("research_flag"),
+            "research_flags": s.get("research_flags") or [],
+            "actionable": view.get("actionable"),
+            "execution_block": view.get("execution_block"),
+            "llm_model": s.get("llm_model"),
+            "brain_mode": s.get("brain_mode"),
+            "routed": s.get("routed"),
+            "quote": view.get("quote"),
+            "ts": s.get("ts"),
+            "expires_at": s.get("expires_at"),
             "gap_pct": s.get("gap_pct"),
         }
         if bm:
@@ -4773,6 +5536,7 @@ def _ranked_opportunities(
         bm = buzz_sources.buzz_mentions_for_ticker(str(d.get("ticker") or ""), buzz)
         row = {
             "id": f"loop-{d.get('ts')}-{d.get('ticker')}",
+            "workspace": "paper",
             "ticker": d.get("ticker"),
             "side": d.get("intended_side") or d.get("side") or "hold",
             "verdict": v,
@@ -4800,19 +5564,15 @@ def _ranked_opportunities(
 
 
 def paper_flatten_all(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Close all local paper positions; when Alpaca configured, cancel/close broker too.
-
-    If broker flatten fails, returns ok=False with clear status so callers do not
-    claim flatten-as-complete for broker book.
-    """
-    cfg = dict(cfg or load_config())
+    """Close local paper positions only; broker orders and records are out of scope."""
+    cfg = paper_research_config(dict(cfg or load_config()))
     with _lock:
         ledger = load_ledger()
         positions = list(ledger.get("positions") or [])
     closed: list[dict[str, Any]] = []
     for pos in positions:
         ticker = pos.get("ticker")
-        shares = int(pos.get("shares") or 0)
+        shares = float(pos.get("shares") or 0)
         side = (pos.get("side") or "long").lower()
         if not ticker or shares <= 0:
             continue
@@ -4828,6 +5588,8 @@ def paper_flatten_all(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
             "signal_price": float(px),
             "suggested_shares": shares,
             "status": "pending",
+            "workspace": "paper",
+            "mode_at_create": cfg["mode"],
             "confidence": 1.0,
             "verdict": "WATCH",
             "reason": "force_flatten",
@@ -4847,32 +5609,30 @@ def paper_flatten_all(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
             }
         )
 
-    broker_flat = broker_flatten_if_configured()
+    broker_flat = {
+        "ok": True, "attempted": False, "status": "out_of_scope",
+        "message": "Paper flatten does not cancel or close broker orders or positions.",
+    }
     local_ok = all(c.get("ok") for c in closed) if closed else True
-    broker_attempted = bool(broker_flat.get("attempted"))
-    broker_ok = bool(broker_flat.get("ok")) if broker_attempted else True
-    complete = local_ok and broker_ok
     out = {
-        "ok": complete,
+        "ok": local_ok,
+        "workspace": "paper",
         "closed": closed,
         "count": len(closed),
         "local_ok": local_ok,
         "broker_flatten": broker_flat,
-        "flatten_complete": complete,
+        "flatten_complete": local_ok,
     }
-    if broker_attempted and not broker_ok:
-        out["error"] = (
-            "Local paper flatten done, but Alpaca cancel/close failed — "
-            "do not treat as flatten-complete for broker book"
-        )
-        out["refuse_flatten_as_complete"] = True
+    if not local_ok:
+        out["error"] = "Some local paper positions could not be closed."
     append_journal(
         "force_flatten",
         {
+            "workspace": "paper",
             "closed": closed,
             "count": len(closed),
             "broker_flatten": broker_flat,
-            "flatten_complete": complete,
+            "flatten_complete": local_ok,
         },
     )
     return out
@@ -4922,17 +5682,46 @@ def _buzz_lite(buzz_sum: dict[str, Any] | None, *, heat_enabled: bool = True) ->
     }
 
 
-_state_lite_cache: dict[str, Any] = {"at": 0.0, "payload": None}
-_STATE_LITE_TTL = 1.5
+def _latest_desk_call(cfg: dict, signals: list, loop: dict) -> dict | None:
+    """Use the active research path, retaining old calls only as dated history."""
+    workspace = "live" if cfg.get("mode") in ("live_manual", "auto_live") else "paper"
+    scanner = workspace == "live" or cfg.get("_paper_research")
+    raw = next((s for s in signals if s.get("ticker") and signal_workspace(s) == workspace), None) if scanner else loop.get("last_decision")
+    if not raw:
+        return None
+    call = dict(raw)
+    if scanner:
+        call.update(_signal_ui_projection(raw, cfg))
+        call.update(event="decision", thesis=raw.get("llm_thesis") or raw.get("reason"),
+                    decision="hold", intended_side=call.get("side"), filled=bool(raw.get("fill")))
+    now = datetime.now(timezone.utc)
+    try:
+        stamp = datetime.fromisoformat(str(call.get("ts")).replace("Z", "+00:00"))
+        age = max(0, (now - stamp).total_seconds())
+    except (ValueError, TypeError):
+        age = None
+    stale = age is None or age > int(cfg.get("signal_ttl_sec") or 900)
+    call.update(workspace=workspace, call_source=("Paper research" if cfg.get("_paper_research") else "Research scanner") if scanner else "Paper loop", age_sec=age, stale=stale)
+    if stale:
+        call.update(intended_side="hold", side="hold", decision="hold", confidence=0,
+                    probs={"buy": 0, "sell": 0, "flat": 1}, abstain=True, filled=False)
+    return call
+
+
+def _startup_status() -> dict:
+    try:
+        status = json.loads((DATA_DIR / "launcher-status.json").read_text(encoding="utf-8-sig"))
+        return {k: status.get(k) for k in ("checked_at", "gateway", "message")}
+    except (OSError, ValueError, AttributeError):
+        return {}
 
 
 def _build_state_lite() -> dict[str, Any]:
     """Lightweight snapshot for SSE — cache-only buzz, no Reddit/yfinance.
 
     Short lock for config/signals/ledger snapshot only. expire_stale off hot path.
-    Never jsonify under lock. Optional publish into _state_lite_cache for readers.
+    Never jsonify under lock.
     """
-    import time as _time
     with _lock:
         cfg = dict(load_config())
         signals = list(load_signals())
@@ -4950,7 +5739,7 @@ def _build_state_lite() -> dict[str, Any]:
     loop_st = get_paper_loop().status(cfg)
     decisions_preview = _decision_ring.latest(15)
     pending = [s for s in signals if s.get("status") == "pending"]
-    pending_count = len(pending)
+    pending_count = sum(not signal_execution_block(s, broker=cfg.get("mode") in ("live_manual", "auto_live")) for s in pending)
     daily = daily_target_progress(cfg, ledger)
     open_pos = _open_position_summary(ledger)
     last_dec = None
@@ -4972,13 +5761,24 @@ def _build_state_lite() -> dict[str, Any]:
         buzz_sum = dict(buzz_sum)
         buzz_sum["heat"] = []
     buzz_cache = buzz_sources.get_cached_buzz()
-    opps = _ranked_opportunities(signals_for_opp, decisions_preview, buzz_cache)[:12]
+    opps = _ranked_opportunities(signals_for_opp, decisions_preview, buzz_cache)
+    signal_bags = {status: [_signal_ui_projection(s, cfg) for s in signals if s.get("status", "pending") == status][:120]
+                   for status in ("pending", "approving", "broker_pending", "approved", "rejected", "expired")}
     payload = {
         "ok": True,
         "sim": True,
         "dry_run": True,
         "ts": _now_iso(),
         "loop": loop_st,
+        "desk_call": _latest_desk_call(cfg, signals, loop_st),
+        "paper_desk_call": _latest_desk_call(paper_research_config(cfg), signals, loop_st),
+        "paper_daily": daily_target_progress(paper_research_config(cfg), ledger),
+        "paper_daily_recap": daily_recap(paper_research_config(cfg), ledger),
+        "config": {key: cfg.get(key) for key in ("mode", "session_active", "paper_research_enabled", "paper_auto_approve", "paper_risk_preset", "risk_preset", "kill_switch", "rth_only", "broker_identity")},
+        "signals": signal_bags,
+        "broker_ledger": {"broker_fills": (ledger.get("broker_fills") or [])[:100], "pending_broker_orders": ledger.get("pending_broker_orders") or []},
+        "paper_ledger": {key: ledger.get(key) for key in ("positions", "fills", "cash", "equity", "daily")},
+        "startup": _startup_status(),
         "session_active": session_active,
         "daily": daily,
         "daily_recap": daily_recap(cfg, ledger),
@@ -5002,6 +5802,7 @@ def _build_state_lite() -> dict[str, Any]:
     except Exception:
         pass
     payload["corrupt_files"] = corrupt_files_status()
+    payload["broker"] = _broker_public_status()
     # Cache-only on lite path (bg_loop /api/radar refresh the cache)
     try:
         payload["radar"] = market_radar.public_status(cfg)
@@ -5057,12 +5858,6 @@ def _build_state_lite() -> dict[str, Any]:
         payload["alerts"] = desk_alerts.drain_for_state(8)
     except Exception:
         payload["alerts"] = {"items": []}
-    try:
-        import time as _time
-        _state_lite_cache["at"] = _time.time()
-        _state_lite_cache["payload"] = payload
-    except Exception:
-        pass
     return payload
 
 
@@ -5113,8 +5908,12 @@ def _sparks_for_tickers(tickers: list[str]) -> dict[str, Any]:
 
 
 _STATE_AUX_LOCK = threading.Lock()
-_STATE_AUX: dict[str, Any] = {"key": None, "at": 0.0, "data": None, "refreshing": False}
+_STATE_AUX: dict[str, Any] = {"key": None, "data_key": None, "at": 0.0, "data": None, "refreshing": False}
 _STATE_AUX_TTL = 30.0
+
+
+def _state_aux_key(cfg, watchlist, focus):
+    return (tuple(watchlist), focus, bool(cfg.get("macro_gates_enabled", True)), bool(cfg.get("social_enabled")))
 
 
 def _refresh_state_aux(cfg: dict[str, Any], watchlist: list[str], focus: str | None) -> None:
@@ -5183,7 +5982,8 @@ def _refresh_state_aux(cfg: dict[str, Any], watchlist: list[str], focus: str | N
         "social": social,
     }
     with _STATE_AUX_LOCK:
-        _STATE_AUX.update(data=data, refreshing=False, at=__import__("time").time())
+        _STATE_AUX.update(data=data, data_key=_state_aux_key(cfg, watchlist, focus),
+                          refreshing=False, at=time.time())
 
 
 def _refresh_state_aux_safe(cfg: dict[str, Any], watchlist: list[str], focus: str | None) -> None:
@@ -5192,6 +5992,7 @@ def _refresh_state_aux_safe(cfg: dict[str, Any], watchlist: list[str], focus: st
     except Exception as exc:  # noqa: BLE001
         with _STATE_AUX_LOCK:
             _STATE_AUX["refreshing"] = False
+            _STATE_AUX["data_key"] = _state_aux_key(cfg, watchlist, focus)
             _STATE_AUX["data"] = {
                 "providers": {"configured": {}, "error": str(exc)[:120]},
                 "api_pack": {},
@@ -5206,10 +6007,10 @@ def _refresh_state_aux_safe(cfg: dict[str, Any], watchlist: list[str], focus: st
 
 
 def _state_aux_snapshot(cfg: dict[str, Any], watchlist: list[str], focus: str | None) -> dict[str, Any]:
-    key = (tuple(watchlist), focus, bool(cfg.get("macro_gates_enabled", True)), bool(cfg.get("social_enabled")))
+    key = _state_aux_key(cfg, watchlist, focus)
     now = __import__("time").time()
     with _STATE_AUX_LOCK:
-        fresh = _STATE_AUX.get("key") == key and now - float(_STATE_AUX.get("at") or 0) < _STATE_AUX_TTL
+        fresh = _STATE_AUX.get("data_key") == key and now - float(_STATE_AUX.get("at") or 0) < _STATE_AUX_TTL
         if not fresh and not _STATE_AUX.get("refreshing"):
             _STATE_AUX["key"] = key
             _STATE_AUX["refreshing"] = True
@@ -5219,7 +6020,7 @@ def _state_aux_snapshot(cfg: dict[str, Any], watchlist: list[str], focus: str | 
                 daemon=True,
                 name="state-aux-refresh",
             ).start()
-        cached = _STATE_AUX.get("data") or {}
+        cached = (_STATE_AUX.get("data") or {}) if _STATE_AUX.get("data_key") == key else {}
     return dict(cached)
 
 
@@ -5245,7 +6046,7 @@ def api_state():
     except Exception:
         pass
     preset = get_preset(cfg.get("risk_preset"))
-    by_status = {"pending": [], "approved": [], "rejected": [], "expired": []}
+    by_status = {"pending": [], "approving": [], "broker_pending": [], "approved": [], "rejected": [], "expired": []}
     for s in signals:
         st = s.get("status", "pending")
         if st in by_status:
@@ -5266,7 +6067,7 @@ def api_state():
     for st_key, lst in by_status.items():
         enriched = []
         for s in lst:
-            s2 = _signal_ui_projection(s)
+            s2 = _signal_ui_projection(s, cfg)
             bm = buzz_sources.buzz_mentions_for_ticker(str(s.get("ticker") or ""), buzz_cache)
             if bm:
                 s2["buzz_mentions"] = bm
@@ -5301,6 +6102,11 @@ def api_state():
         "llm": llm_st,
         "loop": loop_st,
         "decisions_preview": decisions_preview,
+        "desk_call": _latest_desk_call(cfg, signals, loop_st),
+        "paper_desk_call": _latest_desk_call(paper_research_config(cfg), signals, loop_st),
+        "paper_daily": daily_target_progress(paper_research_config(cfg), ledger),
+        "paper_daily_recap": daily_recap(paper_research_config(cfg), ledger),
+        "startup": _startup_status(),
         "opportunities": _ranked_opportunities(
             signals,
             decisions_preview,
@@ -5378,9 +6184,22 @@ def api_state():
     return jsonify(payload)
 
 
+@app.route("/api/broker-identity", methods=["POST"])
+def api_broker_identity():
+    """Read-only account verification before the UI presents mode confirmation."""
+    import broker_router
+    status = broker_router.public_status()
+    if status.get("broker") == "ibkr":
+        result = broker_router.verify_execution_context()
+        if not result.get("ok"):
+            return jsonify(result), 400
+        status = broker_router.public_status()
+    return jsonify({"ok": True, "broker": status})
+
+
 @app.route("/api/config", methods=["GET", "POST"])
 def api_config():
-    with _lock:
+    with _BROKER_EXEC_LOCK, _lock:
         cfg = load_config()
         if request.method == "GET":
             return jsonify({"config": cfg, "presets": RISK_PRESETS, "banner": BANNER})
@@ -5397,6 +6216,34 @@ def api_config():
     return _api_config_after(*res)
 
 
+@app.route("/api/paper-research", methods=["POST"])
+def api_paper_research():
+    """Independent simulator controls; never select or authorize a broker account."""
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or not body or set(body) - {"enabled", "auto_approve", "risk_preset", "fractional_enabled", "order_budget"}:
+        return jsonify(ok=False, error="Use the displayed paper research settings"), 400
+    for key in ("enabled", "auto_approve", "fractional_enabled"):
+        if key in body and not isinstance(body[key], bool):
+            return jsonify(ok=False, error=f"{key} must be true or false"), 400
+    if "risk_preset" in body and (not isinstance(body["risk_preset"], str) or body["risk_preset"] not in RISK_PRESETS):
+        return jsonify(ok=False, error="risk_preset must be low, mid, or high"), 400
+    if "order_budget" in body:
+        from trade_planner import number
+        try:
+            body["order_budget"] = float(number(body["order_budget"], "Paper dollars per order", 0, 100_000))
+        except ValueError as exc:
+            return jsonify(ok=False, error=str(exc)), 400
+    with _lock:
+        cfg = dict(load_config())
+        for field, key in (("enabled", "paper_research_enabled"), ("auto_approve", "paper_auto_approve"), ("risk_preset", "paper_risk_preset"),
+                           ("fractional_enabled", "paper_fractional_enabled"), ("order_budget", "paper_order_budget")):
+            if field in body:
+                cfg[key] = body[field]
+        save_config(cfg)
+        append_journal("paper_research_config", {key: cfg[key] for key in ("paper_research_enabled", "paper_auto_approve", "paper_risk_preset")})
+    return jsonify(ok=True, config=cfg)
+
+
 def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
     """POST /api/config body handler (caller holds _lock; BadNumber → 400)."""
     if True:
@@ -5409,6 +6256,13 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
                 return jsonify({"ok": False, "error": "Invalid mode"}), 400
             if new_mode in ("auto_live", "live_manual"):
                 broker = _broker_public_status()
+                if broker.get("configured"):
+                    import broker_router
+                    context = broker_router.verify_execution_context()
+                    if not context.get("ok"):
+                        return jsonify({"ok": False, "error": context.get("error")}), 400
+                    broker = broker_router.public_status()
+                    cfg["broker_identity"] = context["identity"]
                 confirmation = str(body.get("live_confirm") or "").strip().upper()
                 expected = (
                     "REAL"
@@ -5438,9 +6292,13 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
                     elif ks_in.get("armed") is True or limits_provided:
                         ks["armed"] = True
                 # Alpaca: gate→submit; broker-only on success (no dual local paper_fill)
-            cfg.pop("live_confirm_ok", None)  # dead ceremony — stop persisting
+            cfg.pop("live_confirm_ok", None)
+            if new_mode not in ("auto_live", "live_manual"):
+                cfg.pop("broker_identity", None)
             prev_mode = cfg.get("mode")
             cfg["mode"] = new_mode
+            if cfg.get("live_agent"):
+                cfg["live_agent"]["enabled"] = False
             append_journal(
                 "mode_change",
                 {
@@ -5615,10 +6473,10 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
             cfg["fee_bps"] = _num(body.get("fee_bps"), "fee_bps", lo=0, hi=500)
 
         if "kill_switch" in body and cfg.get("mode") != "auto_live":
-            # allow updating kill-switch fields without arming unless auto_live
+            # The enable flag controls these risk limits, not broker mode.
             clean = _clean_kill_switch_in(body["kill_switch"] or {})
             ks = cfg.setdefault("kill_switch", dict(DEFAULT_CONFIG["kill_switch"]))
-            for k in ("max_daily_loss_usd", "max_trades_per_day", "max_position_size_usd"):
+            for k in ("armed", "max_daily_loss_usd", "max_trades_per_day", "max_position_size_usd"):
                 if k in clean:
                     ks[k] = clean[k]
 
@@ -5856,6 +6714,17 @@ def watchlist_find_local(q: str, watchlist: list[str], *, mode: str = "auto") ->
     # Suggest: curated liquid not already on list, from keyword/alias hits or liquid map
     suggest_pool: list[str] = []
     suggest_seen: set[str] = set()
+    # Expand deterministic discovery beyond the small liquid starter list.
+    import market_universe
+    directory = market_universe.load(__import__("sys").modules[__name__]).get("symbols", [])
+    directory_hits = [r["symbol"] for r in directory if q_raw and
+                      (r.get("symbol") == q_raw.upper() or
+                       (len(q_raw) >= 3 and q_lower in str(r.get("name", "")).lower()))]
+    for ticker in paper_loop_mod.equity_loop_symbols(directory_hits):
+        if ticker in wl_set and ticker not in matched_seen:
+            matched.append(ticker); matched_seen.add(ticker)
+        elif ticker not in wl_set and ticker not in suggest_seen:
+            suggest_pool.append(ticker); suggest_seen.add(ticker)
     for t in keyword_hits:
         tu = t.upper()
         if tu in curated_set and tu not in wl_set and tu not in suggest_seen:
@@ -5900,6 +6769,7 @@ def watchlist_find_local(q: str, watchlist: list[str], *, mode: str = "auto") ->
         "suggest": suggest,
         "note": note,
         "source": "local",
+        "directory_matches": directory_hits[:_WATCHLIST_FIND_SUGGEST_CAP],
     }
 
 
@@ -5978,10 +6848,13 @@ def watchlist_find_gemini(q: str, watchlist: list[str], *, mode: str = "auto") -
 def watchlist_find(q: str, watchlist: list[str], *, mode: str | None = None) -> dict[str, Any]:
     """Try Gemini when configured; always fall back to local on failure."""
     detected = _watchlist_find_detect_mode(q, mode)
+    local = watchlist_find_local(q, watchlist, mode=detected)
+    if local.get("directory_matches"):
+        return local
     gem = watchlist_find_gemini(q, watchlist, mode=detected)
     if gem is not None:
         return gem
-    return watchlist_find_local(q, watchlist, mode=detected)
+    return local
 
 
 @app.route("/api/watchlist/find", methods=["POST"])
@@ -6150,11 +7023,19 @@ def api_watchlist_curated():
     )
 
 
-def _evaluate_watchlist_ticker(ticker: str, cfg: dict[str, Any], *, llm: bool = True) -> dict[str, Any]:
+_EVALUATION_SLOTS = threading.BoundedSemaphore(5)
+
+
+def _evaluate_watchlist_ticker(ticker: str, cfg: dict[str, Any], *, llm: bool = True,
+                             deadline_mono: float | None = None) -> dict[str, Any]:
     """Analyze one ticker; optional LLM thesis (honors llm_on_scan)."""
     from screener_logic import analyze_ticker
 
+    if deadline_mono is not None and time.monotonic() >= deadline_mono:
+        raise TimeoutError("Evaluation deadline expired before analysis")
     analysis = analyze_ticker(ticker)
+    if deadline_mono is not None and time.monotonic() >= deadline_mono:
+        raise TimeoutError("Evaluation deadline expired; model request skipped")
     if not isinstance(analysis, dict) or analysis.get("error"):
         raise RuntimeError(str((analysis or {}).get("error") or "analysis failed"))
     out: dict[str, Any] = {
@@ -6175,15 +7056,7 @@ def _evaluate_watchlist_ticker(ticker: str, cfg: dict[str, Any], *, llm: bool = 
             "screener_only": True,
         })
         return out
-    llm_cfg = _llm_cfg_for_calls(cfg)
-    desk = dict(cfg)
-    desk["api_key"] = llm_cfg.get("api_key")
-    desk["llm_model"] = llm_cfg.get("model")
-    desk["configured"] = llm_cfg.get("configured")
-    desk["brain_mode"] = llm_trader.resolve_brain_mode(cfg)
-    if desk["brain_mode"] == "gemini":
-        desk["model"] = llm_cfg.get("model")
-    thesis = llm_trader.decide_trade_thesis(_with_lessons(analysis), desk, timeout_sec=12)
+    thesis = _research_thesis(analysis, cfg, source="evaluation")
     out.update({
         "llm_side": thesis.get("side"),
         "llm_confidence": thesis.get("confidence"),
@@ -6201,34 +7074,43 @@ def _evaluate_one_with_timeout(
     *,
     llm: bool = True,
     deadline_mono: float | None = None,
+    request_slots: threading.BoundedSemaphore | None = None,
 ) -> dict[str, Any]:
-    """Run evaluation in a daemon thread; honor hard deadline if provided."""
+    """A timed-out waiter never releases an actual evaluation's concurrency slot."""
     import time as _time
-    if deadline_mono is not None:
-        remain = deadline_mono - _time.monotonic()
-        if remain <= 0.5:
-            return {
-                "ticker": ticker,
-                "verdict": None,
-                "llm_side": None,
-                "llm_confidence": None,
-                "llm_thesis": None,
-                "error": "hard_deadline",
-            }
-        timeout_sec = min(timeout_sec, max(1.0, remain))
+    expires = min(_time.monotonic() + timeout_sec, deadline_mono or float("inf"))
+    failed = {"ticker": ticker, "verdict": None, "llm_side": None,
+              "llm_confidence": None, "llm_thesis": None}
+    held = []
+    for slots in (request_slots, _EVALUATION_SLOTS):
+        if slots is None:
+            continue
+        if not slots.acquire(timeout=max(0, expires - _time.monotonic())):
+            for acquired in reversed(held):
+                acquired.release()
+            return dict(failed, error="timeout waiting for available evaluation capacity")
+        held.append(slots)
 
     result: list[dict[str, Any]] = []
     error: list[str] = []
 
     def worker() -> None:
         try:
-            result.append(_evaluate_watchlist_ticker(ticker, cfg, llm=llm))
+            result.append(_evaluate_watchlist_ticker(ticker, cfg, llm=llm, deadline_mono=expires))
         except Exception as exc:  # noqa: BLE001
             error.append(str(exc)[:300] or "evaluation failed")
+        finally:
+            for acquired in reversed(held):
+                acquired.release()
 
     thread = threading.Thread(target=worker, name=f"watchlist-eval-{ticker}", daemon=True)
-    thread.start()
-    thread.join(timeout_sec)
+    try:
+        thread.start()
+    except BaseException:
+        for acquired in reversed(held):
+            acquired.release()
+        raise
+    thread.join(max(0, expires - _time.monotonic()))
     if thread.is_alive():
         return {
             "ticker": ticker,
@@ -6288,9 +7170,16 @@ def api_watchlist_evaluate():
         per_timeout = _num(body.get("timeout_sec") or 18, "timeout_sec", lo=1, hi=60)
     except BadNumber as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
-    hard_deadline_sec = float(body.get("deadline_sec") or 90)
-    pool = max(1, min(5, int(body.get("pool") or 4)))
+    try:
+        hard_deadline_sec = _num(body.get("deadline_sec", 90), "deadline_sec", lo=1, hi=120)
+        pool_number = _num(body.get("pool", 4), "pool", lo=1, hi=5)
+        if int(pool_number) != pool_number:
+            raise BadNumber("pool must be a whole number")
+        pool = int(pool_number)
+    except BadNumber as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
     deadline_mono = _time.monotonic() + hard_deadline_sec
+    request_slots = threading.BoundedSemaphore(pool)
 
     results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=pool) as ex:
@@ -6302,6 +7191,7 @@ def api_watchlist_evaluate():
                 per_timeout,
                 llm=llm,
                 deadline_mono=deadline_mono,
+                request_slots=request_slots,
             ): t
             for t in tickers
         }
@@ -6370,6 +7260,13 @@ def api_generate():
             return jsonify({"ok": False, "error": "ticker must look like AAPL or BRK.B"}), 400
     with _lock:
         cfg = load_config()
+    workspace = body.get("workspace")
+    if workspace not in (None, "live", "paper"):
+        return jsonify(ok=False, error="workspace must be live or paper"), 400
+    if workspace == "paper":
+        cfg = paper_research_config(cfg)
+    elif workspace == "live" and cfg.get("mode") not in ("live_manual", "auto_live"):
+        return jsonify(ok=False, error="Select a broker trading mode before live research"), 400
     # Scan (network) outside lock; ingest_signal takes its own lock
     sig = generate_scan_signal(cfg, force=True, ticker=ticker)
     if not sig:
@@ -6380,13 +7277,86 @@ def api_generate():
                 "banner": BANNER,
             }
         ), 400
-    ingest_signal(sig, research_only=True)  # the button researches; it never trades
+    if workspace:
+        sig["workspace"] = workspace
+    sig = ingest_signal(sig, research_only=True)  # the button researches; it never trades
     return jsonify({"ok": True, "signal": sig, "banner": BANNER})
+
+
+@app.route("/api/signals/<sig_id>/review", methods=["POST"])
+def api_order_review(sig_id: str):
+    """Read-only broker verification; a short-lived ticket never submits an order."""
+    return _create_broker_review(sig_id, request.get_json(silent=True) or {})
+
+
+def _create_broker_review(sig_id: str, body: dict):
+    """Shared review path for research ideas and explicit user stock tickets."""
+    import broker_router as broker
+    if not isinstance(body, dict):
+        return jsonify(ok=False, error="JSON object required"), 400
+    with _lock:
+        cfg = dict(load_config())
+        sig = next((dict(s) for s in load_signals() if s.get("id") == sig_id), None)
+        if not sig or sig.get("status") != "pending" or signal_workspace(sig) != "live":
+            return jsonify(ok=False, error="A pending live idea is required"), 400
+        if cfg.get("mode") not in ("live_manual", "auto_live"):
+            return jsonify(ok=False, error="Select a verified broker mode first"), 400
+        terms = _review_terms(sig, cfg)
+        try:
+            ticket = order_terms.canonical_order(sig, body.get("order"))
+        except ValueError as exc:
+            return jsonify(ok=False, error=str(exc)), 400
+        if sig.get("manual_order") and (cfg.get("mode") != "live_manual" or ticket != sig["manual_order"]["order"]):
+            return jsonify(ok=False, error="Create a new direct ticket to change its terms; manual mode is required"), 409
+    context = broker.verify_execution_context()
+    if not context.get("ok"):
+        return jsonify(ok=False, error=context.get("error") or "Broker identity unavailable"), 400
+    identity = context["identity"]
+    estimate = {"commission_estimate": None, "guaranteed": False}
+    if body.get("order") and identity.get("broker") == "ibkr":
+        estimate = broker.estimate_order(dict(ticket, ticker=sig["ticker"], side=sig["side"], broker_identity=identity))
+        if sig.get("manual_order") and (estimate.get("contract_verified") is not True
+                or not isinstance(estimate.get("contract"), dict) or not estimate["contract"].get("con_id")):
+            return jsonify(ok=False, error=estimate.get("error") or "IBKR could not verify this US-listed stock contract"), 409
+    with _lock:
+        current_cfg = load_config()
+        current = next((s for s in load_signals() if s.get("id") == sig_id), None)
+        if not current or current.get("status") != "pending" or _review_terms(current, current_cfg) != terms:
+            return jsonify(ok=False, error="Idea or account changed during review; refresh"), 409
+        if identity != current_cfg.get("broker_identity"):
+            return jsonify(ok=False, error="Broker account changed; confirm the current broker mode first"), 409
+        restriction = signal_execution_block(current, broker=True)
+        if restriction:
+            return jsonify(ok=False, error=restriction), 400
+        expires = time.time() + 90
+        try:
+            if current.get("expires_at"):
+                expires = min(expires, datetime.fromisoformat(current["expires_at"].replace("Z", "+00:00")).timestamp())
+        except (TypeError, ValueError):
+            return jsonify(ok=False, error="Invalid signal expiry"), 400
+        if expires <= time.time():
+            return jsonify(ok=False, error="Signal expired"), 400
+        for old_token, item in list(_BROKER_REVIEWS.items()):
+            if item["expires"] <= time.time():
+                _BROKER_REVIEWS.pop(old_token, None)
+        if len(_BROKER_REVIEWS) >= 100:
+            return jsonify(ok=False, error="Too many open order reviews; wait for old reviews to expire"), 429
+        token = uuid.uuid4().hex + uuid.uuid4().hex
+        _BROKER_REVIEWS[token] = {"terms": terms, "identity": identity, "expires": expires, "order": ticket,
+                                  "contract": copy.deepcopy(estimate.get("contract"))}
+    return jsonify(ok=True, review_token=token, identity=identity,
+                   expires_at=datetime.fromtimestamp(expires, timezone.utc).isoformat(),
+                   broker=broker.public_status(), order=ticket,
+                   costs={"notional_bound": ticket.get("notional_bound"), **estimate,
+                          "all_in_maximum": None, "note": "Broker commissions are unknown; no all-in cost guarantee"},
+                   capabilities=order_terms.capabilities(identity.get("broker")))
 
 
 @app.route("/api/signals/<sig_id>/approve", methods=["POST"])
 def api_approve(sig_id: str):
     body = request.get_json(force=True, silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify(ok=False, error="JSON object required"), 400
     with _lock:
         cfg = dict(load_config())
         signals = load_signals()
@@ -6395,6 +7365,41 @@ def api_approve(sig_id: str):
             return jsonify({"ok": False, "error": "That idea expired or was already handled. New ideas appear in Waiting."}), 404
         if sig.get("status") != "pending":
             return jsonify({"ok": False, "error": f"Signal is {sig.get('status')}"}), 400
+        if sig.get("workspace") == "live" and cfg.get("mode") not in ("auto_live", "live_manual"):
+            return jsonify({"ok": False, "error": "This is a live-account idea; review it in broker mode or create a separate paper copy"}), 400
+        paper_research = signal_workspace(sig) == "paper"
+        if paper_research and (cfg.get("mode") in ("auto_live", "live_manual")
+                               or cfg.get("_paper_research") or sig.get("source_signal_id")):
+            cfg = paper_research_config(cfg)
+        broker_approval = not paper_research and cfg.get("mode") in ("auto_live", "live_manual")
+        if broker_approval and any(body.get(key) not in (None, "", False) for key in (
+                "stop_loss", "take_profit", "trail_pct", "stop_loss_pct", "take_profit_pct",
+                "stop", "target", "stop_pct", "target_pct", "bracket")):
+            return jsonify({"ok": False, "error": "Broker orders do not support automatic exits; remove the paper stop/target fields"}), 400
+        restriction = signal_execution_block(sig, broker=broker_approval)
+        if restriction:
+            return jsonify({"ok": False, "error": restriction}), 400
+        expires = sig.get("expires_at")
+        if expires:
+            try:
+                expired = datetime.fromisoformat(str(expires).replace("Z", "+00:00")) <= datetime.now(timezone.utc)
+            except (ValueError, TypeError):
+                expired = True
+            if expired:
+                return jsonify({"ok": False, "error": "This idea has expired or has an invalid time; request a fresh scan"}), 400
+        if broker_approval:
+            token = body.get("review_token")
+            review = _BROKER_REVIEWS.get(token) if isinstance(token, str) else None
+            if not review or review["expires"] <= time.time() or review["terms"] != _review_terms(sig, cfg):
+                return jsonify(ok=False, error="Order or account review missing, expired or changed; open a fresh review"), 409
+            ack_target = str(sig.get("ack_symbol") or sig.get("ticker") or "").upper()
+            if review["identity"].get("paper_mode") is False and str(body.get("ack_ticker") or "").strip().upper() != ack_target:
+                return jsonify(ok=False, error="Confirm the exact OCC / local option symbol (or stock ticker) before submitting a live order"), 400
+            _BROKER_REVIEWS.pop(token)
+            sig["review_expires_at"] = datetime.fromtimestamp(review["expires"], timezone.utc).isoformat()
+            sig["review_identity"] = review["identity"]
+            sig["review_order"] = copy.deepcopy(review["order"])
+            sig["review_contract"] = copy.deepcopy(review.get("contract"))
         # Atomic claim under lock — prevents double-approve races
         sig["status"] = "approving"
         for i, s in enumerate(signals):
@@ -6431,7 +7436,7 @@ def api_approve(sig_id: str):
 
     # Manual approve: paper by default. auto_live → gate then broker (no dual-book).
     try:
-        if cfg.get("mode") in ("auto_live", "live_manual"):
+        if broker_approval:
             result = execute_gated_broker_or_paper(
                 sig, cfg, source="manual_approve", via="manual_approve_while_auto_live"
             )
@@ -6452,7 +7457,9 @@ def api_approve(sig_id: str):
             signals = load_signals()
             for i, s in enumerate(signals):
                 if s["id"] == sig_id and s.get("status") == "approving":
-                    s["status"] = "rejected"
+                    unresolved = any((item.get("signal") or {}).get("id") == sig_id
+                                     for item in load_ledger().get("pending_broker_orders") or [])
+                    s["status"] = "broker_pending" if unresolved else "rejected"
                     s["reject_reason"] = err
                     signals[i] = s
                     break
@@ -6465,7 +7472,10 @@ def api_approve(sig_id: str):
             signals = load_signals()
             for i, s in enumerate(signals):
                 if s["id"] == sig_id and s.get("status") == "approving":
-                    s["status"] = "pending"
+                    unresolved = result.get("pending") or any(
+                        (item.get("signal") or {}).get("id") == sig_id
+                        for item in load_ledger().get("pending_broker_orders") or [])
+                    s["status"] = "broker_pending" if unresolved else "pending"
                     signals[i] = s
                     break
             save_signals(signals)
@@ -6475,6 +7485,7 @@ def api_approve(sig_id: str):
                 "error": result.get("error"),
                 "broker": result.get("broker"),
                 "book": result.get("book"),
+                "pending": bool(result.get("pending")),
                 "banner": BANNER,
             }
         ), 400
@@ -6483,7 +7494,13 @@ def api_approve(sig_id: str):
         signals = load_signals()
         for i, s in enumerate(signals):
             if s["id"] == sig_id:
-                signals[i] = sig
+                if broker_approval:
+                    # Broker execution/reconciliation already persisted under its
+                    # submit lock. A local response may be older than that record.
+                    sig = dict(s)
+                    result["fill"] = sig.get("fill")
+                else:
+                    signals[i] = sig
                 break
         save_signals(signals)
         append_journal(
@@ -6503,6 +7520,7 @@ def api_approve(sig_id: str):
             "broker": result.get("broker"),
             "book": result.get("book"),
             "paper_fallback": bool(result.get("paper_fallback")),
+            "pending": bool(result.get("pending")),
             "banner": BANNER,
         }
     )
@@ -6531,11 +7549,19 @@ def api_reject(sig_id: str):
 
 @app.route("/api/session/start", methods=["POST"])
 def api_session_start():
-    """Start a paper session: set Make-today goal + beginning bank, auto_paper, fresh ledger day."""
-    with _lock:
+    """Start the selected main session; broker sessions never reset simulated funds."""
+    with _BROKER_EXEC_LOCK, _lock:
         body = request.get_json(force=True, silent=True) or {}
         if not isinstance(body, dict):
             return jsonify({"ok": False, "error": "JSON object required"}), 400
+        cfg = load_config()
+        if cfg.get("mode") in ("live_manual", "auto_live"):
+            if body.get("mode") not in (None, "", cfg["mode"]):
+                return jsonify(ok=False, error="Use the paper research controls for simulation"), 400
+            cfg.update(session_active=True, session_started_at=_now_iso())
+            save_config(cfg)
+            append_journal("session_start", {"mode": cfg["mode"], "workspace": "live"})
+            return jsonify(ok=True, config=cfg, ledger=load_ledger(), banner=BANNER)
         try:
             make_today = _num(body.get("make_today_usd"), "Today's goal", lo=0.01, hi=1e9)
             beginning_bank = _num(body.get("beginning_bank_usd"), "Starting cash", lo=1, hi=1e9)
@@ -6610,8 +7636,7 @@ def api_session_start():
             "fills": [],
             "daily": daily,
         }
-        if prev.get("broker_daily"):
-            ledger["broker_daily"] = prev["broker_daily"]  # broker trade counts survive restarts
+        _preserve_broker_state(prev, ledger)
         if open_pos:
             arch = list(prev.get("positions_archive") or [])
             stamp = _now_iso()
@@ -6709,10 +7734,12 @@ def api_session_stop():
     """Stop paper session: session_active false, pause loop. Fill mode choice is kept."""
     # Stop the decision loop FIRST so a failed save can never leave it trading.
     get_paper_loop().stop()
-    with _lock:
+    with _BROKER_EXEC_LOCK, _lock:
         cfg = load_config()
         cfg["session_active"] = False
         cfg["loop_enabled"] = False
+        if cfg.get("live_agent"):
+            cfg["live_agent"]["enabled"] = False
         # keep session_started_at / target / equity / mode for reference
         save_config(cfg)
         append_journal("session_stop", {"mode": cfg.get("mode"), "loop_enabled": False})
@@ -6742,10 +7769,7 @@ def api_ledger_reset():
             "fills": [],
             "daily": {},
         }
-        if previous.get("broker_daily"):
-            ledger["broker_daily"] = previous["broker_daily"]
-        if previous.get("broker_fills"):
-            ledger["broker_fills_archive"] = list(previous["broker_fills"])[:500]
+        _preserve_broker_state(previous, ledger)
         save_ledger(ledger)
         append_journal("ledger_reset", {"equity": equity})
         return jsonify({"ok": True, "ledger": ledger})
@@ -6800,12 +7824,60 @@ def api_loop_feed():
     )
 
 
+_HTTP_WORKER_THREADS = 8
+# Each synchronous SSE response holds a Waitress worker until it closes.
+# Keep half the workers available for state, polling, and operator controls.
+_SSE_STREAM_LIMIT = _HTTP_WORKER_THREADS // 2
+_SSE_SLOTS = threading.BoundedSemaphore(_SSE_STREAM_LIMIT)
+
+
+def _stream_state_payload(payload: dict, previous: dict) -> dict:
+    """Omit unchanged terminal history per connection; always send live state.
+
+    Pending ideas, approvals, broker orders, balances, and risk controls are never
+    suppressed. Historical quote age alone does not resend an entire archive.
+    Every new connection receives a complete history baseline.
+    """
+    out = dict(payload)
+    if not isinstance(payload.get("signals"), dict):
+        return out
+    groups = dict(payload["signals"])
+    for status in ("approved", "rejected", "expired"):
+        if status not in groups:
+            continue
+        stable = []
+        for row in groups[status]:
+            item = dict(row)
+            if isinstance(item.get("quote"), dict):
+                item["quote"] = {k: v for k, v in item["quote"].items() if k != "age_sec"}
+            stable.append(item)
+        digest = hashlib.sha256(json.dumps(_json_safe(stable), sort_keys=True, default=str).encode()).hexdigest()
+        if previous.get(status) == digest:
+            groups.pop(status)
+        previous[status] = digest
+    out.update(signals=groups, signal_history_delta=True)
+    return out
+
+
 @app.route("/api/loop/stream")
 def api_loop_stream():
     """SSE: decision + loop (~2s) and periodic state_lite (~4–6s). Cache-only buzz."""
     from flask import Response, stream_with_context
     import json as _json
     import time as _time
+
+    slots = _SSE_SLOTS
+    if not slots.acquire(blocking=False):
+        return jsonify({"ok": False, "error": "stream_capacity", "fallback": "polling"}), 503, {"Retry-After": "15"}
+    released = False
+    release_lock = threading.Lock()
+
+    def release_slot():
+        nonlocal released
+        with release_lock:
+            if not released:
+                released = True
+                slots.release()
 
     def _dump(o, **_kw):
         return _json.dumps(_json_safe(o), default=str)
@@ -6814,6 +7886,8 @@ def api_loop_stream():
         last_seq = 0
         tick = 0
         last_lite_at = 0.0
+        previous_history = {}
+        compact = request.args.get("compact") == "1"
         raw = request.args.get("since_seq") or request.args.get("since")
         if raw and str(raw).isdigit():
             last_seq = int(raw)
@@ -6822,6 +7896,8 @@ def api_loop_stream():
         # Emit an immediate state_lite so the desk paints without waiting
         try:
             lite0 = _build_state_lite()
+            if compact:
+                lite0 = _stream_state_payload(lite0, previous_history)
             yield "event: state_lite\ndata: " + _dump(lite0, default=str) + "\n\n"
             last_lite_at = _time.time()
         except Exception as exc:  # noqa: BLE001
@@ -6846,6 +7922,8 @@ def api_loop_stream():
                 if now - last_lite_at >= 5.0:
                     try:
                         lite = _build_state_lite()
+                        if compact:
+                            lite = _stream_state_payload(lite, previous_history)
                         yield "event: state_lite\ndata: " + _dump(lite, default=str) + "\n\n"
                     except Exception as exc:  # noqa: BLE001
                         yield "event: state_lite\ndata: " + _dump({"ok": False, "error": str(exc)}) + "\n\n"
@@ -6859,15 +7937,27 @@ def api_loop_stream():
                 yield ": ping\n\n"  # keepalive so clients can detect a dead stream
             _time.sleep(2)
 
-    return Response(
-        stream_with_context(gen()),
-        mimetype="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-        },
-    )
+    def bounded_stream():
+        try:
+            yield from gen()
+        finally:
+            release_slot()
+
+    try:
+        response = Response(
+            stream_with_context(bounded_stream()),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        # Also covers a response closed before its generator is first consumed.
+        response.call_on_close(release_slot)
+        return response
+    except Exception:
+        release_slot()
+        raise
 
 
 @app.route("/api/sparks")
@@ -6996,15 +8086,7 @@ def api_llm_thesis():
     if analysis.get("error"):
         return jsonify({"ok": False, "error": analysis["error"], "ticker": ticker}), 400
 
-    llm_cfg = _llm_cfg_for_calls(cfg)
-    desk = dict(cfg)
-    desk["api_key"] = llm_cfg.get("api_key")
-    desk["llm_model"] = llm_cfg.get("model")
-    desk["configured"] = llm_cfg.get("configured")
-    desk["brain_mode"] = llm_trader.resolve_brain_mode(cfg)
-    if desk["brain_mode"] == "gemini":
-        desk["model"] = llm_cfg.get("model")
-    thesis = llm_trader.decide_trade_thesis(_with_lessons(analysis), desk, timeout_sec=12)
+    thesis = _research_thesis(analysis, cfg, source="thesis_api")
     with _lock:
         append_journal(
             "llm_thesis_api",
@@ -7045,12 +8127,15 @@ def api_llm_thesis():
 
 @app.route("/api/ledger/flatten", methods=["POST"])
 def api_ledger_flatten():
-    """Force-close local paper positions; also cancel/close Alpaca when configured."""
+    """Force-close local paper positions without broker I/O."""
+    body = request.get_json(silent=True) or {}
+    if body.get("workspace") not in (None, "paper"):
+        return jsonify(ok=False, error="This endpoint closes local paper positions only."), 400
     with _lock:
         cfg = dict(load_config())
     result = paper_flatten_all(cfg)
     code = 200 if result.get("ok") else 207
-    return jsonify({**result, "banner": BANNER, "broker": _broker_public_status()}), code
+    return jsonify({**result, "banner": BANNER}), code
 
 
 @app.route("/api/edge/sample", methods=["GET"])
@@ -7335,6 +8420,9 @@ def api_health():
     return jsonify(
         {
             "ok": not _CORRUPT_PATHS,
+            "app_id": "tomahawk-desk",
+            "instance": {"source_root": str(APP_DIR.resolve()), "data_root": str(DATA_DIR.resolve())},
+            "startup": _startup_status(),
             "banner": BANNER,
             "port": DESK_PORT,
             "corrupt_files": corrupt_files_status(),
@@ -7349,29 +8437,70 @@ def api_health():
     )
 
 
-# Start background on import / run (TOMAHAWK_NO_BG=1 skips — used by tests)
-if (os.environ.get("TOMAHAWK_NO_BG") or "").strip().lower() not in ("1", "true", "yes", "on"):
-    start_bg()
+def recover_interrupted_approvals():
+    """Restore broker evidence before any background scanner can run."""
+    with _lock:
+        ledger = load_ledger()
+        pending = {p.get("signal", {}).get("id") for p in ledger.get("pending_broker_orders", [])}
+        broker_fills = {f.get("signal_id"): f for f in ledger.get("broker_fills", [])}
+        paper_fills = {f.get("signal_id"): f for f in reversed(ledger.get("fills", []))}
+        signals = load_signals()
+        changed = []
+        for sig in signals:
+            if sig.get("status") != "approving":
+                continue
+            fills = paper_fills if signal_workspace(sig) == "paper" else broker_fills
+            if sig.get("id") in pending:
+                sig["status"] = "broker_pending"
+            elif sig.get("id") in fills:
+                sig.update(status="approved", fill=fills[sig["id"]])
+            else:
+                sig.update(status="rejected", reject_reason="Review interrupted by restart; create a fresh idea")
+            changed.append(sig.get("id"))
+        if changed:
+            save_signals(signals)
+            append_journal("approving_recovered", {"signal_ids": changed})
 
 
+import desk_workbench
+desk_workbench.register(app, __import__("sys").modules[__name__])
+import broker_controls
+broker_controls.register(app, __import__("sys").modules[__name__])
+import live_ticket
+live_ticket.register(app, __import__("sys").modules[__name__])
+import live_agent
+_live_agent = live_agent.register(app, __import__("sys").modules[__name__])
+import research_companion
+_research_companion = research_companion.register(app, __import__("sys").modules[__name__])
+import options_desk
+_options_desk = options_desk.register(app, __import__("sys").modules[__name__])
+import market_catalog
+market_catalog.register(app, __import__("sys").modules[__name__])
+import desk_operations
+desk_operations.register(app, __import__("sys").modules[__name__], _research_companion)
+import research_studio
+research_studio.register(app, __import__("sys").modules[__name__], _research_companion)
+import market_universe
+market_radar.configure_discovery(lambda: market_universe.radar_candidates(__import__("sys").modules[__name__]))
+
+# Claim the instance before starting any background work.
 if __name__ == "__main__":
     acquire_instance_lock()
     atexit.register(release_instance_lock)
+    recover_interrupted_approvals()
+
+# Start background on import / run (TOMAHAWK_NO_BG=1 skips — used by tests)
+if (os.environ.get("TOMAHAWK_NO_BG") or "").strip().lower() not in ("1", "true", "yes", "on"):
+    start_bg()
+    _research_companion.start()
+
+
+if __name__ == "__main__":
     # Ensure data files exist
     load_config()
     load_ledger()
     load_signals()
     load_journal()
-    # A crash/restart mid-approve leaves signals in "approving" forever — release them.
-    with _lock:
-        _sigs = load_signals()
-        _stuck = [s for s in _sigs if isinstance(s, dict) and s.get("status") == "approving"]
-        for s in _stuck:
-            s["status"] = "rejected"
-            s["reject_reason"] = "Interrupted mid-approve (app restarted) — check broker/ledger"
-        if _stuck:
-            save_signals(_sigs)
-            append_journal("approving_released", {"signal_ids": [s.get("id") for s in _stuck]})
     append_journal("app_start", {"banner": BANNER, "port": DESK_PORT, "host": DESK_HOST})
     if os.environ.get("TOMAHAWK_DEV_SERVER", "").lower() in ("1", "true", "yes"):
         app.run(host=DESK_HOST, port=DESK_PORT, debug=False, use_reloader=False, threaded=True)
@@ -7380,4 +8509,4 @@ if __name__ == "__main__":
             from waitress import serve
         except ImportError as exc:
             raise RuntimeError("waitress is required for production startup; install requirements.txt") from exc
-        serve(app, host=DESK_HOST, port=DESK_PORT, threads=8)
+        serve(app, host=DESK_HOST, port=DESK_PORT, threads=_HTTP_WORKER_THREADS)

@@ -384,6 +384,10 @@ def test_nan_stop_rejected():
 # ------------------------------------------------------------- broker shorts
 
 def test_broker_sell_without_position_refused(monkeypatch):
+    from broker_fixtures import configure
+    cfg = desk.load_config()
+    configure(monkeypatch, cfg)
+    desk.save_config(cfg)
     monkeypatch.setattr(desk, "_broker_is_configured", lambda: True)
     monkeypatch.setattr(desk, "_broker_day_pnl", lambda: (0.0, 100_000.0, None))
     monkeypatch.setattr(desk, "_broker_position_qty", lambda t: (0.0, None))
@@ -397,12 +401,17 @@ def test_broker_sell_without_position_refused(monkeypatch):
 
 def test_broker_sell_clamped_to_held_and_treated_as_exit(monkeypatch):
     import broker_alpaca
+    from broker_fixtures import configure
+    cfg = dict(desk.load_config(), session_active=True, mode="live_manual")
+    configure(monkeypatch, cfg)
+    desk.save_config(cfg)
+    monkeypatch.setattr(broker_alpaca, "get_open_orders", lambda: {"ok": True, "orders": []})
 
     monkeypatch.setattr(desk, "_broker_is_configured", lambda: True)
     monkeypatch.setattr(desk, "_broker_day_pnl", lambda: (-99_999.0, 100_000.0, None))  # loss cap blown
     monkeypatch.setattr(desk, "_broker_position_qty", lambda t: (4.0, None))
     seen = {}
-    monkeypatch.setattr(desk, "can_take_trade", lambda c, l, n, **k: (seen.update(k) or True, "ok"))
+    monkeypatch.setattr(desk, "_broker_session_gate", lambda c, n, **k: (seen.update(k) or True, "ok"))
     sent = []
     monkeypatch.setattr(desk, "live_broker_place_order",
                         lambda o: sent.append(o) or {"ok": True, "status": "paper_submitted", "order_id": "o", "qty": str(o["shares"])})

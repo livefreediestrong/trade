@@ -1,0 +1,107 @@
+<section id="desk-research" class="desk-section research-section" aria-labelledby="desk-research-title">
+<div class="section-heading"><h2 id="desk-research-title">Research records</h2><p>Recorded by Moss · inspect details and run optional investigations here</p></div>
+{% if config.get('RESEARCH_STUDIO_AVAILABLE') %}{% include "desk/scanner_link.html" %}{% endif %}
+<div class="section-grid">
+{% if config.get('COMPANION_AVAILABLE') %}{% include "desk/news_sources.html" %}{% endif %}
+{% if config.get('MARKETS_AVAILABLE') %}{% include "desk/market_operations.html" %}{% endif %}
+{% if config.get('COMPANION_AVAILABLE') %}{% include "desk/notebook.html" %}{% endif %}
+{% if config.get('COMPANION_AVAILABLE') %}{% include "desk/real_trade_review.html" %}{% endif %}
+{% include "desk/workbench_research.html" %}
+<section class="panel news-panel desk-news" id="news-panel" aria-label="Market news">
+    <div class="panel-head news-head">
+      <h2>
+        <span class="panel-ico" aria-hidden="true">☰</span>
+        <span class="simple-only">What&rsquo;s moving</span>
+        <span class="adv-only">News</span>
+        <span class="title-ctx simple-only">(watchlist headlines — display only)</span>
+        <span class="title-ctx adv-only">(watchlist headlines — research only)</span>
+      </h2>
+      <div class="news-tools adv-only">
+        <label class="sr-only" for="news-filter">Filter by symbol</label>
+        <select id="news-filter" class="news-filter" title="Filter headlines by symbol">
+          <option value="">All symbols</option>
+        </select>
+        <button type="button" class="btn ghost sm" id="btn-news-refresh" title="Refresh news now">Refresh</button>
+      </div>
+    </div>
+    <div class="macro-strip" id="macro-strip" hidden aria-label="Macro and calendar">
+      <span class="macro-strip-lbl">Macro / calendar</span>
+      <div class="macro-strip-items" id="macro-strip-items"></div>
+    </div>
+    <p class="news-butler muted" id="news-butler" aria-live="polite"></p>
+    <div id="news-empty" class="empty news-empty hidden">
+      <p id="news-empty-main">No headlines right now</p>
+      <p class="muted" id="news-empty-sub">Sources may be offline, or the watchlist is empty. Headlines are display-only — they do not gate fills.</p>
+    </div>
+    <div id="news-feed" class="news-feed" aria-live="polite"></div>
+    <div class="news-intel adv-only" id="news-intel" hidden>
+      <div class="news-intel-head">
+        <strong>Intelligence context</strong>
+        <span class="muted" id="news-intel-meta">Research-only</span>
+      </div>
+      <div class="news-intel-summary" id="news-intel-summary"></div>
+      <div class="news-intel-timeline" id="news-intel-timeline"></div>
+    </div>
+  </section>
+<section class="panel radar-panel adv-only" id="radar-panel">
+    <div class="panel-head">
+      <h2>Market radar <span class="title-ctx">(whole-market movers to watch)</span></h2>
+    </div>
+    <p class="hint-line quiet-hint">Scans the market for big movers. Research only — the brain does not decide on a name until it enters Auto paper.</p>
+    <div class="radar-controls">
+      <label class="chk" title="Turn on whole-market mover scanning (paper research)">
+        <input type="checkbox" id="chk-radar-enabled" />
+        Watch top movers (paper)
+      </label>
+      <label class="radar-topn-label" for="radar-top-n" title="How many top movers to keep">Top N
+        <input type="number" id="radar-top-n" min="5" max="50" step="1" value="20" />
+      </label>
+      <button type="button" class="btn ghost sm" id="btn-radar-refresh" title="Refresh movers now">Refresh</button>
+      <span class="muted-line" id="radar-meta" title="Radar status">Off</span>
+    </div>
+    <p class="hint-line quiet-hint">Skips pennies and thin dollar-volume names. When your session is on, hot names can join Auto paper / Ask-me-first focus — still not a live brokerage recommendation.</p>
+    <div id="radar-lane" class="radar-lane" aria-label="Market mover radar"></div>
+  </section>
+<section class="panel heat-panel adv-only" id="heat-panel">
+    <div class="panel-head">
+      <h2>Heat <span class="title-ctx">(tickers Reddit is mentioning right now)</span></h2>
+    </div>
+    <p class="hint-line quiet-hint">Shows names getting buzz attention. Research only — it does not change your watchlist or place trades.</p>
+    <div id="heat-lane" class="heat-lane" aria-label="Buzz heat lane"></div>
+  </section>
+<section class="panel buzz-panel adv-only" id="buzz-panel">
+    <div class="panel-head">
+      <h2>Ticker buzz <span class="title-ctx">(Reddit mention counts — research only)</span></h2>
+      <button type="button" class="btn ghost sm" id="btn-buzz-refresh" title="Refresh Reddit mention counts now">Refresh</button>
+    </div>
+    <p class="hint-line quiet-hint">Counts how often tickers show up on Reddit (WallStreetBets threads and hot posts). Uses a Reddit login when configured; otherwise public feeds may fail. Paper research only — not a trade signal.</p>
+    <div class="buzz-meta" id="buzz-meta" title="When buzz data was last refreshed">Last refresh: -</div>
+    <div class="buzz-errors muted-line" id="buzz-errors"></div>
+    <div class="buzz-live-chat" id="buzz-live-chat">
+      <div class="live-chat-head">
+        <strong>WSB Live Chat</strong>
+        <span class="live-chat-note muted" id="buzz-live-chat-note">Live Chat needs Reddit login — connect later.</span>
+      </div>
+      <div class="live-chat-tickers" id="buzz-live-chat-tickers"></div>
+      <section class="desk-module live-chat-paste-wrap">
+        <h3 class="module-title" tabindex="-1">Paste chat export (optional bridge)</h3>
+        <textarea id="buzz-live-chat-paste" rows="4" placeholder="Paste WSB Daily Live Chat lines here..."></textarea>
+        <button type="button" class="btn ghost sm" id="btn-buzz-live-chat-ingest">Parse paste</button>
+      </section>
+    </div>
+    <div class="buzz-megathreads" id="buzz-megathreads" aria-label="WSB megathreads"></div>
+    <div class="buzz-list" id="buzz-list" aria-live="polite"></div>
+  </section>
+<section class="desk-module panel chat-panel adv-only" id="chat-panel">
+    <h3 class="module-title" tabindex="-1">Ask Gemini <span class="title-ctx">(chat about a ticker — research only)</span></h3>
+    <div class="chat-body">
+      <div class="chat-log" id="chat-log"></div>
+      <div class="chat-form">
+        <input type="text" id="chat-ticker" placeholder="Ticker (optional)" maxlength="12" />
+        <input type="text" id="chat-input" placeholder="Ask about a stock or idea..." />
+        <button type="button" class="btn primary" id="btn-chat-send">Send</button>
+      </div>
+    </div>
+  </section>
+<div id="churn-strip" class="churn-strip hidden adv-only" aria-live="polite"></div>
+</div></section>
