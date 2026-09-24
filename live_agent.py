@@ -375,7 +375,8 @@ class LiveAgent:
             ready = bool(book and book.get("risk_ready") is True and book.get("account", {}).get("day_pnl") is not None)
             if minutes > 0 and not ready:
                 # If Gateway went away after signing in, relaunch it once (login/2FA
-                # may still be needed). Never reopens a window the owner closed.
+                # may still be needed). Only runs during an active auto_live session and
+                # never reopens a login window closed before sign-in.
                 ensure = getattr(broker_router, "ensure_gateway", None)
                 if callable(ensure):
                     try:

@@ -55,6 +55,16 @@ try {
     exit 0
   }
 } catch {}
+# Gateway's own auto-restart leaves no process for a few seconds; confirm the absence first.
+Start-Sleep -Seconds 90
+$running = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+  $_.Name -in @('ibgateway.exe', 'tws.exe') -or
+  ($_.Name -in @('java.exe', 'javaw.exe') -and "$($_.CommandLine)" -match '(?i)ibgateway|ibcalpha|\\jts\\|/jts/|jclient|twslaunch')
+})
+if ($running.Count -gt 0 -or (Test-Port $HostName $Port)) {
+  Write-Host "Gateway came back on its own; not launching another copy."
+  exit 0
+}
 try { @{ at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); exe = $Exe; source = 'Ensure-IBGateway' } | ConvertTo-Json -Compress | Set-Content -LiteralPath $stampPath -Encoding ASCII } catch {}
 Write-Host "Port down — launching $Exe (full logout still needs human IB Key / 2FA)."
 Start-Process -FilePath $Exe -WorkingDirectory (Split-Path -Parent $Exe) -WindowStyle Normal | Out-Null

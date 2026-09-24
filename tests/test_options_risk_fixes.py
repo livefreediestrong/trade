@@ -224,3 +224,25 @@ def test_covered_flag_does_not_shrink_short_put_risk():
     assert order_terms.option_max_loss(put, 1.0) == pytest.approx(49 * 100)
     call = {**put, "right": "C"}
     assert order_terms.option_max_loss(call, 1.0) == pytest.approx(100)
+
+
+
+def test_bag_close_counts_working_close_orders():
+    working = SimpleNamespace(
+        order=SimpleNamespace(account="DU1", action="SELL", totalQuantity=1),
+        orderStatus=SimpleNamespace(filled=0),
+        contract=SimpleNamespace(secType="BAG", symbol="SPY",
+                                 comboLegs=[SimpleNamespace(conId=1000), SimpleNamespace(conId=1050)]))
+    ib = _FakeIB([_pos("OPT", "SPY", 1, "C", 1000), _pos("OPT", "SPY", -1, "C", 1050)], [working])
+    with pytest.raises(ValueError, match="already working"):
+        ibkr._place_bag_from_desk(ib, _bag_close(), IDENTITY, "ref")
+
+
+def test_auto_bag_orders_are_capped_at_ten_contracts():
+    cfg = _cfg()
+    cfg["live_agent"]["auto_options"]["strategies"] = ["call_debit"]
+    signal = {"asset_type": "BAG", "side": "buy", "contracts": 20, "option_strategy": "call_debit",
+              "option_intent": "OPEN", "right": "C", "expiry": "2026-10-16",
+              "long_strike": 100.0, "short_strike": 105.0}
+    order = alo.execution_terms_option(signal, cfg, 0.50, {}, 100000.0)
+    assert order["contracts"] == 10

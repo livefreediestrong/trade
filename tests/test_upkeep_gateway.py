@@ -76,9 +76,22 @@ def test_ensure_gateway_endpoint_passes_automatic_flag(monkeypatch, body, automa
     import broker_ibkr
 
     monkeypatch.setenv("BROKER_PROVIDER", "ibkr")
+    monkeypatch.setattr(desk, "load_config", lambda: {"session_active": True, "mode": "live_manual"})
     calls = []
     monkeypatch.setattr(broker_ibkr, "ensure_gateway",
                         lambda **kw: calls.append(kw) or {"ok": True, "launched": False, "note": "x"})
     response = desk.app.test_client().post("/api/broker-ensure-gateway", base_url="http://127.0.0.1:5056", json=body)
     assert response.status_code == 200
     assert calls == [{"launch_if_down": True, "automatic": automatic}]
+
+
+def test_automatic_gateway_launch_is_held_outside_a_live_session(monkeypatch):
+    import app as desk
+    import broker_ibkr
+
+    monkeypatch.setenv("BROKER_PROVIDER", "ibkr")
+    monkeypatch.setattr(desk, "load_config", lambda: {"session_active": False, "mode": "live_manual"})
+    monkeypatch.setattr(broker_ibkr, "ensure_gateway", lambda **kw: pytest.fail("must not try to launch"))
+    body = desk.app.test_client().post("/api/broker-ensure-gateway", base_url="http://127.0.0.1:5056",
+                                       json={"launch_if_down": True, "automatic": True}).get_json()
+    assert body["automatic_launch_held"] is True and not body["launched"]

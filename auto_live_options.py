@@ -351,6 +351,8 @@ def execution_terms_option(signal, cfg, premium, execution_quote, max_order_usd:
     }, float(bound))))
     affordable = int(budget / per_contract) if per_contract > 0 else 0
     contracts = min(contracts, max(0, affordable), int(auto_cfg["max_contracts"]))
+    if asset == "BAG":
+        contracts = min(contracts, 10)  # canonical_bag_order's per-ticket cap
     if contracts < 1:
         raise ValueError(f"Option budget below one contract's maximum loss (${per_contract:.2f})")
     base = {

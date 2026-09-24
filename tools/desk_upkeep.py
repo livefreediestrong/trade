@@ -151,9 +151,9 @@ def watchdog() -> dict:
         result["desk"] = "ok"
         result["broker"] = {k: broker.get(k) for k in ("status", "connected", "connected_label")}
         if broker.get("configured") and not broker.get("connected"):
-            # The desk decides: it relaunches only a Gateway that signed in and
-            # then went away, never one the owner closed. Sign-in / 2FA stays
-            # with the owner.
+            # The desk decides: during an active live session it relaunches only
+            # a Gateway that signed in and then went away; a login window closed
+            # before sign-in stays closed. Sign-in / 2FA stays with the owner.
             result["action"], result["gateway"] = "ensure_gateway", ensure_gateway_via_desk()
     state["last"] = result
     _save("watchdog.json", state)

@@ -321,7 +321,8 @@ that runs the live desk.
 
 Unattended callers (the watchdog, the Moss agent's tick, the daily `Ensure-IBGateway.ps1` task) reopen
 Gateway only when it had signed in and served the API since its last launch and has then been gone for
-90 seconds (so Gateway's own auto-restart is not raced). A login window you close, or one that exits
+90 seconds (so Gateway's own auto-restart is not raced). The watchdog and the agent also require an active
+live session (`live_manual` or `auto_live`, session started), so a Gateway you close after trading stays closed. A login window you close, or one that exits
 without signing in, stays closed: the desk shows "closed before it signed in" and waits for you to use
 **Ensure Gateway** (Live trading section) or the desktop shortcut. Nothing ever starts a second Gateway while one is running
 (`ibgateway.exe`, `tws.exe`, or a Gateway/TWS `java.exe`/`javaw.exe` such as IBC), and launches share a

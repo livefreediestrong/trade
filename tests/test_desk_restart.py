@@ -75,3 +75,15 @@ def test_shutdown_rejects_cross_site_requests(shutdown, monkeypatch):
 def test_health_reports_code_status():
     body = desk.app.test_client().get("/api/health", base_url=BASE).get_json()
     assert set(body["code"]) >= {"started", "on_disk", "stale"}
+
+
+def test_exit_is_cancelled_when_an_order_started_after_the_request(monkeypatch, tmp_path):
+    for name in ("CONFIG", "LEDGER", "SIGNALS", "JOURNAL"):
+        monkeypatch.setattr(desk, name + "_PATH", tmp_path / (name.lower() + ".json"))
+    monkeypatch.setattr(desk.time, "sleep", lambda s: None)
+    monkeypatch.setattr(desk.os, "_exit", lambda code: pytest.fail("must not exit with an order pending"))
+    ledger = desk.load_ledger()
+    ledger["pending_broker_orders"] = [{"signal": {"id": "late"}}]
+    desk.save_ledger(ledger)
+    desk._exit_desk_process()
+    assert desk.load_journal()[0]["action"] == "app_stop_cancelled"

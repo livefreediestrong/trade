@@ -97,6 +97,7 @@ def _reddit_rows(subreddit: str, limit: int = 40) -> list[dict[str, Any]]:
     Uses OAuth when REDDIT_CLIENT_ID/SECRET are set; the public JSON fallback
     stays opt-in (REDDIT_PUBLIC_JSON=1) per Reddit's Data API terms.
     """
+    source = f"reddit r/{subreddit}"
     if not _SUBREDDIT_RE.fullmatch(subreddit or ""):
         _note_source("reddit", f"Invalid subreddit name: {subreddit!r}")
         return []
@@ -104,7 +105,7 @@ def _reddit_rows(subreddit: str, limit: int = 40) -> list[dict[str, Any]]:
     data, error = buzz_sources._reddit_get(
         f"/r/{subreddit}/new", params={"limit": min(max(limit, 1), 100), "raw_json": 1})
     if error or not isinstance(data, dict):
-        _note_source("reddit", error or "Unexpected Reddit response")
+        _note_source(source, error or "Unexpected Reddit response")
         return []
     children = (data.get("data") or {}).get("children") or []
     rows: list[dict[str, Any]] = []
@@ -137,7 +138,7 @@ def _reddit_rows(subreddit: str, limit: int = 40) -> list[dict[str, Any]]:
             "comments": int(data.get("num_comments") or 0),
             "permalink": f"https://www.reddit.com{data.get('permalink')}" if data.get("permalink") else None,
         })
-    _note_source("reddit", None, len(rows))
+    _note_source(source, None, len(rows))
     return rows
 
 

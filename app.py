@@ -2150,7 +2150,9 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                     order["shares"] = shares
                 # Re-run broker-only gates against the latest limits/session immediately
                 # before persisting intent; config POST uses this same outer lock.
-                ok, reason = _broker_session_gate(current, notional, reducing=reducing)
+                # Options are capped on worst-case loss, not premium (same as the first gate).
+                gate_notional = risk_notional if is_opt else notional
+                ok, reason = _broker_session_gate(current, gate_notional, reducing=reducing)
                 if ok and not reducing:
                     ok, reason = _broker_risk_gate(current, ledger, day_pnl, equity)
                 if not ok:
@@ -6496,6 +6498,12 @@ def api_broker_ensure_gateway():
     launch = True if not isinstance(body, dict) else bool(body.get("launch_if_down", True))
     # The desk button is an owner action; the upkeep watchdog sends automatic=true.
     automatic = isinstance(body, dict) and body.get("automatic") is True
+    if automatic and launch:
+        cfg = load_config()
+        if not (cfg.get("session_active") and cfg.get("mode") in ("live_manual", "auto_live")):
+            # Outside a live session a closed Gateway was most likely closed on purpose.
+            return jsonify(ok=False, launched=False, automatic_launch_held=True,
+                           note="No live session is running; Gateway is not reopened automatically.")
     try:
         result = ensure(launch_if_down=launch, automatic=automatic)
     except Exception as exc:
@@ -8890,7 +8898,12 @@ _SERVING = False
 def _exit_desk_process() -> None:
     """Stop the desk once no ledger write is in progress; the launcher restarts it."""
     time.sleep(0.8)  # let the HTTP response reach the launcher
-    with _lock:  # held until exit: no new ledger write can begin
+    # _BROKER_SUBMIT_LOCK: no broker submission is in flight; _lock: no ledger write.
+    with _BROKER_SUBMIT_LOCK, _lock:
+        pending = load_ledger().get("pending_broker_orders") or []
+        if pending:  # an order started after the request was accepted
+            append_journal("app_stop_cancelled", {"reason": "broker order unresolved", "pending": len(pending)})
+            return
         append_journal("app_stop", {"reason": "restart_requested", "pid": os.getpid()})
         release_instance_lock()
         os._exit(0)

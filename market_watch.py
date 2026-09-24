@@ -186,15 +186,20 @@ class ListingIndex:
 
 
 def listing_index(desk) -> ListingIndex:
+    """Index of the Nasdaq directory; the file is re-read only when it changes."""
+    try:
+        stat = (desk.DATA_DIR / "market_universe.json").stat()
+        stamp = (stat.st_mtime_ns, stat.st_size)
+    except (AttributeError, OSError):
+        stamp = None
+    with _lock:
+        if _index_cache["index"] is not None and _index_cache["updated_at"] == stamp:
+            return _index_cache["index"]
     try:
         import market_universe
         raw = market_universe.load(desk) if desk is not None else {}
     except Exception:  # noqa: BLE001
         raw = {}
-    stamp = raw.get("updated_at")
-    with _lock:
-        if _index_cache["index"] is not None and _index_cache["updated_at"] == stamp:
-            return _index_cache["index"]
     index = ListingIndex(raw.get("symbols") or [])
     with _lock:
         _index_cache.update(updated_at=stamp, index=index)

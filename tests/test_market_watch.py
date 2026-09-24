@@ -113,7 +113,7 @@ def test_reddit_without_credentials_explains_how_to_turn_it_on(monkeypatch):
     for name in ("REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET", "REDDIT_PUBLIC_JSON"):
         monkeypatch.delenv(name, raising=False)
     assert social_intelligence._reddit_rows("stocks") == []
-    assert "REDDIT_CLIENT_ID" in social_intelligence._source_status["reddit"]["error"]
+    assert "REDDIT_CLIENT_ID" in social_intelligence._source_status["reddit r/stocks"]["error"]
 
 
 def test_atom_feeds_are_read():

@@ -1588,8 +1588,20 @@ def _place_bag_from_desk(ib, order, identity, ref):
             if p.account == account and p.contract.secType == "OPT":
                 held[int(p.contract.conId)] = held.get(int(p.contract.conId), 0.0) + _number(p.position)
         (long_c, _), (short_c, _) = qualified
-        if held.get(int(long_c.conId), 0.0) < qty or held.get(int(short_c.conId), 0.0) > -qty:
-            raise ValueError("BAG CLOSE refused: the account does not hold this spread in that quantity")
+        # Working combos on the same two legs already claim part of the spread;
+        # a second CLOSE must not pass on positions that are about to be closed.
+        legs_key = {int(long_c.conId), int(short_c.conId)}
+        working = 0.0
+        for trade in ib.openTrades():
+            c = trade.contract
+            if (trade.order.account != account or c.secType != "BAG"
+                    or {int(getattr(cl, "conId", 0) or 0) for cl in (c.comboLegs or [])} != legs_key):
+                continue
+            working += max(0.0, _number(trade.order.totalQuantity) - _number(trade.orderStatus.filled))
+        need = qty + working
+        if held.get(int(long_c.conId), 0.0) < need or held.get(int(short_c.conId), 0.0) > -need:
+            raise ValueError("BAG CLOSE refused: the account does not hold this spread in that quantity"
+                             + (f" beyond {int(working)} contracts already working" if working else ""))
     from broker_router import submission_window_error
     expiry_error = submission_window_error(order)
     if expiry_error:
