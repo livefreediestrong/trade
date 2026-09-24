@@ -110,8 +110,9 @@ def test_manual_reference_and_layout_have_no_arming_side_effect(isolated):
     ref=isolated.get('/manual-live-enablement',base_url=BASE)
     assert ref.status_code==200 and ref.mimetype=='text/plain'
     assert 'IBKR_LIVE=true' in ref.text and '"mode": "auto_live"' in ref.text
-    page=isolated.get('/',base_url=BASE).text
-    assert page.index('id="live-automation"') < page.index('id="agent-research"') < page.index('id="desk-live"')
+    page=isolated.get('/desk/all',base_url=BASE).text  # page-split: '/' is Overview; /desk/all keeps every module
+    auto=isolated.get('/desk/auto',base_url=BASE).text
+    assert 'id="live-automation"' in auto and 'id="desk-live"' in auto
     for ident in ('live-automation','agent-research','stocks-on-sale','research-studio','live-execution-settings'):
         assert page.count('id="'+ident+'"')==1
     assert 'class="research-shelf" role="region"' in page

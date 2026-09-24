@@ -306,8 +306,12 @@ def execution_terms_option(signal, cfg, premium, execution_quote, max_order_usd:
     auto_cfg = get_config(cfg)
     if not auto_cfg.get("enabled"):
         raise ValueError("auto_options is not enabled on the live agent")
+    # Advisory only (by owner decision this never blocks live ordering): the
+    # conversion step already required risk_ready and the desk's broker risk
+    # gate re-checks verified daily P&L before submission. Record the result so
+    # the journal shows the book state the order was priced against.
     err = risk_ready_error(signal.get("broker_book") or cfg.get("_broker_book_snapshot"))
-    # Caller may skip book on signal; live_agent start already required risk_ready.
+    signal["options_risk_note"] = err
     asset = str(signal.get("asset_type") or "").upper()
     policy = ((cfg.get("live_agent") or {}).get("policy") or {})
     order_type = str(policy.get("order_type") or "limit")

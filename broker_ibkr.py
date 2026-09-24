@@ -479,12 +479,21 @@ def stock_quote(symbol: str) -> dict[str, Any]:
                             "fresh": False, "identity": identity, "source": "IBKR mkt data"}
                 age = (datetime.now(timezone.utc) - stamp).total_seconds()
                 fresh = -15 <= age <= 120
+                # ib_insync stamps ticks with local *receipt* time. For delayed
+                # (3) / delayed-frozen (4) data the prices are ~15 min behind the
+                # market even though age_sec looks near zero, so callers can
+                # prefer a real-time source. Not a block: delayed stays usable.
+                data_type = getattr(ticker, "marketDataType", None)
+                delayed = data_type in (3, 4)
                 return {
                     "ok": True, "symbol": symbol, "price": price, "fresh": fresh,
                     "market_time": stamp.isoformat(), "received_at": datetime.now(timezone.utc).isoformat(),
-                    "age_sec": round(age, 1), "source": "IBKR delayed mkt data",
+                    "age_sec": round(age, 1),
+                    "source": ("IBKR delayed mkt data" if delayed else
+                               "IBKR live mkt data" if data_type in (1, 2) else "IBKR mkt data"),
+                    "delayed": delayed,
                     "bid": _safe_num(ticker.bid), "ask": _safe_num(ticker.ask),
-                    "last": _safe_num(ticker.last), "market_data_type": getattr(ticker, "marketDataType", None),
+                    "last": _safe_num(ticker.last), "market_data_type": data_type,
                     "identity": identity, "con_id": int(contract.conId),
                 }
             finally:
@@ -1566,6 +1575,7 @@ def _place_bag_from_desk(ib, order, identity, ref):
 
 
 
+@_on_api_thread
 def place_from_desk_order(order: dict[str, Any]) -> dict[str, Any]:
     trade = None
     identity = None

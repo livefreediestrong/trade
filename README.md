@@ -304,3 +304,36 @@ The [Moss paper workday](docs/MOSS_WORKDAY.md) runs local paper research through
 - **Social/news pulse:** when enabled, `/api/state` and `/api/research/social` combine bounded public Reddit communities (`wallstreetbets`, `stocks`, `investing`, `options`, `Daytrading`, `Shortsqueeze`), Stocktwits symbol streams for the watchlist, and configurable public RSS feeds. Defaults include CNBC Markets, MarketWatch Top Stories, NYT Business, and BBC Business; override with `SOCIAL_RSS_FEEDS`. They expose ticker attention, unique-author count, sentiment split, source counts, links, and quality warnings. Social/news chatter never creates a PASS, changes sizing, or bypasses execution gates.
 - **Claude (`claude_brain.py`):** choose "Claude" as the brain, or tick "Claude head-to-head" to have Claude answer silently next to your main AI; the report card shows who was right more often on the same decisions. Needs `ANTHROPIC_API_KEY` in `.env`. Model `CLAUDE_MODEL` (default `claude-opus-5`, ~$5/$25 per million tokens), `CLAUDE_EFFORT` (default `low`). Uses server-side refusal fallbacks (`fallbacks: "default"`).
 - **Past-data test (`backtest.py`):** "Test the rules on past data" in the report card replays the screener's PASS rule on ~2 years of hourly prices with a learning/check split and a no-filter baseline. `GET/POST /api/backtest`.
+
+## Auto upkeep (2026-09-24)
+
+`tools/desk_upkeep.py` runs from two Windows scheduled tasks registered by
+`tools/Register-AutoUpkeep.ps1 -Register` (remove with `-Unregister`). Register them only on the PC
+that runs the live desk.
+
+- **Tomahawk-Desk-Watchdog** (every 5 min): if `/api/health` is unreachable twice 20s apart, runs the
+  normal launcher headless (`-NoBrowser -NoDialogs`). If the desk is up but the broker socket is down,
+  runs the launcher so Gateway is opened when its API port is closed. 10-minute cooldown. Never stops or
+  restarts a healthy desk.
+- **Tomahawk-Desk-Upkeep** (daily 16:40): moves root `_*` backups/scratch and `data/_*` probe dumps into
+  `_archive/`, deletes `_archive` items untouched for `UPKEEP_BACKUP_DAYS` (default 30), rolls
+  `data/*.log` over `UPKEEP_LOG_MAX_MB` (default 25) when not in use, clears `__pycache__`, runs SQLite
+  `quick_check` + WAL checkpoint + `optimize`, runs the test suite in an isolated temp data dir, and
+  writes `data/upkeep/last_daily.json`. Problems are flagged on one line in `TASKS.md` and cleared
+  automatically once healthy.
+
+Upkeep never edits config, orders, positions, sessions, policies or broker settings, and never logs
+Gateway out. Check status with `.venv\Scripts\python.exe tools\desk_upkeep.py status`.
+
+`tools/Install-DeskShortcut.ps1` creates the Desktop and Start menu shortcuts with the wheel icon
+(`static/desk.ico`, rendered from `static/nadzeel-mark.svg`).
+
+### Review fixes (same day)
+
+- IBKR delayed quotes (market data type 3/4) are labelled as delayed. When IBKR is delayed, the desk
+  prefers a real-time quote under 20s old (the live agent requires under 10s so the order window is not
+  shortened) and otherwise keeps the IBKR quote, so live ordering is never blocked.
+- Auto live option/BAG limits and risk use the option premium, not the underlying stock price.
+- `place_from_desk_order` runs on the IBKR API owner thread again, like every other broker call.
+- The live agent AI budget counts only live-agent research (`model_usage.json` now records a per-scope
+  total), so paper Moss spending cannot pause live research.

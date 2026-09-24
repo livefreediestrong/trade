@@ -376,6 +376,10 @@ def test_maybe_scheduled_soft_refresh_respects_interval_and_ready(pnl_gateway, m
     monkeypatch.setattr(broker, "_ib", fake_ib)
     assert broker.maybe_scheduled_soft_refresh(interval_minutes=5, auto_live=True, risk_ready=True) is None
     assert broker.maybe_scheduled_soft_refresh(interval_minutes=0, auto_live=True, risk_ready=False) is None
+    monkeypatch.setitem(broker._PNL_WATCH, "last_scheduled_refresh_at", None)
+    # First observation only arms the timer (avoids startup 2100 storms).
+    assert broker.maybe_scheduled_soft_refresh(interval_minutes=5, auto_live=True, risk_ready=False) is None
+    clock[0] += 5 * 60 + 1
     first = broker.maybe_scheduled_soft_refresh(interval_minutes=5, auto_live=True, risk_ready=False)
     assert first is not None and first["refresh"]["gateway_restarted"] is False
     assert not first["risk_ready"]

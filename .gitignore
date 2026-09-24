@@ -39,3 +39,6 @@ data/*.tmp
 /smoke_*.ps1
 /verify_ui_fix.ps1
 /DEPLOY_NOTES.md
+
+# Local backups and one-off scratch scripts (moved out of the project root).
+/_archive/

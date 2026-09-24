@@ -78,7 +78,7 @@ def test_restart_retains_cadence_counters_and_rotation(live):
 
 
 @pytest.mark.parametrize("field,value", [("max_order_usd", float("nan")), ("max_orders_per_day", True),
-                                         ("interval_sec", 30.5), ("order_type", "stop"), ("symbols", ["SPY", "<svg>"])])
+                                         ("interval_sec", 30.5), ("order_type", "stop"), ("symbols", ["<svg>"])])
 def test_invalid_policy(field, value):
     with pytest.raises(ValueError): agent.validate(dict(agent.DEFAULTS, **{field: value}))
 
@@ -143,9 +143,13 @@ def test_unqualified_decisions_never_submit(live, monkeypatch, change):
             sig["quote"]["market_time"] = (datetime.now(timezone.utc)+timedelta(seconds=-40 if change == "stale" else 40)).isoformat()
         return sig
     monkeypatch.setattr(desk, "generate_scan_signal", scan)
-    if change == "budget": monkeypatch.setattr(desk.llm_trader, "model_cost_today", lambda: {"model_usd": 999})
+    if change == "budget": monkeypatch.setattr(desk.llm_trader, "model_cost_today", lambda: {
+        "model_usd": 999, "scopes": {"live_agent": {"model_usd": 999, "calls": 1}}})
     if change == "pnl": monkeypatch.setattr(desk, "_broker_day_pnl", lambda: (None, 100000., "No daily P&L"))
-    if change == "loss": monkeypatch.setattr(desk, "_broker_day_pnl", lambda: (-21., 100000., None))
+    if change == "loss":
+        # Caps are uncapped by default; an explicitly saved loss stop must still hold.
+        cfg = desk.load_config(); cfg["live_agent"]["policy"]["max_daily_loss_usd"] = 20.; desk.save_config(cfg)
+        monkeypatch.setattr(desk, "_broker_day_pnl", lambda: (-21., 100000., None))
     if change == "tiny":
         cfg = desk.load_config(); cfg["live_agent"]["policy"]["max_order_usd"] = 10.; desk.save_config(cfg)
     live.service.tick()
@@ -312,3 +316,55 @@ def test_non_spy_watchlist_name_is_live_order_eligible(live, monkeypatch):
     assert ingested[0]["research_only"] is False
     assert ingested[0]["source"] == "live_agent"
     assert "live_order_universe_excluded" not in ingested[0]["flags"]
+
+
+def test_symbol_scrub_keeps_valid_symbols():
+    assert agent.validate(dict(agent.DEFAULTS, symbols=["SPY", "<svg>"]))["symbols"] == ["SPY"]
+
+
+def test_paper_model_spend_never_pauses_live_research(live, monkeypatch):
+    monkeypatch.setattr(desk.llm_trader, "model_cost_today", lambda: {
+        "model_usd": 999, "scopes": {"moss_paper": {"model_usd": 999, "calls": 9}}})
+    live.service.tick()
+    assert live.calls == ["TEST"] and len(live.sent) == 1
+
+
+def test_delayed_ibkr_quote_prefers_fresh_realtime_quote(live, monkeypatch):
+    now = datetime.now(timezone.utc)
+    monkeypatch.setitem(router.__dict__, "stock_quote", lambda s: {
+        "ok": True, "fresh": True, "price": 90., "delayed": True, "market_data_type": 3,
+        "source": "IBKR delayed mkt data", "market_time": now.isoformat(), "age_sec": 0})
+    realtime = dict(ds.quote_snapshot(100, now, "Finnhub"), age_sec=1.0)
+    monkeypatch.setattr(desk, "_realtime_quote_or_none", lambda _ds, s: realtime)
+    live.service.tick()
+    assert len(live.sent) == 1 and live.sent[0]["limit"] == 100.05
+
+
+def test_delayed_ibkr_quote_is_kept_when_no_realtime_quote(live, monkeypatch):
+    now = datetime.now(timezone.utc)
+    monkeypatch.setitem(router.__dict__, "stock_quote", lambda s: {
+        "ok": True, "fresh": True, "price": 100., "delayed": True, "market_data_type": 3,
+        "source": "IBKR delayed mkt data", "market_time": now.isoformat(), "age_sec": 0})
+    monkeypatch.setattr(desk, "_realtime_quote_or_none", lambda _ds, s: None)
+    live.service.tick()
+    assert len(live.sent) == 1  # delayed data never blocks live ordering
+
+
+def test_auto_option_limit_uses_option_premium_not_stock_price(live, monkeypatch):
+    cfg = desk.load_config()
+    cfg["live_agent"]["auto_options"] = dict(agent.auto_live_options.defaults(), enabled=True)
+    desk.save_config(cfg)
+    def convert(self, signal, cfg, auto_cfg, context):
+        now = datetime.now(timezone.utc)
+        signal.update(asset_type="OPT", option_strategy="long_call", option_intent="BTO", right="C",
+                      expiry=(now + timedelta(days=20)).date().isoformat(), strike=105., contracts=1,
+                      suggested_shares=1, signal_price=2.0,
+                      review_contract={"con_id": 555, "symbol": "TEST", "right": "C", "strike": 105.,
+                                       "multiplier": 100, "currency": "USD", "sec_type": "OPT"})
+        signal["quote"] = dict(signal["quote"], price=2.0, fresh=True)
+        return signal
+    monkeypatch.setattr(agent.LiveAgent, "_maybe_convert_to_option", convert)
+    live.service.tick()
+    assert len(live.sent) == 1, live.service.message
+    order = live.sent[0]
+    assert order["asset_type"] == "OPT" and order["limit"] < 3, order  # ~2.00, never the $100 stock

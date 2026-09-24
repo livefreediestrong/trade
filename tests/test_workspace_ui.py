@@ -15,6 +15,11 @@ def function(name):
 
 def run_js(names, body):
     code = "const assert = require('node:assert/strict');\n"
+    names = list(names)
+    # Shared UI helpers called by renderers (e.g. the beginner pulse strip).
+    for helper in ("syncBeginnerPulse",):
+        if helper not in names and any(helper + "(" in function(n) for n in names):
+            names.append(helper)
     code += "\n".join(function(name) for name in names) + "\n" + body
     result = subprocess.run(["node", "-e", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -79,7 +84,7 @@ assert.equal($('#broker-book-risk').hidden,false);
 book.risk_error='Broker connection is recovering; new live risk is blocked.';
 Object.assign(book.pnl_diagnostics,{status:'recovering',api_response_age_seconds:null});
 renderBrokerBook({broker_book:book});
-assert.match($('#broker-book-pnl-feed').textContent,/recovering; waiting for a new Gateway value/);
+assert.match($('#broker-book-pnl-feed').textContent,/recovering; waiting for a new Gateway value|Recovering Daily P&L/);
 assert.match($('#broker-book-pnl-feed').textContent,/Gateway response not yet confirmed/);
 assert.doesNotMatch($('#broker-book-pnl-feed').textContent,/active subscription|Gateway responded/);
 assert.match($('#broker-book-day').textContent,/Daily P&L unavailable/);

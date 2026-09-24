@@ -236,7 +236,7 @@ def test_judgment_rubric_tracks_failures_and_does_not_claim_model_calls(isolated
 
 
 def test_templates_all_controls_connected_and_no_prototype_numbers(isolated):
-    page = isolated.get("/", base_url=BASE).get_data(as_text=True)
+    page = isolated.get("/desk/all", base_url=BASE).get_data(as_text=True)  # page-split: '/' is Overview
     assert "nadzeeɫ" in page and 'id="moss-woman"' in page and 'id="moss-fox"' in page
     assert 'id="research-studio"' in page and 'id="desk-live"' in page
     assert "$128,430" not in page

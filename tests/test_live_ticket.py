@@ -168,7 +168,7 @@ def test_real_ibkr_submit_checks_cached_position_after_qualification(gateway,mon
 
 
 def test_template_contains_explicit_ticket_without_changing_mode(ticket):
-    page=desk.app.test_client().get('/',base_url=BASE).get_data(as_text=True)
+    page=desk.app.test_client().get('/desk/all',base_url=BASE).get_data(as_text=True)  # page-split: '/' is Overview
     assert 'id="live-stock-ticket"' in page and '/static/live_ticket.js' in page
     assert 'name="live-ticket-intent"' in page and 'Type the stock symbol to confirm' in page
 

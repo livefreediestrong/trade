@@ -1947,7 +1947,12 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                 if sig.get("asset_type") in ("OPT", "BAG"):
                     import auto_live_options
                     policy = ((cfg.get("live_agent") or {}).get("policy") or {})
-                    prem = float((execution_quote or {}).get("price") or px)
+                    # execution_quote/px describe the UNDERLYING stock. The option
+                    # or spread premium was quoted at conversion (signal quote).
+                    prem = (_finite_float((sig.get("quote") or {}).get("price"))
+                            or _finite_float(sig.get("signal_price")))
+                    if not prem or prem <= 0:
+                        raise ValueError("Option premium missing from the converted signal")
                     sig["review_order"] = auto_live_options.execution_terms_option(
                         sig, cfg, prem, execution_quote, float(policy.get("max_order_usd") or 0),
                     )
@@ -1959,7 +1964,14 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
         reviewed_order = sig.get("review_order")
         # Risk checks use the worst of the fresh mark and the reviewed entry
         # limit. A limit below market must not understate existing holdings.
-        risk_px = max(float(px), float(reviewed_order.get("limit") or px)) if reviewed_order else float(px)
+        if sig.get("asset_type") in ("OPT", "BAG") or (reviewed_order or {}).get("asset_type") in ("OPT", "BAG"):
+            # Option risk is premium-based; the underlying price must not leak in.
+            opt_px = (_finite_float((reviewed_order or {}).get("limit"))
+                      or _finite_float((sig.get("quote") or {}).get("price"))
+                      or _finite_float(sig.get("signal_price")) or float(px))
+            risk_px = abs(opt_px)
+        else:
+            risk_px = max(float(px), float(reviewed_order.get("limit") or px)) if reviewed_order else float(px)
         sig["signal_price"] = risk_px
         sig["execution_quote"] = execution_quote
         day_pnl, equity, acct_error = _broker_day_pnl()
@@ -2262,6 +2274,30 @@ def fetch_last_price(ticker: str) -> float | None:
 _QUOTE_SNAPSHOTS: dict[str, dict] = {}
 
 
+REALTIME_PREFER_MAX_AGE_SEC = 20.0
+
+
+def _realtime_quote_or_none(ds, ticker: str) -> dict | None:
+    """A fresh, attributable non-IBKR quote young enough for every live gate.
+
+    The 20s ceiling sits under the live agent's 30s quote limit, so preferring
+    this quote can never turn an executable IBKR-delayed quote into a stale hold.
+    """
+    try:
+        rt = ds.latest_quote(ticker)
+    except Exception:
+        return None
+    if not isinstance(rt, dict) or not rt.get("fresh") or rt.get("error"):
+        return None
+    source = str(rt.get("source") or "").lower()
+    if not source or "ibkr" in source or any(w in source for w in ("mock", "demo", "synthetic", "fixture", "unknown")):
+        return None
+    price, age = _finite_float(rt.get("price")), _finite_float(rt.get("age_sec"))
+    if price is None or price <= 0 or age is None or not 0 <= age <= REALTIME_PREFER_MAX_AGE_SEC:
+        return None
+    return rt
+
+
 def _fetch_last_price_raw(ticker: str) -> float | None:
     """Only timestamp-verified quotes can update marks or execution prices.
 
@@ -2284,8 +2320,16 @@ def _fetch_last_price_raw(ticker: str) -> float | None:
                     "market_time": ibq.get("market_time"), "received_at": ibq.get("received_at"),
                     "age_sec": ibq.get("age_sec"), "fresh": True,
                     "bid": ibq.get("bid"), "ask": ibq.get("ask"), "error": None,
-                    "max_age_sec": 120,
+                    "max_age_sec": 120, "delayed": bool(ibq.get("delayed")),
+                    "market_data_type": ibq.get("market_data_type"),
                 }
+                if quote["delayed"]:
+                    # IBKR delayed prices are ~15 min old despite a receipt-time
+                    # stamp. Use a verified real-time quote when one is available;
+                    # otherwise keep the IBKR quote so execution is never blocked.
+                    realtime = _realtime_quote_or_none(ds, ticker)
+                    if realtime:
+                        quote = realtime
     except Exception:
         quote = None
     if not quote:

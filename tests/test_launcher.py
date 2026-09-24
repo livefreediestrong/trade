@@ -15,7 +15,7 @@ def run_ps(tmp_path, body):
     launcher = str(LAUNCHER).replace("'", "''")
     root = str(tmp_path).replace("'", "''")
     script.write_text(f". '{launcher}'\n$Root = '{root}'\n$ErrorActionPreference = 'Stop'\n" +
-                      "foreach ($name in @('TOMAHAWK_DATA_DIR','TOMAHAWK_PORT','IB_GATEWAY_PORT')) { [Environment]::SetEnvironmentVariable($name,$null,'Process') }\n" + body, encoding='utf-8')
+                      "foreach ($name in @('TOMAHAWK_DATA_DIR','TOMAHAWK_PORT','IB_GATEWAY_PORT','IBKR_ACCOUNT','IBKR_LIVE','IB_GATEWAY_EXE')) { [Environment]::SetEnvironmentVariable($name,$null,'Process') }\n" + body, encoding='utf-8')
     result = subprocess.run(['powershell.exe','-NoProfile','-File',str(script)], capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stdout + result.stderr
 
