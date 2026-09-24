@@ -23,7 +23,9 @@ def live(execution, monkeypatch, tmp_path):
     monkeypatch.setattr(agent.paper_loop, "is_rth", lambda *args: True)
     identity = dict(cfg["broker_identity"], broker="ibkr", client_id=37, paper_mode=True)
     policy = dict(agent.DEFAULTS, symbols=["TEST", "OTHER"], max_order_usd=250.)
+    # Eval rotates the watchlist; order allow-list stays policy.symbols.
     cfg.update(mode="auto_live", paper_research_enabled=False, broker_identity=identity,
+               watchlist=["TEST", "OTHER"], watchlist_focus="all",
                live_agent={"policy": policy, "revision": "policy-1", "run_id": "run-1", "enabled": True})
     desk.save_config(cfg)
     monkeypatch.setitem(router.__dict__, "public_status", lambda: {"broker": "ibkr"})
@@ -272,3 +274,41 @@ def test_short_cover_and_no_new_short_entry(live, monkeypatch):
     monkeypatch.setattr(desk, "generate_scan_signal", lambda cfg, **kw: dict(live.generate(cfg, **kw), side="sell"))
     run_again(live)
     assert len(live.sent) == 1 and "never opens short" in live.service.message
+
+
+def test_research_universe_uses_watchlist_not_order_filter():
+    cfg = {"watchlist": ["AAPL", "NVDA", "BTC", "USD", "SPY"], "watchlist_focus": "liquid"}
+    policy = dict(agent.DEFAULTS, symbols=["SPY"])
+    symbols = agent.research_universe(cfg, policy)
+    assert "SPY" in symbols and "AAPL" in symbols and "NVDA" in symbols
+    assert "BTC" not in symbols and "USD" not in symbols
+    assert symbols != ["SPY"]
+
+
+def test_order_universe_matches_research_universe():
+    cfg = {"watchlist": ["AAPL", "NVDA", "BTC", "USD", "SPY"], "watchlist_focus": "liquid"}
+    policy = dict(agent.DEFAULTS, symbols=["SPY"])  # saved hint ignored for live orders
+    assert agent.order_universe(cfg, policy) == agent.research_universe(cfg, policy)
+    assert "AAPL" in agent.order_universe(cfg, policy)
+    assert "BTC" not in agent.order_universe(cfg, policy)
+
+
+def test_non_spy_watchlist_name_is_live_order_eligible(live, monkeypatch):
+    """Full evaluated equity universe may auto-order — not SPY-only."""
+    cfg = desk.load_config()
+    cfg["watchlist"] = ["IDEA", "TEST"]
+    cfg["live_agent"]["policy"]["symbols"] = ["SPY"]  # stale SPY-only hint must not block
+    desk.save_config(cfg)
+    ingested = []
+    def capture(sig, *, research_only=False, cfg_override=None):
+        ingested.append({"ticker": sig.get("ticker"), "source": sig.get("source"),
+                         "research_only": research_only, "flags": list(sig.get("research_flags") or [])})
+        return sig
+    monkeypatch.setattr(desk, "_ingest_one_signal", capture)
+    live.service.tick()
+    assert live.calls == ["IDEA"]
+    assert len(ingested) == 1
+    assert ingested[0]["ticker"] == "IDEA"
+    assert ingested[0]["research_only"] is False
+    assert ingested[0]["source"] == "live_agent"
+    assert "live_order_universe_excluded" not in ingested[0]["flags"]

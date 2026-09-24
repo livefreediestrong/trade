@@ -140,29 +140,32 @@ def register(app, desk):
 
     @bp.post("/api/live/ticket/option/review")
     def option_review():
-        """Preview long single-leg live options (BTO/STC). Never places an order."""
+        """Preview live options (BTO/STC/STO/BTC). Never places an order."""
         import broker_router as broker
         import order_terms
         body = request.get_json(silent=True)
-        allowed = {"ticker", "intent", "contracts", "right", "expiry", "strike", "order"}
+        allowed = {"ticker", "intent", "contracts", "right", "expiry", "strike", "order", "allow_naked", "covered"}
         if not isinstance(body, dict) or set(body) - allowed:
             return jsonify(ok=False, error="Provide ticker, intent, contracts, right, expiry, strike and order terms only"), 400
         ticker = str(body.get("ticker") or "").strip().upper()
         intent = str(body.get("intent") or "").upper()
         if not re.fullmatch(r"[A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)?", ticker) or len(ticker) > 15:
             return jsonify(ok=False, error="Enter one US stock or ETF underlying symbol"), 400
-        if intent in ("STO", "BTC"):
-            return jsonify(ok=False, error="Live options v1 refuses naked shorts (STO) and short covers (BTC). Use Paper Options."), 400
-        if intent not in ("BTO", "STC"):
-            return jsonify(ok=False, error="Live options v1 supports BTO and STC (long single-leg) only"), 400
+        if intent not in ("BTO", "STC", "STO", "BTC"):
+            return jsonify(ok=False, error="Live options support BTO, STC, STO and BTC"), 400
+        allow_naked = bool(body.get("allow_naked") or (body.get("order") or {}).get("allow_naked"))
+        covered = bool(body.get("covered") or (body.get("order") or {}).get("covered"))
+        if intent == "STO" and not (allow_naked or covered):
+            return jsonify(ok=False, error="STO requires covered=true (long shares for short calls) or allow_naked=true"), 400
         if not isinstance(body.get("order"), dict) or body["order"].get("type") not in ("limit", "market"):
             return jsonify(ok=False, error="Choose Limit or Market explicitly"), 400
-        side = "buy" if intent == "BTO" else "sell"
+        side = "buy" if intent in ("BTO", "BTC") else "sell"
         try:
             ticket = order_terms.canonical_option_order(
                 {"side": side, "suggested_shares": body.get("contracts"), "contracts": body.get("contracts")},
                 {**body["order"], "right": body.get("right"), "expiry": body.get("expiry"),
-                 "strike": body.get("strike"), "intent": intent},
+                 "strike": body.get("strike"), "intent": intent,
+                 "allow_naked": allow_naked, "covered": covered},
             )
         except ValueError as exc:
             return jsonify(ok=False, error=str(exc)), 400
@@ -178,7 +181,7 @@ def register(app, desk):
             return jsonify(ok=False, error="Verify the current broker account and manual mode before reviewing"), 409
         if identity.get("broker") != "ibkr":
             return jsonify(ok=False, error="Live option tickets are implemented for the IBKR adapter only"), 400
-        action = "BUY" if intent == "BTO" else "SELL"
+        action = "BUY" if intent in ("BTO", "BTC") else "SELL"
         quotes = broker.option_quotes([{
             "symbol": ticker, "right": ticket["right"], "expiry": ticket["expiry"],
             "strike": ticket["strike"], "action": action,
@@ -188,7 +191,7 @@ def register(app, desk):
         leg = quotes["legs"][0]
         if not leg.get("con_id") or int(leg.get("multiplier") or 0) != 100:
             return jsonify(ok=False, error="Only standard 100-share US equity options can be reviewed"), 409
-        premium = desk._finite_float(ticket.get("limit") if ticket["type"] == "limit" else (leg.get("ask") if intent == "BTO" else leg.get("bid")))
+        premium = desk._finite_float(ticket.get("limit") if ticket["type"] == "limit" else (leg.get("ask") if intent in ("BTO", "BTC") else leg.get("bid")))
         if premium is None or premium <= 0:
             return jsonify(ok=False, error="A verified option premium is required; no order was sent"), 409
         try:
@@ -210,9 +213,9 @@ def register(app, desk):
             "right": ticket["right"], "expiry": ticket["expiry"], "strike": float(ticket["strike"]),
             "multiplier": 100, "currency": "USD", "sec_type": "OPT",
         }
-        reducing = intent == "STC"
+        reducing = intent in ("STC", "BTC")
         held_contracts = 0.0
-        if reducing:
+        if intent in ("STC", "BTC"):
             pos = broker.get_option_positions()
             if not pos.get("ok"):
                 return jsonify(ok=False, error=pos.get("error") or "Option holdings unavailable"), 409
@@ -220,10 +223,28 @@ def register(app, desk):
                 if int(row.get("con_id") or 0) == int(contract["con_id"]):
                     held_contracts = float(row.get("qty") or 0)
                     break
-            if held_contracts <= 0:
-                return jsonify(ok=False, error="No long option holding for this contract; STC refused"), 409
-            if ticket["contracts"] > math.floor(held_contracts):
-                return jsonify(ok=False, error=f"Only {math.floor(held_contracts)} contracts held for this OCC symbol"), 409
+            if intent == "STC":
+                if held_contracts <= 0:
+                    return jsonify(ok=False, error="No long option holding for this contract; STC refused"), 409
+                if ticket["contracts"] > math.floor(held_contracts):
+                    return jsonify(ok=False, error=f"Only {math.floor(held_contracts)} contracts held for this OCC symbol"), 409
+            else:
+                if held_contracts >= 0:
+                    return jsonify(ok=False, error="No short option holding for this contract; BTC refused"), 409
+                if ticket["contracts"] > math.floor(abs(held_contracts)):
+                    return jsonify(ok=False, error=f"Only {math.floor(abs(held_contracts))} short contracts to cover"), 409
+        if intent == "STO" and covered and str(body.get("right") or ticket.get("right") or "").upper() in ("C", "CALL"):
+            stock_pos = broker.get_positions()
+            if not stock_pos.get("ok"):
+                return jsonify(ok=False, error=stock_pos.get("error") or "Stock holdings unavailable for covered check"), 409
+            shares = 0.0
+            for row in stock_pos.get("positions") or []:
+                if str(row.get("symbol") or "").upper() == ticker:
+                    shares = float(row.get("qty") or 0)
+                    break
+            need = ticket["contracts"] * 100
+            if shares < need:
+                return jsonify(ok=False, error=f"Covered short call needs {need} long shares; held {shares}"), 409
         sig = {
             "id": uuid.uuid4().hex, "ticker": ticker, "side": side, "status": "pending",
             "workspace": "live", "source": "manual_ticket", "origin": "user_directed",
@@ -231,7 +252,7 @@ def register(app, desk):
             "mode_at_create": "live_manual", "suggested_shares": ticket["contracts"],
             "signal_price": premium, "quote": quote, "review_contract": contract,
             "manual_order": {"intent": intent, "order": ticket},
-            "reason": "User-directed live option ticket (long single-leg); not an AI recommendation",
+            "reason": "User-directed live option ticket; not an AI recommendation",
             "ts": created.isoformat(), "created_at": created.isoformat(),
             "expires_at": (created + timedelta(seconds=90)).isoformat(),
         }

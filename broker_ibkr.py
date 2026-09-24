@@ -36,7 +36,26 @@ _RESYNC_REQUIRED = False
 _SERVER_UNAVAILABLE = False
 _CONNECTION = {"connected": False, "error": None}
 _RECONNECT_AFTER = 0.0
+_SOFT_RECONNECT_AFTER = 0.0
+_ACCOUNT_UNSUBSCRIBED = False
+_ACCOUNT_RESUBSCRIBE_AFTER = 0.0
 _FAILED_SETTINGS = None
+# Watchdog for Daily P&L / soft reconnect. Never invents risk_ready.
+_PNL_WATCH = {
+    "ui_status": None,  # e.g. "Recovering Daily P&L..."
+    "last_error_code": None,
+    "soft_reconnect_count": 0,
+    "last_soft_reconnect_at": 0.0,
+    "last_scheduled_refresh_at": 0.0,
+    "pending_soft_reconnect": False,
+    "pending_reason": None,
+    "pending_resubscribe": False,
+}
+_SOFT_RECONNECT_BACKOFF_BASE = 60.0
+_SOFT_RECONNECT_BACKOFF_MAX = 600.0
+_PNL_SILENT_RETRY_SEC = 180.0
+_PNL_FIRST_CALLBACK_WAIT_SEC = 8.0
+_PNL_SOFT_RECONNECT_WAIT_SEC = 180.0
 
 
 def _disconnected():
@@ -101,15 +120,18 @@ def _pnl_update(pnl):
             _PNL_UPDATED[account] = time.monotonic()
             subscription["callbacks"] = subscription.get("callbacks", 0) + 1
             subscription["day"] = _pnl_day()
+            _PNL_WATCH.update(ui_status=None, soft_reconnect_count=0, pending_soft_reconnect=False,
+                              pending_reason=None, last_error_code=None)
 
 
 def _server_error(req_id, code, message, *args):
-    global _RESYNC_REQUIRED, _SERVER_UNAVAILABLE
+    global _RESYNC_REQUIRED, _SERVER_UNAVAILABLE, _ACCOUNT_UNSUBSCRIBED
     if code in (1100, 2110):
         _SERVER_UNAVAILABLE = True
         _VERIFIED.clear()
         _PNL_UPDATED.clear()
         _API_PULSE.clear()
+        _PNL_WATCH.update(last_error_code=code, ui_status="Recovering Daily P&L...")
         _CONNECTION.update(connected=False, error="IBKR server connection lost; waiting for recovery")
     elif code == 1101:
         _SERVER_UNAVAILABLE = False
@@ -117,6 +139,21 @@ def _server_error(req_id, code, message, *args):
         _VERIFIED.clear()
         _PNL_UPDATED.clear()
         _API_PULSE.clear()
+        _PNL_WATCH.update(last_error_code=1101, ui_status="Recovering Daily P&L...")
+    elif code == 2100:
+        # "API client has been unsubscribed from account data."
+        # Prefer in-socket account+PnL re-subscribe; soft reconnect only if that fails.
+        # Never invent risk_ready; never restart Gateway / touch 2FA here.
+        _ACCOUNT_UNSUBSCRIBED = True
+        _PNL_UPDATED.clear()
+        _API_PULSE.clear()
+        _PNL_WATCH.update(
+            last_error_code=2100,
+            ui_status="Recovering Daily P&L...",
+            pending_soft_reconnect=False,
+            pending_reason="error_2100_unsubscribed_account_data",
+            pending_resubscribe=True,
+        )
     elif code == 1102:
         # IBKR retained its subscriptions. Reopening the socket here discarded
         # a valid P&L response in the exported Gateway trace. Keep the current
@@ -220,7 +257,15 @@ def _ib():
     except Exception as exc:
         client.disconnect()
         message = str(exc) or _CONNECTION.get("error") or "IBKR account synchronization timed out"
-        _CONNECTION.update(connected=False, error=message[:200])
+        low = (message or "").lower()
+        if "326" in (message or "") or "already in use" in low or "duplicate clientid" in low.replace(" ", ""):
+            cid = int(os.environ.get("IB_CLIENT_ID", "37"))
+            message = (
+                f"IBKR clientId {cid} is already in use (Error 326). "
+                "Another desk/process holds this id — stop the other connection "
+                "or set IB_CLIENT_ID to a free id. Gateway was left alone."
+            )
+        _CONNECTION.update(connected=False, error=message[:240])
         # A dashboard refresh asks for several broker snapshots. One Gateway
         # outage must not queue a fresh five-second connection for each one.
         _RECONNECT_AFTER, _FAILED_SETTINGS = time.monotonic() + 5, settings
@@ -387,6 +432,80 @@ def execution_history() -> dict[str, Any]:
 
 
 @_on_api_thread
+def stock_quote(symbol: str) -> dict[str, Any]:
+    """Short-lived IBKR live/delayed stock quote for agent execution freshness."""
+    if not isinstance(symbol, str) or not re.fullmatch(r"[A-Z][A-Z0-9.]{0,9}", symbol):
+        return {"ok": False, "error": "Invalid US stock/ETF symbol", "fresh": False}
+    try:
+        from ib_insync import Stock
+        with _session() as ib:
+            identity = _identity(ib)
+            contract = Stock(symbol, "SMART", "USD")
+            if not ib.qualifyContracts(contract) or not contract.conId:
+                return {"ok": False, "error": "Underlying stock could not be qualified",
+                        "symbol": symbol, "fresh": False, "identity": identity}
+            started = datetime.now(timezone.utc)
+            # Live API subscription is often unpaid (Error 10089); delayed is available.
+            # Prefer delayed (3) so agent quotes succeed without fighting PnL/account feeds.
+            try:
+                ib.reqMarketDataType(3)
+            except Exception:
+                pass
+            ticker = ib.reqMktData(contract, "", False, False)
+            try:
+                price = None
+                stamp = None
+                for _ in range(25):
+                    ib.sleep(0.15)
+                    for candidate in (ticker.last, ticker.marketPrice(), ticker.close, ticker.bid, ticker.ask):
+                        try:
+                            value = _number(candidate)
+                            if value > 0:
+                                price = value
+                                break
+                        except (ValueError, TypeError):
+                            continue
+                    if price is not None:
+                        # Prefer exchange tick time when present; else receipt time for live stream.
+                        for tick in reversed(list(ticker.ticks or [])):
+                            if getattr(tick, "time", None) is not None and getattr(tick.time, "tzinfo", None):
+                                stamp = tick.time
+                                break
+                        if stamp is None:
+                            stamp = datetime.now(timezone.utc)
+                        break
+                if price is None or stamp is None:
+                    return {"ok": False, "error": "No IBKR trade/quote tick yet", "symbol": symbol,
+                            "fresh": False, "identity": identity, "source": "IBKR mkt data"}
+                age = (datetime.now(timezone.utc) - stamp).total_seconds()
+                fresh = -15 <= age <= 120
+                return {
+                    "ok": True, "symbol": symbol, "price": price, "fresh": fresh,
+                    "market_time": stamp.isoformat(), "received_at": datetime.now(timezone.utc).isoformat(),
+                    "age_sec": round(age, 1), "source": "IBKR delayed mkt data",
+                    "bid": _safe_num(ticker.bid), "ask": _safe_num(ticker.ask),
+                    "last": _safe_num(ticker.last), "market_data_type": getattr(ticker, "marketDataType", None),
+                    "identity": identity, "con_id": int(contract.conId),
+                }
+            finally:
+                try:
+                    ib.cancelMktData(contract)
+                except Exception:
+                    pass
+    except Exception as exc:
+        return {"ok": False, "error": (str(exc)[:180] if isinstance(exc, ValueError)
+                else f"Stock quote unavailable: {type(exc).__name__}"), "fresh": False, "symbol": symbol}
+
+
+def _safe_num(v):
+    try:
+        return _number(v)
+    except (ValueError, TypeError):
+        return None
+
+
+
+@_on_api_thread
 def option_chain(symbol):
     """Read listed contract parameters, without requesting orders or paid snapshots."""
     if not isinstance(symbol,str) or not re.fullmatch(r"[A-Z][A-Z0-9.]{0,9}",symbol):
@@ -533,6 +652,10 @@ def _recover_initial_pnl(ib, account, subscription):
                 raise ConnectionError("Gateway connection changed during account refresh")
             method(account)
         recovery[stage] = "completed"
+        if stage == "account_download" and _ACCOUNT_UNSUBSCRIBED:
+            # Warning 2100 during/after cancel dropped account data — restore on this socket.
+            # Silent DailyPnL without 2100 stays on the existing cancel/retry path.
+            _resubscribe_account_and_pnl(ib, account)
         return True
     except Exception as exc:
         recovery[stage] = "failed"
@@ -540,12 +663,187 @@ def _recover_initial_pnl(ib, account, subscription):
         return False
 
 
+
+def _resubscribe_account_and_pnl(ib, account: str) -> list[str]:
+    """After Warning 2100 (or intentional cancel), restore account+PnL feeds.
+
+    Gateway process is left running. Never invents day_pnl / risk_ready.
+    """
+    global _ACCOUNT_UNSUBSCRIBED, _ACCOUNT_RESUBSCRIBE_AFTER
+    actions: list[str] = []
+    if time.monotonic() < _ACCOUNT_RESUBSCRIBE_AFTER:
+        return ["resubscribe_cooldown"]
+    try:
+        raw = getattr(getattr(ib, "client", None), "reqAccountUpdates", None)
+        method = getattr(ib, "reqAccountUpdates", None)
+        if callable(method):
+            # If already unsubscribed (Warning 2100), skip cancel — just subscribe.
+            if not _ACCOUNT_UNSUBSCRIBED and callable(raw):
+                try:
+                    raw(False, account)
+                    actions.append(f"account_cancel:{account}")
+                    ib.sleep(0.15)
+                except Exception:
+                    pass
+            method(account)
+            actions.append(f"account_subscribe:{account}")
+        # Replace PnL subscription for this account on the live socket.
+        try:
+            ib.cancelPnL(account)
+            actions.append(f"pnl_cancel:{account}")
+        except Exception:
+            pass
+        carried_recovery = {}
+        carried_started = None
+        carried_retries = 0
+        for key in [k for k in list(_PNL) if k[1] == account]:
+            prev = _PNL.pop(key, None) or {}
+            carried_recovery = prev.get("initial_recovery") or carried_recovery
+            carried_started = prev.get("started_at", carried_started)
+            carried_retries = prev.get("retries", carried_retries)
+        _PNL_UPDATED.pop(account, None)
+        now = time.monotonic()
+        key = (id(ib), account)
+        _PNL[key] = {
+            "value": ib.reqPnL(account),
+            "requested_at": now,
+            "started_at": carried_started if carried_started is not None else now,
+            "retries": carried_retries,
+            "initial_recovery": carried_recovery,
+            "callbacks": 0,
+        }
+        actions.append(f"pnl_subscribe:{account}")
+        # Pump long enough for an initial DailyPnL callback (on_change may be slow at 0.0).
+        # Soft reconnect too early after Warning 2100 causes a reconnect storm.
+        for _ in range(80):
+            if account in _PNL_UPDATED:
+                break
+            ib.sleep(0.15)
+        _ACCOUNT_UNSUBSCRIBED = False
+        _ACCOUNT_RESUBSCRIBE_AFTER = time.monotonic() + 30
+        actions.append("resubscribe_done")
+    except Exception as exc:
+        actions.append(f"resubscribe_failed:{type(exc).__name__}")
+        _ACCOUNT_RESUBSCRIBE_AFTER = time.monotonic() + 5
+    return actions
+
+
+def _cancel_all_pnl(ib):
+    """Best-effort cancel of account PnL subscriptions; Gateway process untouched."""
+    canceled = []
+    for (_, account) in list(_PNL):
+        try:
+            ib.cancelPnL(account)
+            canceled.append(account)
+        except Exception:
+            pass
+    return canceled
+
+
+def _soft_reconnect_backoff_sec(count: int) -> float:
+    """Exponential cooldown between soft reconnects (API only; Gateway untouched)."""
+    n = max(1, int(count))
+    delay = _SOFT_RECONNECT_BACKOFF_BASE * (2 ** min(n - 1, 4))
+    return float(min(_SOFT_RECONNECT_BACKOFF_MAX, delay))
+
+
+def _arm_soft_reconnect(reason: str):
+    """Drop the API socket only. Does not restart IB Gateway."""
+    global _RESYNC_REQUIRED, _CLIENT, _SOFT_RECONNECT_AFTER
+    client = _CLIENT
+    actions = [reason]
+    if client is not None:
+        actions.extend(f"cancel:{a}" for a in _cancel_all_pnl(client))
+        try:
+            client.disconnect()
+            actions.append("api_disconnected")
+        except Exception as exc:
+            actions.append(f"disconnect_failed:{type(exc).__name__}")
+    _disconnected()
+    _CLIENT = None
+    _RESYNC_REQUIRED = True
+    count = int(_PNL_WATCH.get("soft_reconnect_count") or 0) + 1
+    backoff = _soft_reconnect_backoff_sec(count)
+    _SOFT_RECONNECT_AFTER = time.monotonic() + backoff
+    _PNL_WATCH.update(
+        soft_reconnect_count=count,
+        last_soft_reconnect_at=time.monotonic(),
+        ui_status="Recovering Daily P&L...",
+        pending_soft_reconnect=False,
+        pending_reason=None,
+        last_arm_reason=reason,
+        last_backoff_sec=backoff,
+    )
+    actions.append(f"backoff:{int(backoff)}s")
+    return actions
+
+
+@_on_api_thread
+def refresh_broker_pnl(*, soft_reconnect: bool = True) -> dict[str, Any]:
+    """Re-subscribe Daily P&L; optionally bounce the API client (not Gateway).
+
+    Never invents risk_ready or day_pnl. Safe to call from the desk UI.
+    """
+    actions: list[str] = []
+    try:
+        if soft_reconnect:
+            actions.extend(_arm_soft_reconnect("manual_soft_reconnect"))
+            # Rebuild the API socket before reading the account. Required so
+            # _RESYNC_REQUIRED is cleared and PnL callbacks are accepted again.
+            try:
+                _ib()
+                actions.append("api_reconnected")
+            except Exception as exc:
+                actions.append(f"reconnect_failed:{type(exc).__name__}")
+                raise
+        else:
+            client = _CLIENT
+            if client is not None and client.isConnected():
+                actions.extend(f"cancel:{a}" for a in _cancel_all_pnl(client))
+            _PNL.clear()
+            _PNL_UPDATED.clear()
+            actions.append("subscription_cleared")
+        # Call the underlying account read; refresh already owns the API thread.
+        acct = getattr(get_account, "__wrapped__", get_account)
+        result = acct()
+        out = dict(result)
+        out["refresh"] = {
+            "ok": True,
+            "soft_reconnect": soft_reconnect,
+            "actions": actions,
+            "gateway_restarted": False,
+            "note": (
+                "API client bounced and Daily P&L re-requested; IB Gateway process was left running."
+                if soft_reconnect else
+                "Daily P&L subscription canceled and re-requested on the existing API socket."
+            ),
+        }
+        return out
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc)[:200],
+            "risk_ready": False,
+            "account": {},
+            "refresh": {
+                "ok": False,
+                "soft_reconnect": soft_reconnect,
+                "actions": actions,
+                "gateway_restarted": False,
+                "note": "Refresh failed; if Gateway is logged out or farms are down, restart/sign-in to Gateway.",
+            },
+        }
+
+
 @_on_api_thread
 def get_account() -> dict[str, Any]:
+
     try:
         with _session() as ib:
             identity = _identity(ib)
             account = identity["account_id"]
+            if _ACCOUNT_UNSUBSCRIBED:
+                _resubscribe_account_and_pnl(ib, account)
             rows = [x for x in ib.accountSummary(account) if x.account == account]
             currencies = {x.currency for x in rows if x.tag == "NetLiquidation"}
             if currencies != {"USD"}:
@@ -572,11 +870,92 @@ def get_account() -> dict[str, Any]:
                     valid_sample = True
                 except (ValueError, TypeError):
                     pass
-            if previous and now - previous["requested_at"] > 60 and not valid_sample:
-                ib.cancelPnL(account)
-                _PNL.pop(key, None)
-                _PNL_UPDATED.pop(account, None)
+            if (_ACCOUNT_UNSUBSCRIBED or _PNL_WATCH.get("pending_resubscribe")) and now >= _ACCOUNT_RESUBSCRIBE_AFTER:
+                actions = _resubscribe_account_and_pnl(ib, account)
+                _PNL_WATCH["pending_resubscribe"] = False
+                if account not in _PNL_UPDATED:
+                    # Stay on this socket; schedule soft reconnect only after backoff.
+                    # Immediate soft reconnect after 2100 was thrashing clientId 37.
+                    global _SOFT_RECONNECT_AFTER
+                    delay = _soft_reconnect_backoff_sec(int(_PNL_WATCH.get("soft_reconnect_count") or 0) + 1)
+                    _SOFT_RECONNECT_AFTER = time.monotonic() + max(90.0, delay)
+                    _PNL_WATCH.update(
+                        pending_soft_reconnect=True,
+                        pending_reason="error_2100_resubscribe_silent",
+                        last_backoff_sec=max(90.0, delay),
+                        ui_status="Recovering Daily P&L...",
+                    )
+                else:
+                    _PNL_WATCH.update(pending_soft_reconnect=False, ui_status=None, pending_reason=None)
+                    previous = _PNL.get(key)
+                    first = previous is None
+            if _PNL_WATCH.get("pending_soft_reconnect") and now >= _SOFT_RECONNECT_AFTER:
+                reason = _PNL_WATCH.get("pending_reason") or "pending_soft_reconnect"
+                _PNL_WATCH["ui_status"] = "Recovering Daily P&L..."
+                carried = dict(previous) if previous else {}
+                _arm_soft_reconnect(reason)
+                ib = _ib()
+                identity = _identity(ib)
+                account = identity["account_id"]
+                rows = [x for x in ib.accountSummary(account) if x.account == account]
+                currencies = {x.currency for x in rows if x.tag == "NetLiquidation"}
+                if currencies != {"USD"}:
+                    raise ValueError("IBKR desk requires a USD base-currency account")
+                values = {x.tag: x.value for x in rows if x.currency == "USD"}
+                equity = _number(values.get("NetLiquidation"))
+                if equity <= 0:
+                    raise ValueError("IBKR equity must be positive")
+                key = (id(ib), account)
+                _ACCOUNT_EQUITY[key] = equity
+                for row in ib.accountValues(account) if hasattr(ib, "accountValues") else []:
+                    if row.account == account:
+                        _account_value_update(row)
+                previous = {
+                    "requested_at": carried.get("requested_at", now),
+                    "started_at": carried.get("started_at", carried.get("requested_at", now)),
+                    "retries": carried.get("retries", 0),
+                    "initial_recovery": carried.get("initial_recovery", {}),
+                }
                 first = True
+                now = time.monotonic()
+            if previous and now - previous["requested_at"] > _PNL_SILENT_RETRY_SEC and not valid_sample:
+                # After repeated silent subscriptions, bounce the API client with
+                # exponential backoff. Often restores DailyPnL without a Gateway
+                # process restart; risk_ready stays false until a real callback.
+                # Avoid cancel storms: IB may take >60s to emit the first 0.0 tick.
+                retries = previous.get("retries", 0)
+                waiting = now - previous.get("started_at", previous["requested_at"])
+                if retries >= 2 and waiting >= _PNL_SOFT_RECONNECT_WAIT_SEC and now >= _SOFT_RECONNECT_AFTER:
+                    carried = dict(previous)
+                    _arm_soft_reconnect("auto_soft_reconnect")
+                    ib = _ib()
+                    identity = _identity(ib)
+                    account = identity["account_id"]
+                    rows = [x for x in ib.accountSummary(account) if x.account == account]
+                    currencies = {x.currency for x in rows if x.tag == "NetLiquidation"}
+                    if currencies != {"USD"}:
+                        raise ValueError("IBKR desk requires a USD base-currency account")
+                    values = {x.tag: x.value for x in rows if x.currency == "USD"}
+                    equity = _number(values.get("NetLiquidation"))
+                    if equity <= 0:
+                        raise ValueError("IBKR equity must be positive")
+                    key = (id(ib), account)
+                    _ACCOUNT_EQUITY[key] = equity
+                    for row in ib.accountValues(account) if hasattr(ib, "accountValues") else []:
+                        if row.account == account:
+                            _account_value_update(row)
+                    previous = {
+                        "requested_at": carried.get("requested_at", now),
+                        "started_at": carried.get("started_at", carried.get("requested_at", now)),
+                        "retries": carried.get("retries", 0),
+                        "initial_recovery": carried.get("initial_recovery", {}),
+                    }
+                    first = True
+                else:
+                    ib.cancelPnL(account)
+                    _PNL.pop(key, None)
+                    _PNL_UPDATED.pop(account, None)
+                    first = True
             if first:
                 _PNL_UPDATED.pop(account, None)
                 _PNL[key] = {"value": ib.reqPnL(account), "requested_at": now,
@@ -585,7 +964,7 @@ def get_account() -> dict[str, Any]:
                              "initial_recovery": previous.get("initial_recovery", {}) if previous else {},
                              "callbacks": 0}
             pnl = _PNL[key]["value"]
-            deadline = now + (3 if first else 0)
+            deadline = now + (_PNL_FIRST_CALLBACK_WAIT_SEC if first else 0)
             daily = None
             try:
                 while True:
@@ -632,8 +1011,19 @@ def get_account() -> dict[str, Any]:
             age = max(0, now - updated) if updated is not None else None
             state = ("recovering" if recovering else "ready" if daily is not None else "waiting" if updated is None
                      else "stale" if subscription.get("day") != _pnl_day() else "unavailable")
+            if state in ("recovering", "waiting", "stale", "unavailable") and daily is None:
+                if not _PNL_WATCH.get("ui_status"):
+                    _PNL_WATCH["ui_status"] = "Recovering Daily P&L..." if state == "recovering" else _PNL_WATCH.get("ui_status")
+                if state == "recovering":
+                    _PNL_WATCH["ui_status"] = "Recovering Daily P&L..."
+            elif daily is not None:
+                _PNL_WATCH["ui_status"] = None
             diagnostics = {"status": state, "callbacks": subscription.get("callbacks", 0),
                            "update_mode": "on_change",
+                           "ui_status": _PNL_WATCH.get("ui_status"),
+                           "last_error_code": _PNL_WATCH.get("last_error_code"),
+                           "soft_reconnect_count": int(_PNL_WATCH.get("soft_reconnect_count") or 0),
+                           "soft_reconnect_backoff_sec": _PNL_WATCH.get("last_backoff_sec"),
                            "api_response_age_seconds": round(max(0, now - _API_PULSE["at"]), 1) if responsive else None,
                            "last_update_age_seconds": round(age, 1) if age is not None else None,
                            "subscription_age_seconds": round(max(0, now - subscription["requested_at"]), 1),
@@ -658,17 +1048,42 @@ def get_account() -> dict[str, Any]:
 
 @_on_api_thread
 def get_positions() -> dict[str, Any]:
+    """Return STK holdings only. Prefer portfolio marks for last/unrealized.
+
+    Never fold OPT rows into stock qty by underlying symbol.
+    """
     try:
         with _session() as ib:
             identity = _identity(ib)
+            account = identity["account_id"]
+            marks: dict[int, Any] = {}
+            try:
+                for item in ib.portfolio(account):
+                    c = item.contract
+                    if item.account != account or c.secType != "STK" or c.currency != "USD":
+                        continue
+                    marks[int(c.conId)] = item
+            except Exception:
+                marks = {}
             rows = []
-            for p in ib.positions(identity["account_id"]):
-                if p.account != identity["account_id"] or p.contract.secType != "STK" or p.contract.currency != "USD":
+            for p in ib.positions(account):
+                c = p.contract
+                if p.account != account or c.secType != "STK" or c.currency != "USD":
                     continue
                 qty = _number(p.position)
-                rows.append({"symbol": p.contract.symbol, "qty": qty,
-                             "side": "long" if qty >= 0 else "short",
-                             "avg_entry_price": _number(p.avgCost)})
+                item = marks.get(int(c.conId)) if c.conId else None
+                last = _number(getattr(item, "marketPrice", None)) if item is not None else None
+                upnl = _number(getattr(item, "unrealizedPNL", None)) if item is not None else None
+                avg = _number(p.avgCost)
+                # ib_insync avgCost for STK is typically average cost per share.
+                rows.append({
+                    "symbol": c.symbol,
+                    "qty": qty,
+                    "side": "long" if qty >= 0 else "short",
+                    "avg_entry_price": avg,
+                    "current_price": last if last not in (None, 0) else None,
+                    "unrealized_pl": upnl,
+                })
             return {"ok": True, "positions": rows}
     except Exception as exc:
         return {"ok": False, "error": str(exc)[:200], "positions": []}
@@ -952,17 +1367,30 @@ def _position_intent_error(ib, contract, order, identity):
     return position_error(intent, held, int(order["shares"]), reserved)
 
 
+
 @_on_api_thread
 def _place_option_from_desk(ib, order, identity, ref):
-    """Live v1: long single-leg OPT only (BTO/STC). No brackets, no multi-leg, no naked STO."""
+    """Live options: single-leg OPT (BTO/STC/STO/BTC). Calls and puts.
+
+    Covered STO (calls): requires long underlying shares >= contracts*100.
+    Naked STO: requires allow_naked on the order plus buying_power >= premium*100*contracts
+    (honest floor — not full IBKR margin). BTC verifies short OPT by con_id.
+    """
     intent = str(order.get("option_intent") or order.get("position_intent") or "").upper()
-    if intent in ("STO", "BTC") or order.get("legs"):
-        raise ValueError("Live options v1 refuses naked shorts (STO), short covers (BTC), and multi-leg/BAG orders")
-    if intent not in ("BTO", "STC"):
-        raise ValueError("Live options v1 accepts BTO/STC long single-leg only")
+    if order.get("asset_type") == "BAG" or order.get("legs"):
+        raise ValueError("Use _place_bag_from_desk for multi-leg/BAG orders")
+    if intent not in ("BTO", "STC", "STO", "BTC"):
+        raise ValueError("Live options accept BTO/STC/STO/BTC only")
+    # Gate STO flags before any qualify / account I/O so unflagged shorts fail closed.
+    if intent == "STO":
+        covered = bool(order.get("covered"))
+        allow_naked = bool(order.get("allow_naked") or order.get("allow_naked_short"))
+        if not (covered or allow_naked):
+            raise ValueError("STO refused: set covered=True with long shares (calls) or allow_naked=True")
     side = str(order.get("side") or "").lower()
     from ib_insync import Option, MarketOrder, LimitOrder
-    if side != ("buy" if intent == "BTO" else "sell"):
+    expect_side = "buy" if intent in ("BTO", "BTC") else "sell"
+    if side != expect_side:
         raise ValueError("Option intent does not match order side")
     qty = _number(order.get("contracts", order.get("shares")))
     if qty <= 0 or not qty.is_integer():
@@ -995,11 +1423,11 @@ def _place_option_from_desk(ib, order, identity, ref):
     expiry_error = submission_window_error(order)
     if expiry_error:
         raise ValueError(expiry_error)
-    # STC must verify long OPT holding by con_id — never underlying stock shares.
     account = identity["account_id"]
     held = sum(_number(p.position) for p in ib.positions(account)
                if p.account == account and p.contract.conId == contract.conId and p.contract.secType == "OPT")
     reserved_sell = 0.0
+    reserved_buy = 0.0
     for trade in ib.openTrades():
         if trade.order.account != account or trade.contract.conId != contract.conId:
             continue
@@ -1009,14 +1437,55 @@ def _place_option_from_desk(ib, order, identity, ref):
             raise ValueError("Working option order quantities changed; request a fresh review")
         if side_w == "sell":
             reserved_sell += total - filled
+        else:
+            reserved_buy += total - filled
     if intent == "STC":
         available = max(0.0, held - reserved_sell)
         if held <= 0:
             raise ValueError("No long option holding for this contract id; STC refused")
         if qty > available:
             raise ValueError(f"Only {int(available)} contracts of this option remain available after working sells")
+    elif intent == "BTC":
+        short_held = max(0.0, -held)
+        available = max(0.0, short_held - reserved_buy)
+        if held >= 0:
+            raise ValueError("No short option holding for this contract id; BTC refused")
+        if qty > available:
+            raise ValueError(f"Only {int(available)} short contracts remain available to cover after working buys")
     elif intent == "BTO" and held < 0:
-        raise ValueError("Short option holdings are not managed by live v1; close them in TWS/Paper Options")
+        raise ValueError("Existing short option on this contract; use BTC or close in TWS before BTO")
+    elif intent == "STO":
+        covered = bool(order.get("covered"))
+        allow_naked = bool(order.get("allow_naked") or order.get("allow_naked_short"))
+        if covered and right == "C":
+            stock_held = sum(_number(p.position) for p in ib.positions(account)
+                             if p.account == account and p.contract.secType == "STK"
+                             and p.contract.symbol == symbol and p.contract.currency == "USD")
+            need = int(qty) * 100
+            if stock_held < need:
+                raise ValueError(f"Covered short call needs {need} long {symbol} shares; broker holds {stock_held}")
+        elif not allow_naked:
+            raise ValueError("STO refused: set covered=True with long shares (calls) or allow_naked=True")
+        else:
+            from order_terms import option_notional
+            if order.get("limit") is not None:
+                floor = option_notional(int(qty), float(order["limit"]), 100)
+            elif order.get("option_notional") is not None:
+                floor = float(order["option_notional"])
+            else:
+                raise ValueError("Naked STO requires a limit premium or option_notional for buying-power check")
+            values = {v.tag: v.value for v in ib.accountSummary(account)}
+            try:
+                bp = float(values.get("BuyingPower") or values.get("AvailableFunds") or 0)
+            except (TypeError, ValueError):
+                bp = 0.0
+            if bp < floor:
+                raise ValueError(
+                    f"Naked STO blocked: buying_power/available_funds {bp:.2f} < notional floor {floor:.2f}. "
+                    "This is not a full IBKR margin calc."
+                )
+        if held > 0:
+            raise ValueError("Already long this option contract; close or STC before STO")
     if order.get("type") == "limit":
         native = LimitOrder(side.upper(), int(qty), float(order["limit"]),
                             account=account, orderRef=ref, tif="DAY", outsideRth=False)
@@ -1026,6 +1495,74 @@ def _place_option_from_desk(ib, order, identity, ref):
     if risk_error:
         raise ValueError(risk_error)
     return ib.placeOrder(contract, native)
+
+
+@_on_api_thread
+def _place_bag_from_desk(ib, order, identity, ref):
+    """Live BAG vertical: two OPT legs, same underlying/expiry/right, distinct strikes."""
+    from ib_insync import Contract, ComboLeg, Option, MarketOrder, LimitOrder
+    from order_terms import canonical_bag_order
+    strategy = str(order.get("option_strategy") or "")
+    qty = _number(order.get("contracts", order.get("shares")))
+    if qty <= 0 or not qty.is_integer():
+        raise ValueError("A positive whole BAG quantity is required")
+    opt = {
+        "type": order.get("type", "market"),
+        "strategy": strategy,
+        "right": order.get("right"),
+        "expiry": order.get("expiry"),
+        "long_strike": order.get("long_strike"),
+        "short_strike": order.get("short_strike"),
+        "intent": order.get("option_intent") or "OPEN",
+    }
+    if order.get("type") == "limit":
+        opt["limit_price"] = order.get("limit")
+    canonical = canonical_bag_order(
+        {"side": order.get("side"), "suggested_shares": int(qty), "contracts": int(qty)},
+        opt,
+    )
+    legs_spec = canonical["legs"]
+    symbol = str(order.get("ticker") or "").upper()
+    expiry = canonical["expiry"]
+    expiry_ib = expiry.replace("-", "")
+    right = canonical["right"]
+    account = identity["account_id"]
+    qualified = []
+    for leg in legs_spec:
+        c = Option(symbol, expiry_ib, float(leg["strike"]), right, "SMART",
+                   multiplier="100", currency="USD", tradingClass=symbol)
+        found = ib.qualifyContracts(c)
+        if (len(found) != 1 or c.secType != "OPT" or c.multiplier != "100" or not c.conId):
+            raise ValueError(f"BAG leg strike {leg['strike']} could not be qualified as a standard OPT")
+        qualified.append((c, leg))
+    bag = Contract()
+    bag.symbol = symbol
+    bag.secType = "BAG"
+    bag.currency = "USD"
+    bag.exchange = "SMART"
+    combo_legs = []
+    for c, leg in qualified:
+        cl = ComboLeg()
+        cl.conId = int(c.conId)
+        cl.ratio = int(leg.get("ratio") or 1)
+        cl.action = str(leg["action"]).upper()
+        cl.exchange = "SMART"
+        combo_legs.append(cl)
+    bag.comboLegs = combo_legs
+    from broker_router import submission_window_error
+    expiry_error = submission_window_error(order)
+    if expiry_error:
+        raise ValueError(expiry_error)
+    combo_action = str(canonical.get("combo_action") or ("BUY" if order.get("side") == "buy" else "SELL")).upper()
+    if order.get("type") == "limit":
+        native = LimitOrder(combo_action, int(qty), abs(float(order["limit"])),
+                            account=account, orderRef=ref, tif="DAY", outsideRth=False)
+    else:
+        native = MarketOrder(combo_action, int(qty), account=account, orderRef=ref)
+    risk_error = _submission_risk_error(ib, order, identity)
+    if risk_error:
+        raise ValueError(risk_error)
+    return ib.placeOrder(bag, native)
 
 
 
@@ -1043,11 +1580,24 @@ def place_from_desk_order(order: dict[str, Any]) -> dict[str, Any]:
             qty = _number(order.get("shares") if order.get("asset_type") != "OPT" else order.get("contracts", order.get("shares")))
             if side not in ("buy", "sell") or qty <= 0 or not qty.is_integer():
                 raise ValueError("A positive whole quantity and buy/sell side are required")
-            if order.get("asset_type") == "OPT" or order.get("option_intent"):
+            if order.get("asset_type") == "BAG" or order.get("legs"):
+                from order_terms import canonical_bag_order
+                opt = {"type": order.get("type", "market"), "right": order.get("right"),
+                       "expiry": order.get("expiry"), "long_strike": order.get("long_strike"),
+                       "short_strike": order.get("short_strike"),
+                       "strategy": order.get("option_strategy"),
+                       "intent": order.get("option_intent") or "OPEN"}
+                if order.get("type") == "limit":
+                    opt["limit_price"] = order.get("limit")
+                canonical_bag_order({"side": side, "suggested_shares": qty, "contracts": qty}, opt)
+            elif order.get("asset_type") == "OPT" or order.get("option_intent"):
                 from order_terms import canonical_option_order
                 opt = {"type": order.get("type", "market"), "right": order.get("right"),
                        "expiry": order.get("expiry"), "strike": order.get("strike"),
-                       "intent": order.get("option_intent")}
+                       "intent": order.get("option_intent"),
+                       "allow_naked": order.get("allow_naked") or order.get("allow_naked_short"),
+                       "covered": order.get("covered"),
+                       "strategy": order.get("option_strategy")}
                 if order.get("type") == "limit":
                     opt["limit_price"] = order.get("limit")
                 canonical_option_order({"side": side, "suggested_shares": qty, "contracts": qty}, opt)
@@ -1067,6 +1617,12 @@ def place_from_desk_order(order: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError("Multiple broker orders share this signal; reconcile before continuing")
             trade = next(iter(matches.values()), None)
             if trade is None:
+                if order.get("asset_type") == "BAG" or order.get("legs"):
+                    trade = _place_bag_from_desk(ib, order, identity, ref)
+                    ib.sleep(0.5)
+                    return {"ok": True, "status": "paper_submitted" if identity["paper_mode"] else "live_submitted",
+                            "broker": "ibkr", "order_id": _order_id(trade, identity["account_id"]),
+                            "paper_mode": identity["paper_mode"], "endpoint": identity["endpoint"], "order": order}
                 if order.get("asset_type") == "OPT" or order.get("option_intent"):
                     trade = _place_option_from_desk(ib, order, identity, ref)
                     ib.sleep(0.5)
@@ -1218,3 +1774,155 @@ def reconcile_after_timeout(order_id: str, timeout: float = 2.0) -> dict[str, An
 
 def flatten_broker() -> dict[str, Any]:
     return {"ok": False, "error": "IBKR flatten requires explicit per-position confirmation"}
+
+def pnl_watch_snapshot() -> dict[str, Any]:
+    """Read-only watchdog snapshot for UI/diagnostics. Never invents risk_ready."""
+    return {
+        "ui_status": _PNL_WATCH.get("ui_status"),
+        "last_error_code": _PNL_WATCH.get("last_error_code"),
+        "soft_reconnect_count": int(_PNL_WATCH.get("soft_reconnect_count") or 0),
+        "pending_soft_reconnect": bool(_PNL_WATCH.get("pending_soft_reconnect")),
+        "pending_reason": _PNL_WATCH.get("pending_reason"),
+        "soft_reconnect_after_monotonic": _SOFT_RECONNECT_AFTER,
+        "last_backoff_sec": _PNL_WATCH.get("last_backoff_sec"),
+        "last_scheduled_refresh_at": _PNL_WATCH.get("last_scheduled_refresh_at"),
+        "note": (
+            "IBKR 2FA / IB Key cannot be disabled. Soft reconnect and re-reqPnL "
+            "run first; full Gateway logout still requires human 2FA."
+        ),
+    }
+
+
+def maybe_scheduled_soft_refresh(*, interval_minutes: float, auto_live: bool, risk_ready: bool) -> dict[str, Any] | None:
+    """Optional soft refresh while auto_live and not risk_ready. Never invents Ready."""
+    if not auto_live or risk_ready:
+        return None
+    try:
+        minutes = float(interval_minutes)
+    except (TypeError, ValueError):
+        return None
+    if minutes <= 0:
+        return None
+    now = time.monotonic()
+    last = float(_PNL_WATCH.get("last_scheduled_refresh_at") or 0.0)
+    # First observation only arms the timer — do not soft-reconnect until the
+    # interval elapses. Immediate soft reconnect on startup races the initial
+    # DailyPnL callback and triggers Warning 2100 storms.
+    if not last:
+        _PNL_WATCH["last_scheduled_refresh_at"] = now
+        return None
+    if (now - last) < minutes * 60.0:
+        return None
+    if now < _SOFT_RECONNECT_AFTER:
+        return None
+    _PNL_WATCH["last_scheduled_refresh_at"] = now
+    _PNL_WATCH["ui_status"] = "Recovering Daily P&L..."
+    return refresh_broker_pnl(soft_reconnect=True)
+
+
+def _gateway_exe_candidates() -> list[str]:
+    explicit = (os.environ.get("IB_GATEWAY_EXE") or "").strip()
+    out: list[str] = []
+    if explicit:
+        out.append(explicit)
+    bases = [r"C:\Jts\ibgateway", os.path.join(os.path.expanduser("~"), "Jts", "ibgateway")]
+    for base in bases:
+        if not os.path.isdir(base):
+            continue
+        try:
+            versions = sorted(os.listdir(base), reverse=True)
+        except OSError:
+            continue
+        for name in versions:
+            candidate = os.path.join(base, name, "ibgateway.exe")
+            if os.path.isfile(candidate):
+                out.append(candidate)
+    # de-dupe preserve order
+    seen = set()
+    unique = []
+    for path in out:
+        key = os.path.normcase(os.path.abspath(path)) if os.path.exists(path) else os.path.normcase(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+def _port_open(host: str, port: int, timeout: float = 0.6) -> bool:
+    import socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+def ensure_gateway(*, launch_if_down: bool = True) -> dict[str, Any]:
+    """Ensure IB Gateway API port is reachable; optionally relaunch ibgateway.exe.
+
+    Never places orders. Never disables 2FA. Login / IB Key may still be required
+    if the Gateway session was fully logged out (not a soft API bounce).
+    """
+    host = os.environ.get("IB_GATEWAY_HOST", "127.0.0.1")
+    port = int(os.environ.get("IB_GATEWAY_PORT", "4002"))
+    result: dict[str, Any] = {
+        "ok": False,
+        "host": host,
+        "port": port,
+        "port_open": False,
+        "launched": False,
+        "exe": None,
+        "gateway_restarted": False,
+        "human_2fa_may_be_required": False,
+        "note": "",
+    }
+    if _port_open(host, port):
+        result.update(ok=True, port_open=True, note="Gateway API port is reachable.")
+        return result
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        result["note"] = f"Remote Gateway {host}:{port} is down; start it on that host."
+        result["human_2fa_may_be_required"] = True
+        return result
+    if not launch_if_down:
+        result["note"] = f"Gateway port {port} is down; launch_if_down=false."
+        return result
+    candidates = _gateway_exe_candidates()
+    exe = next((p for p in candidates if os.path.isfile(p)), None)
+    if not exe:
+        result["note"] = "ibgateway.exe not found. Set IB_GATEWAY_EXE or install IB Gateway."
+        return result
+    result["exe"] = exe
+    try:
+        import subprocess
+        subprocess.Popen(
+            [exe],
+            cwd=os.path.dirname(exe),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        result["launched"] = True
+        result["gateway_restarted"] = True  # process relaunch; session may still need login
+        result["human_2fa_may_be_required"] = True
+        result["note"] = (
+            "Started ibgateway.exe because the API port was down. "
+            "If Gateway still has a cached session, login may complete without 2FA; "
+            "a full logout always requires human IB Key / 2FA. Soft API reconnect is preferred when the port is up."
+        )
+        # Brief wait then re-check (login window may still be up).
+        time.sleep(1.5)
+        result["port_open"] = _port_open(host, port)
+        result["ok"] = result["port_open"]
+        if not result["ok"]:
+            result["note"] += " Port not open yet — complete Gateway sign-in if prompted."
+    except Exception as exc:
+        result["note"] = f"Failed to launch Gateway: {type(exc).__name__}: {str(exc)[:160]}"
+    return result
+

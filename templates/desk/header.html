@@ -1,4 +1,4 @@
-<body class="ui-advanced unified-desk utilitarian-desk" data-workspace="live">
+<body class="ui-advanced unified-desk utilitarian-desk desk-page-{{ desk_page|default('overview') }}" data-workspace="{{ desk_workspace|default('live') }}" data-desk-page="{{ desk_page|default('overview') }}">
   <div class="desert-scene" aria-hidden="true">
     <div class="sky-bands"></div><div class="scene-horizon"></div><div class="scene-veil veil-near"></div><div class="scene-veil veil-far"></div><div id="scene-stars" class="scene-stars"></div>
     <div id="scene-sun" class="scene-orb scene-sun"><i></i><b></b></div>

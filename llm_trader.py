@@ -1529,10 +1529,16 @@ def should_route_cheap(analysis: Optional[dict] = None, cfg: Optional[dict] = No
     """Cheap brain router: mock for junk tape instead of Gemini.
 
     Route when (rel_vol weak AND range extreme) OR verdict AVOID.
+    Never route to mock under live broker modes: mock research cannot
+    execute live (signal_execution_block), so routing would only burn
+    research quota and block auto_live orders.
     """
     if not brain_router_enabled():
         return False, "router_off"
     cfg = cfg or {}
+    desk_mode = str(cfg.get("mode") or "").strip().lower()
+    if desk_mode in ("auto_live", "live_manual"):
+        return False, "live_mode_no_mock"
     mode = resolve_brain_mode(cfg)
     if mode != "gemini":
         return False, f"mode_{mode}"

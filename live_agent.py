@@ -6,6 +6,7 @@ Saving a policy pauses the agent. Only the explicit start route activates it.
 from __future__ import annotations
 
 import copy
+import os
 import hashlib
 import json
 import re
@@ -19,13 +20,84 @@ from flask import Blueprint, jsonify, request
 import paper_loop
 from order_terms import canonical_order
 from trade_planner import number
+import auto_live_options
 
 DEFAULTS = {
-    "symbols": ["SPY"], "interval_sec": 120, "order_type": "limit",
-    "max_order_usd": 100., "max_daily_loss_usd": 20., "max_orders_per_day": 3,
+    # `symbols` is a saved UI hint; live AUTO-ORDERS follow research_universe()
+    # (full equity-scrubbed watchlist + radar merge). Not SPY-only.
+    "symbols": ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMD", "META", "TSLA"],
+    "interval_sec": 120, "order_type": "limit",
+    # Uncapped sentinels (UI treats >=1e8 USD / >=1e5 trades as open). Never school $10/$2/1.
+    "max_order_usd": 1e9, "max_daily_loss_usd": 1e9, "max_orders_per_day": 100000,
     "max_research_per_day": 100, "model_budget_usd": 5.,
     "limit_offset_bps": 5., "min_confidence": .6, "max_quote_age_sec": 30,
 }
+
+# Bad/delisted/unquotable symbols: skip for a while instead of blocking forever.
+_QUOTE_SKIP: dict[str, dict] = {}
+_QUOTE_SKIP_AFTER = 2  # consecutive quote failures before temporary deny
+_QUOTE_SKIP_SEC = 6 * 3600
+
+def _quote_skip_active(symbol: str) -> bool:
+    row = _QUOTE_SKIP.get(symbol)
+    if not row:
+        return False
+    if now_utc().timestamp() >= float(row.get("until", 0)):
+        _QUOTE_SKIP.pop(symbol, None)
+        return False
+    return True
+
+def _note_quote_failure(symbol: str, reason: str):
+    row = _QUOTE_SKIP.get(symbol) or {"fails": 0}
+    row["fails"] = int(row.get("fails") or 0) + 1
+    row["reason"] = (reason or "")[:160]
+    hard = any(k in (reason or "").lower() for k in (
+        "could not be qualified", "no ibkr trade", "invalid us stock", "unqualified"))
+    need = 1 if hard else _QUOTE_SKIP_AFTER
+    if row["fails"] >= need:
+        row["until"] = now_utc().timestamp() + _QUOTE_SKIP_SEC
+    _QUOTE_SKIP[symbol] = row
+
+def _note_quote_ok(symbol: str):
+    _QUOTE_SKIP.pop(symbol, None)
+
+
+
+def research_universe(cfg, policy=None):
+    """Symbols Moss may evaluate AND auto-order (ideas / radar / ranking / live).
+
+    Full equity-scrubbed watchlist (FX/crypto junk dropped via equity_loop_symbols).
+    Not clamped to policy['symbols'] — that saved list is a UI hint only.
+    Radar movers are merged in so hot names outside the saved list still rotate.
+    Falls back to the saved symbols hint only when the watchlist is empty.
+    """
+    policy = policy or {}
+    try:
+        wl = list((cfg or {}).get("watchlist") or [])
+        symbols = paper_loop.equity_loop_symbols(wl)
+        try:
+            import market_radar as _mr
+            hot = [
+                str(r.get("ticker") or "").upper()
+                for r in (_mr.get_cached().get("movers") or [])
+                if r.get("ticker")
+            ]
+            symbols = paper_loop.merge_radar_into_focus(symbols, hot, cap_extra=12)
+        except Exception:
+            pass
+    except Exception:
+        symbols = []
+    if not symbols:
+        symbols = list(dict.fromkeys(
+            s for s in (policy.get("symbols") or list(DEFAULTS["symbols"]))
+            if isinstance(s, str) and s
+        ))
+    return [s for s in symbols if not _quote_skip_active(s)]
+
+
+def order_universe(cfg, policy=None):
+    """Live auto-order allow-list — same full evaluated equity universe."""
+    return research_universe(cfg, policy)
 
 
 def now_utc():
@@ -37,10 +109,13 @@ def validate(body):
         raise ValueError("Save all displayed live-agent policy fields; unknown fields are not accepted")
     policy = copy.deepcopy(body)
     symbols = policy["symbols"]
-    if (not isinstance(symbols, list) or not 1 <= len(symbols) <= 500 or
-            any(not isinstance(s, str) or not re.fullmatch(r"[A-Z]{1,5}(?:\.[A-Z])?", s) for s in symbols)):
+    if not isinstance(symbols, list) or not 1 <= len(symbols) <= 500:
         raise ValueError("Choose 1–500 uppercase US stock/ETF symbols")
-    policy["symbols"] = list(dict.fromkeys(symbols))
+    # Same scrub as equity watchlist (allows VIX1D / BRK.B; drops BTC/USD junk).
+    cleaned = paper_loop.equity_loop_symbols([str(s).upper() for s in symbols if isinstance(s, str)])
+    if not cleaned:
+        raise ValueError("Choose 1–500 uppercase US stock/ETF symbols")
+    policy["symbols"] = cleaned
     if policy["order_type"] not in ("market", "limit"):
         raise ValueError("Choose market or DAY limit orders")
     ranges = {"interval_sec": (30, 3600), "max_order_usd": (.01, 1e9),
@@ -74,8 +149,9 @@ def authorization_error(signal, cfg):
         policy = validate(saved["policy"])
     except (ValueError, KeyError, TypeError):
         return "Live agent policy is invalid"
-    if signal.get("ticker") not in policy["symbols"]:
-        return "Symbol is outside the live agent's approved list"
+    allowed = order_universe(cfg, policy)
+    if signal.get("ticker") not in allowed:
+        return "Symbol is outside the live agent's evaluated equity universe"
     return None
 
 
@@ -87,7 +163,9 @@ def quote_error(quote, max_age):
         number(quote.get("price"), "Quote", .000001, 1e9)
         stamp = datetime.fromisoformat(str(quote.get("market_time")).replace("Z", "+00:00"))
         age = (now_utc()-stamp).total_seconds()
-        if not quote.get("fresh") or not 0 <= age <= max_age or not paper_loop.is_rth(stamp):
+        # IBKR delayed ticks may be slightly older than Finnhub; trust IB fresh flag up to 120s.
+        limit = max(int(max_age), 120) if "ibkr" in source else int(max_age)
+        if not quote.get("fresh") or not 0 <= age <= limit or not paper_loop.is_rth(stamp):
             return "Live agent quote is stale, future-dated or outside the session"
     except (ValueError, TypeError, AttributeError):
         return "Live agent quote is missing or unverified"
@@ -178,13 +256,30 @@ class LiveAgent:
                 message = "Agent paused; broker reconciliation continues"
             elif saved and not paper_loop.is_rth(now_utc()):
                 message = "Waiting for the next regular US market session"
+            pol = saved.get("policy") or copy.deepcopy(DEFAULTS)
+            try:
+                eval_syms = research_universe(cfg, pol if isinstance(pol, dict) else {})
+            except Exception:
+                eval_syms = []
+            order_syms = list(eval_syms)  # live auto-orders track full evaluated universe
+            ao = auto_live_options.status_payload(cfg)
             return {"ok": True, "configured": bool(saved), "enabled": saved.get("enabled") is True,
-                    "policy": saved.get("policy") or copy.deepcopy(DEFAULTS), "revision": saved.get("revision"),
+                    "policy": pol, "revision": saved.get("revision"),
                     "identity": cfg.get("broker_identity"), "mode": cfg.get("mode"),
                     "session_active": cfg.get("session_active"), "market_open": paper_loop.is_rth(now_utc()),
                     "phase": self.phase, "message": message, "busy": self.cycle_lock.locked(),
                     "today": raw["days"].get(self.key(cfg), {"research": 0, "orders": 0}),
-                    "events": raw["events"][:30], "next_at": raw.get("next_at")}
+                    "events": raw["events"][:30], "next_at": raw.get("next_at"),
+                    "eval_symbols_count": len(eval_syms),
+                    "eval_symbols_sample": eval_syms[:12],
+                    "order_symbols": order_syms,
+                    "spy_only": False,
+                    "auto_options": ao.get("auto_options"),
+                    "auto_options_label": ao.get("label"),
+                    "auto_options_armed": ao.get("armed"),
+                    "eval_note": (
+                        f"Live auto-orders + eval: full equity watchlist ({len(eval_syms)} symbols; junk deny-list on)"
+                    )}
 
     def record(self, status, message, signal=None):
         self.phase, self.message = status, message
@@ -245,6 +340,30 @@ class LiveAgent:
         if not saved.get("enabled") or cfg.get("mode") != "auto_live" or not cfg.get("session_active"):
             self.phase, self.message = "paused", "Agent paused; broker reconciliation continues"
             return
+        # Optional scheduled soft PnL refresh while auto_live and not risk_ready.
+        # Never invents Ready; only re-requests Daily P&L via soft API reconnect.
+        try:
+            import broker_router
+            minutes = float(os.environ.get("IBKR_PNL_SOFT_REFRESH_MINUTES", "5") or 0)
+            book = None
+            try:
+                book = broker_router.get_account()
+            except Exception:
+                book = None
+            ready = bool(book and book.get("risk_ready") is True and book.get("account", {}).get("day_pnl") is not None)
+            if minutes > 0 and not ready:
+                # If Gateway API port is down, try relaunch (login/2FA may still be needed).
+                ensure = getattr(broker_router, "ensure_gateway", None)
+                if callable(ensure):
+                    try:
+                        ensure(launch_if_down=True)
+                    except Exception:
+                        pass
+                refresher = getattr(broker_router, "maybe_scheduled_soft_refresh", None)
+                if callable(refresher):
+                    refresher(interval_minutes=minutes, auto_live=True, risk_ready=False)
+        except Exception:
+            pass
         if not paper_loop.is_rth(now_utc()):
             self.phase, self.message = "waiting_for_market", "Waiting for the next regular US market session"
             return
@@ -262,11 +381,16 @@ class LiveAgent:
             if today["research"] >= policy["max_research_per_day"] or today["orders"] >= policy["max_orders_per_day"]:
                 self.phase, self.message = "daily_limit", "Daily agent research or broker-attempt limit reached"
                 return
-            symbol = policy["symbols"][raw["cursor"] % len(policy["symbols"])]
+            eval_symbols = research_universe(cfg, policy)
+            if not eval_symbols:
+                self.phase, self.message = "blocked", "No equity symbols available to evaluate"
+                return
+            symbol = eval_symbols[raw["cursor"] % len(eval_symbols)]
             raw["cursor"] += 1
             today["research"] += 1
             raw["next_at"] = (now_utc()+timedelta(seconds=policy["interval_sec"])).isoformat()
             self.save(raw)  # Failures/no setup/restarts also consume this cycle.
+        # Live auto-orders use the same full evaluated equity universe (not SPY-only).
         import broker_router
         context = broker_router.verify_execution_context()
         if not context.get("ok") or context.get("identity") != cfg.get("broker_identity"):
@@ -281,7 +405,7 @@ class LiveAgent:
             return
         def authorized():
             return self.desk.load_config() == cfg and paper_loop.is_rth(now_utc())
-        self.phase, self.message = "researching", "Researching "+symbol
+        self.phase, self.message = "researching", "Evaluating "+symbol+" (live-order eligible · full universe)"
         signal = self.desk.generate_scan_signal(cfg, ticker=symbol, force=False, still_authorized=authorized)
         if not authorized():
             self.record("discarded", "Settings or session changed during research")
@@ -292,15 +416,56 @@ class LiveAgent:
         signal.update(source="live_agent", workspace="live", agent_revision=saved["revision"],
                       agent_run_id=saved.get("run_id"),
                       agent_identity=copy.deepcopy(cfg["broker_identity"]))
+        # Prefer a fresh IBKR live/delayed quote over Yahoo/Finnhub for execution gates.
+        try:
+            import broker_router
+            ibq = broker_router.stock_quote(symbol)
+            if ibq.get("ok") and ibq.get("fresh") and ibq.get("price"):
+                signal["quote"] = {
+                    "price": ibq["price"], "source": ibq.get("source") or "IBKR delayed mkt data",
+                    "market_time": ibq.get("market_time"), "received_at": ibq.get("received_at"),
+                    "age_sec": ibq.get("age_sec"), "fresh": True,
+                    "bid": ibq.get("bid"), "ask": ibq.get("ask"), "last": ibq.get("last"),
+                    "con_id": ibq.get("con_id"),
+                }
+                signal["signal_price"] = ibq["price"]
+                _note_quote_ok(symbol)
+            else:
+                err = (ibq.get("error") or "ibkr_quote_unavailable")[:160]
+                _note_quote_failure(symbol, err)
+                # Junk / unqualified / no delayed tick: skip without burning cycles on stale Finnhub.
+                if _quote_skip_active(symbol) or any(k in err.lower() for k in (
+                        "could not be qualified", "no ibkr trade", "invalid us stock")):
+                    self.record("hold", f"IBKR quote unavailable ({err}) — symbol temporarily skipped", signal)
+                    return
+        except Exception as exc:
+            _note_quote_failure(symbol, type(exc).__name__)
+            if _quote_skip_active(symbol):
+                self.record("hold", f"IBKR quote error ({type(exc).__name__}) — symbol temporarily skipped", signal)
+                return
         # The quote's own timestamp, not collection completion, starts validity.
         error = quote_error(signal.get("quote"), policy["max_quote_age_sec"])
-        if not error:
-            stamp = datetime.fromisoformat(signal["quote"]["market_time"].replace("Z", "+00:00"))
-            signal["expires_at"] = (stamp+timedelta(seconds=policy["max_quote_age_sec"])).isoformat()
-        error = error or self.desk.signal_execution_block(signal, broker=True)
+        if error:
+            _note_quote_failure(symbol, error)
+            self.record("hold", error + (" — symbol temporarily skipped" if _quote_skip_active(symbol) else ""), signal)
+            return
+        stamp = datetime.fromisoformat(signal["quote"]["market_time"].replace("Z", "+00:00"))
+        signal["expires_at"] = (stamp+timedelta(seconds=policy["max_quote_age_sec"])).isoformat()
+        error = self.desk.signal_execution_block(signal, broker=True)
         if error:
             self.record("hold", error, signal)
             return
+        # Optional: convert stock PASS into armed OPT/BAG when auto_options.enabled.
+        auto_cfg = auto_live_options.get_config(cfg)
+        if auto_cfg.get("enabled") and signal.get("verdict") == "PASS":
+            try:
+                with self.desk._lock:
+                    day = self.load()["days"].get(self.key(cfg), {"research": 0, "orders": 0})
+                if day.get("research", 0) % max(1, int(auto_cfg.get("every_n_stock_cycles") or 1)) == 0:
+                    signal = self._maybe_convert_to_option(signal, cfg, auto_cfg, context)
+            except ValueError as exc:
+                self.record("options_skip", str(exc)[:180], signal)
+                return
         # No paper clone, no reuse of the rehearsal plan, one execution owner.
         result = self.desk._ingest_one_signal(signal, cfg_override=cfg)
         with self.desk._lock:
@@ -312,6 +477,120 @@ class LiveAgent:
             return
         self.record(result.get("status", "unknown"), result.get("reject_reason") or
                     ("Broker execution recorded" if result.get("fill") else "Decision retained"), result)
+
+
+    def _maybe_convert_to_option(self, signal, cfg, auto_cfg, context):
+        """Attach OPT/BAG fields using IBKR chain + options_desk strategy names. No order yet."""
+        import broker_router
+        ticker = str(signal.get("ticker") or "").upper()
+        px = float(signal.get("signal_price") or (signal.get("quote") or {}).get("price") or 0)
+        if px <= 0:
+            raise ValueError("Underlying price missing for options conversion")
+        book = None
+        try:
+            book = broker_router.get_account()
+        except Exception:
+            book = None
+        err = auto_live_options.risk_ready_error(book)
+        if err:
+            raise ValueError(err)
+        stock_shares = 0.0
+        try:
+            pos = broker_router.get_positions()
+            for row in (pos.get("positions") or []):
+                if str(row.get("symbol") or "").upper() == ticker:
+                    stock_shares = float(row.get("qty") or 0)
+                    break
+        except Exception:
+            stock_shares = 0.0
+        chain = broker_router.option_chain(ticker)
+        if not chain.get("ok"):
+            raise ValueError(chain.get("error") or "Option chain unavailable")
+        # Normalize chain shape from broker_ibkr.option_chain
+        classes = chain.get("chains") or chain.get("classes") or chain.get("option_classes") or []
+        expirations, strikes = [], []
+        if classes:
+            for cls in classes:
+                expirations.extend(cls.get("expirations") or cls.get("expiries") or [])
+                strikes.extend(cls.get("strikes") or [])
+        else:
+            expirations = chain.get("expirations") or chain.get("expiries") or []
+            strikes = chain.get("strikes") or []
+        norm = {"expirations": expirations, "strikes": strikes, "classes": classes}
+        candidate = auto_live_options.build_option_candidate(
+            signal, auto_cfg, chain=norm, underlying_price=px, stock_shares=stock_shares,
+        )
+        # Quote the chosen structure for premium / con_id.
+        if candidate["asset_type"] == "OPT":
+            action = "BUY" if candidate["option_intent"] in ("BTO", "BTC") else "SELL"
+            quotes = broker_router.option_quotes([{
+                "symbol": ticker, "right": candidate["right"], "expiry": candidate["expiry"],
+                "strike": candidate["strike"], "action": action,
+            }])
+            if not quotes.get("ok") or not (quotes.get("legs") or []):
+                raise ValueError(quotes.get("error") or "Option quote unavailable")
+            leg = quotes["legs"][0]
+            if not leg.get("con_id") or int(leg.get("multiplier") or 0) != 100:
+                raise ValueError("Only standard 100-share options can auto-trade")
+            premium = float(leg.get("ask") if action == "BUY" else leg.get("bid") or 0)
+            if premium <= 0:
+                raise ValueError("Executable option premium missing")
+            signal.update(candidate)
+            signal["suggested_shares"] = candidate["contracts"]
+            signal["signal_price"] = premium
+            signal["ack_symbol"] = leg.get("local_symbol")
+            signal["review_contract"] = {
+                "con_id": int(leg["con_id"]), "symbol": ticker, "local_symbol": leg.get("local_symbol"),
+                "right": candidate["right"], "expiry": candidate["expiry"], "strike": float(candidate["strike"]),
+                "multiplier": 100, "currency": "USD", "sec_type": "OPT",
+            }
+            signal["quote"] = {
+                "price": premium, "source": quotes.get("source") or "IBKR option quote",
+                "market_time": quotes.get("received_at") or signal.get("quote", {}).get("market_time"),
+                "bid": leg.get("bid"), "ask": leg.get("ask"), "fresh": True,
+                "local_symbol": leg.get("local_symbol"), "con_id": int(leg["con_id"]), "multiplier": 100,
+            }
+            signal["reason"] = (signal.get("reason") or "") + f" | auto_options {candidate['option_strategy']} {candidate['option_intent']}"
+            signal["broker_book"] = book
+            return signal
+        # BAG: quote both legs for net premium estimate
+        from options_desk import legs as desk_legs
+        plan = {
+            "symbol": ticker, "expiry": candidate["expiry"], "strategy": candidate["option_strategy"],
+            "right": candidate["right"], "kind": "debit" if "debit" in candidate["option_strategy"] else "credit",
+            "long_strike": candidate["long_strike"], "short_strike": candidate["short_strike"],
+            "contracts": candidate["contracts"], "multiplier": 100, "budget": 250, "fee_per_contract": 0.65,
+        }
+        quotes = broker_router.option_quotes(desk_legs(plan))
+        if not quotes.get("ok") or len(quotes.get("legs") or []) != 2:
+            raise ValueError(quotes.get("error") or "BAG leg quotes unavailable")
+        rows = quotes["legs"]
+        debit = float(rows[0]["ask"]) - float(rows[1]["bid"])
+        premium = abs(debit)
+        if premium <= 0:
+            raise ValueError("BAG net premium missing or non-positive")
+        signal.update(candidate)
+        signal["suggested_shares"] = candidate["contracts"]
+        signal["signal_price"] = premium
+        signal["review_contract"] = {
+            "symbol": ticker, "right": candidate["right"], "expiry": candidate["expiry"],
+            "long_strike": candidate["long_strike"], "short_strike": candidate["short_strike"],
+            "legs": [
+                {"con_id": int(rows[0]["con_id"]), "strike": candidate["long_strike"], "local_symbol": rows[0].get("local_symbol")},
+                {"con_id": int(rows[1]["con_id"]), "strike": candidate["short_strike"], "local_symbol": rows[1].get("local_symbol")},
+            ],
+            "multiplier": 100, "sec_type": "BAG",
+        }
+        signal["ack_symbol"] = f"{ticker}-BAG-{candidate['option_strategy']}"
+        signal["quote"] = {
+            "price": premium, "source": quotes.get("source") or "IBKR option quote",
+            "market_time": quotes.get("received_at") or signal.get("quote", {}).get("market_time"),
+            "fresh": True, "net_debit": debit,
+        }
+        signal["reason"] = (signal.get("reason") or "") + f" | auto_options BAG {candidate['option_strategy']}"
+        signal["broker_book"] = book
+        return signal
+
 
 
 def register(app, desk):
@@ -329,16 +608,23 @@ def register(app, desk):
     @bp.post("/api/live-agent/policy")
     def policy():
         body = request.get_json(silent=True)
-        if not isinstance(body, dict) or set(body) != {"policy", "revision"}:
+        if not isinstance(body, dict) or not {"policy", "revision"} <= set(body) or set(body) - {"policy", "revision", "auto_options"}:
             raise ValueError("Policy and its current revision are required")
         proposed = validate(body["policy"])
+        auto_opts = auto_live_options.validate(body["auto_options"]) if "auto_options" in body else None
         with desk._BROKER_EXEC_LOCK, desk._lock:
             cfg = desk.load_config()
             if desk._CORRUPT_PATHS:
                 raise ValueError("Repair unreadable desk data before saving a policy")
             if (cfg.get("live_agent") or {}).get("revision") != body["revision"]:
                 return jsonify(ok=False, error="Policy changed in another window; reload before saving"), 409
-            cfg["live_agent"] = {"policy": proposed, "revision": str(uuid.uuid4()), "enabled": False}
+            prev = cfg.get("live_agent") or {}
+            entry = {"policy": proposed, "revision": str(uuid.uuid4()), "enabled": False}
+            if auto_opts is not None:
+                entry["auto_options"] = auto_opts
+            elif isinstance(prev.get("auto_options"), dict):
+                entry["auto_options"] = prev["auto_options"]
+            cfg["live_agent"] = entry
             desk.save_config(cfg)
         service.phase, service.message = "paused", "Policy saved; agent paused"
         return jsonify(service.status())

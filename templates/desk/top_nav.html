@@ -1,0 +1,16 @@
+{# Primary page nav — plain labels, separate Auto / Paper / Research #}
+<nav class="desk-topnav" aria-label="Desk pages">
+  <a class="desk-topnav-brand" href="/desk/overview" title="Overview">
+    <span class="logo-medallion">{% include "desk/brand_mark.html" %}</span>
+    <span class="wordmark">nadzeel</span>
+  </a>
+  <div class="desk-topnav-links" role="list">
+    <a role="listitem" href="/desk/overview" class="desk-topnav-link{% if desk_page == 'overview' %} is-active{% endif %}">Overview</a>
+    <a role="listitem" href="/desk/auto" class="desk-topnav-link{% if desk_page == 'auto' %} is-active{% endif %}" title="Real broker · Moss agent">Auto</a>
+    <a role="listitem" href="/desk/paper" class="desk-topnav-link{% if desk_page == 'paper' %} is-active{% endif %}" title="Simulated practice">Paper</a>
+    <a role="listitem" href="/desk/research" class="desk-topnav-link{% if desk_page == 'research' %} is-active{% endif %}" title="Ideas, rankings, notes">Research</a>
+    <a role="listitem" href="/desk/ticket" class="desk-topnav-link{% if desk_page == 'ticket' %} is-active{% endif %}" title="Buy or sell ticket">Ticket</a>
+    <a role="listitem" href="/desk/settings" class="desk-topnav-link desk-topnav-muted{% if desk_page == 'settings' %} is-active{% endif %}">Settings</a>
+  </div>
+  <p class="desk-topnav-hint" id="desk-page-hint">{{ page_hint|default("") }}</p>
+</nav>

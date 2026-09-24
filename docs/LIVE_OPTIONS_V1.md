@@ -1,29 +1,34 @@
-# Live options v1 (long single-leg)
+﻿# Live options (Moss LIVE auto + manual)
 
-SAFE path for manual live options on the IBKR desk. **No auto_live / live_agent options. No naked STO/BTC. No multi-leg/BAG.**
+## Armed capabilities
+- **Long calls / puts**: BTO + STC (×100 notional)
+- **Short calls / puts**: STO + BTC
+  - Covered short **calls** when long underlying shares ≥ contracts×100
+  - Naked STO requires explicit `allow_naked` / policy `allow_naked_short` plus buying-power floor check (not full IBKR margin)
+- **Vertical spreads / BAG**: call/put debit & credit via IBKR combo path (`_place_bag_from_desk`)
+- **auto_live**: Moss broker agent can convert PASS stock setups into OPT/BAG when **Enable auto options** is checked on the agent policy
 
-## Enabled
-- Manual `live_manual` + IBKR only
-- Intents: **BTO** (buy to open) and **STC** (sell to close)
-- Single-leg call/put, standard 100-share US equity options
-- Market or DAY limit; quantity = whole contracts
-- Notional gate: `contracts × premium × 100` via `order_terms.option_notional`
-- Review → type **OCC / localSymbol** → approve (same review/ack/risk gates as stock)
-- STC verifies OPT holding by `con_id` (not underlying stock shares)
+## UI label
+**Moss LIVE options · calls/puts · shorts gated · BAG verticals**
 
-## Still paper-only
-- STO / BTC (naked short / cover short)
-- Verticals and other multi-leg / BAG
-- Options from Moss paper workday / auto agents
-- Exercise / assignment simulation
+## Honest risk_ready
+New auto options risk requires verified broker day P&L (`risk_ready`). Missing PnL blocks conversion.
 
-## API
-- `POST /api/live/ticket/option/review` — preview only; never places
-- Approve remains `POST /api/signals/<id>/approve` with `review_token` + `ack_ticker` = OCC/local symbol
+## Notional
+`contracts × premium × 100` via `order_terms.option_notional`.
 
-## UI
-- Live Order ticket → **Option** tab: working BTO/STC form
-- TRADE nav: **Live desk** + **Options (paper)** (`#desk-options` unchanged)
+## Residual risks
+- **Assignment / early exercise** on short legs is not simulated
+- Naked short margin is a **buying-power floor**, not IBKR portfolio margin
+- Cash-secured short puts are treated as naked unless `allow_naked_short` is on
+- BAG simultaneous fill is broker-dependent; legs can still break after fill
+
+## Verify (no live fire required for unit tests)
+1. `pytest tests/test_auto_live_options.py tests/test_live_options_v1.py -q`
+2. Flask restart only (`_restart_flask_only.ps1`) — do **not** restart Gateway
+3. In Live automation → Moss broker agent: enable auto options checkboxes, save policy (agent stays paused)
+4. Manual ticket Option tab: BTO/STC work; STO needs Covered or Allow naked; BTC needs short holding
+5. Confirm status shows `auto_options_armed` only when agent enabled **and** auto_options.enabled
 
 ## Restart
-Restart the desk process on :5056 after deploying so Flask loads the new blueprint routes.
+Flask / desk process on :5056 only. Gateway stays up.

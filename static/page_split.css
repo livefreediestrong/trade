@@ -1,0 +1,121 @@
+/* Page-split UX — top page nav + cleaner chrome */
+.desk-topnav {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+  padding: 10px 14px;
+  margin: 0 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 24px rgba(0,0,0,.18);
+}
+.desk-topnav-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  color: var(--text);
+  font: 700 14px/1.2 var(--sans, system-ui);
+}
+.desk-topnav-brand .logo-medallion { width: 28px; height: 28px; }
+.desk-topnav-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.desk-topnav-link {
+  text-decoration: none;
+  color: var(--text);
+  font: 650 13px/1.2 var(--sans, system-ui);
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  letter-spacing: .01em;
+}
+.desk-topnav-link:hover {
+  border-color: var(--border);
+  background: var(--panel2);
+}
+.desk-topnav-link.is-active {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.desk-topnav-muted { opacity: .85; font-weight: 600; }
+.desk-topnav-hint {
+  flex: 1 1 220px;
+  margin: 0;
+  font: 500 12px/1.35 var(--sans, system-ui);
+  color: var(--muted);
+  min-width: 180px;
+}
+
+/* Slimmer left nav when pages are split */
+.page-nav-slim .nav-caption { margin-top: 8px; }
+body.desk-page-overview .page-nav-slim,
+body.desk-page-paper .page-nav-slim,
+body.desk-page-research .page-nav-slim,
+body.desk-page-ticket .page-nav-slim,
+body.desk-page-settings .page-nav-slim {
+  /* keep companions + page anchors only */
+}
+
+/* Prominent market visualizer on Overview */
+body.desk-page-overview #market-today.bx-market-viz,
+body.desk-page-auto #market-today.bx-market-viz {
+  padding: 18px 18px 16px;
+  border-width: 1.5px;
+}
+body.desk-page-overview #market-today .mt-grid {
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+}
+body.desk-page-overview #market-today .mt-tile { min-height: 102px; }
+
+/* Dynamic pulse polish */
+.bx-money-card.is-up .bx-money-v { color: var(--bx-buy, #16a34a); }
+.bx-money-card.is-dn .bx-money-v { color: var(--bx-sell, #dc2626); }
+.bx-money-card.is-live {
+  animation: bx-card-pulse 2.4s ease-in-out infinite;
+}
+@keyframes bx-card-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent); }
+}
+.bx-pulse-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--muted);
+  box-shadow: 0 0 0 0 transparent;
+}
+.bx-pulse-dot.is-ready {
+  background: var(--bx-buy, #16a34a);
+  animation: bx-dot-ready 1.6s ease-in-out infinite;
+}
+.bx-pulse-dot.is-blocked { background: var(--bx-sell, #dc2626); }
+.bx-pulse-dot.is-wait { background: var(--bx-warn, #fbbf24); }
+@keyframes bx-dot-ready {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(22,163,74,.45); }
+  50% { box-shadow: 0 0 0 8px rgba(22,163,74,0); }
+}
+
+.desk-page-banner {
+  display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+  gap: 8px 16px; margin: 0 0 14px;
+}
+.desk-page-banner h1 {
+  margin: 0; font: 650 clamp(22px, 2.6vw, 30px)/1.2 var(--serif, var(--font));
+}
+.desk-page-banner p {
+  margin: 0; color: var(--muted); font-size: 13px; max-width: 42rem;
+}
+
+@media (max-width: 720px) {
+  .desk-topnav { border-radius: 0; margin: 0 -8px 10px; }
+  .desk-topnav-hint { display: none; }
+}

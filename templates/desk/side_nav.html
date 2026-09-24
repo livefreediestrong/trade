@@ -1,0 +1,58 @@
+{# Slim in-page anchors for the current page only #}
+<nav class="page-nav page-nav-slim{% if config.get('COMPANION_AVAILABLE') %} has-companion-habitat{% endif %}" aria-label="On this page">
+  {% if config.get('COMPANION_AVAILABLE') %}{% include "desk/sidebar_companions.html" %}{% endif %}
+  <div class="sidebar-scroll" id="sidebar-scroll">
+  {% if desk_page == 'overview' %}
+    <span class="nav-caption">THIS PAGE</span>
+    <a href="#desk-overview">Account</a>
+    <a href="#market-today">Market today</a>
+    <a href="#beginner-ready">Ready &amp; money</a>
+  {% elif desk_page == 'auto' %}
+    <span class="nav-caption">AUTO TRADING</span>
+    <a href="#market-today">Market today</a>
+    <a href="#beginner-ready">Ready &amp; money</a>
+    <a href="#beginner-moss">What Moss is doing</a>
+    <a href="#live-stock-ticket">Buy or sell</a>
+    <a href="#broker-book">Positions</a>
+    <a href="#broker-orders-list">Orders</a>
+    <a href="#opp-panel">Ideas waiting</a>
+    <a href="#live-automation">Agent controls</a>
+    {% if config.get('OPTIONS_AVAILABLE') %}<a href="#desk-options">Options</a>{% endif %}
+  {% elif desk_page == 'paper' %}
+    <span class="nav-caption">PAPER PRACTICE</span>
+    <a href="#desk-paper">Paper status</a>
+    <a href="#paper-research-title">Start / stop</a>
+    {% if config.get('COMPANION_AVAILABLE') %}<a href="#moss-desk">Moss &amp; workday</a>{% endif %}
+  {% elif desk_page == 'research' %}
+    <span class="nav-caption">RESEARCH</span>
+    <a href="#desk-research">Records</a>
+    {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}<a href="#research-studio">Studio</a><a href="#stocks-on-sale">On sale</a>{% endif %}
+    {% if config.get('COMPANION_AVAILABLE') %}<a href="#agent-research">Moss brief</a>{% endif %}
+  {% elif desk_page == 'ticket' %}
+    <span class="nav-caption">TICKET</span>
+    <a href="#live-stock-ticket">Buy or sell</a>
+    <a href="#broker-book">Positions</a>
+    <a href="#broker-orders-list">Orders</a>
+  {% elif desk_page == 'settings' %}
+    <span class="nav-caption">SETTINGS</span>
+    <a href="#desk-settings">All settings</a>
+  {% elif desk_page == 'all' %}
+    <span class="nav-caption">LEGACY</span>
+    <a href="/desk/overview">Use new Overview</a>
+    <a href="/desk/auto">Auto</a>
+    <a href="/desk/paper">Paper</a>
+    <a href="/desk/research">Research</a>
+  {% endif %}
+  <div class="nav-bottom">
+    <section class="scene-controls desk-module"><h3 class="module-title">Scene</h3>
+      <label class="scene-motion-label"><input id="desk-scene-rotate" type="checkbox" checked /> Rotate scenery</label>
+      <label for="desk-sky">Desert sky</label><select id="desk-sky"><option value="auto">Follow Eastern time</option><option value="dawn">Dawn</option><option value="day">Day</option><option value="dusk">Dusk</option><option value="night">Night</option></select>
+      <label for="desk-landscape">Landscape</label><select id="desk-landscape"><option value="banded">Banded sky</option><option value="clouds">Sculpted clouds</option><option value="earth">Earth &amp; grain</option></select>
+      <label class="scene-motion-label"><input id="desk-scene-motion" type="checkbox" checked /> Gentle motion</label>
+      <button id="desk-sky-preview" type="button" class="btn ghost sm" aria-pressed="false">Preview day · 12s</button>
+      <span id="scene-motion-note" class="scene-note" role="status">Scenery rotates gently</span>
+    </section>
+    <small id="desk-clock"></small>
+  </div>
+  </div>
+</nav>

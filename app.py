@@ -90,17 +90,24 @@ def _normalize_watchlist_token(value: Any) -> str:
     if value is None:
         return ""
     token = str(value).strip().lstrip("$").strip().upper()
-    if not token or token in {"/", "-", "|"}:
+    if not token or token in {"/", "-", "|", "."}:
         return ""
-    # Drop crypto/FX pair fragments that arrive already split (USD, BTC alone
-    # from "BTC / USD" are handled at parse level; lone slash junk here).
     # Google Finance / exchange prefixes for US equities.
     token = re.sub(
         r"^(?:NASDAQ|NYSE|NYSEARCA|AMEX|OTCMKTS|OTC|BATS|ARCA):",
         "",
         token,
     )
-    return token.strip()
+    token = token.strip()
+    # Lone FX/crypto fragments from already-split "BTC / USD" imports.
+    try:
+        from paper_loop import WATCHLIST_NON_EQUITY
+        deny = WATCHLIST_NON_EQUITY
+    except Exception:
+        deny = {"USD", "USDT", "USDC", "EUR", "GBP", "JPY", "BTC", "ETH", "FX", "CRYPTO"}
+    if token in deny:
+        return ""
+    return token
 
 
 def parse_watchlist(value: str | list[Any]) -> list[str]:
@@ -662,7 +669,24 @@ def load_config() -> dict[str, Any]:
         ks = dict(DEFAULT_CONFIG["kill_switch"])
         ks.update(merged["kill_switch"])
         merged["kill_switch"] = ks
-    return _sanitize_numeric_cfg(merged)
+    merged = _sanitize_numeric_cfg(merged)
+    # Scrub FX/crypto pair fragments so the UI watchlist matches evaluate rails.
+    if isinstance(merged.get("watchlist"), list):
+        cleaned = parse_watchlist(merged["watchlist"])
+        try:
+            from paper_loop import equity_loop_symbols
+            equityish = equity_loop_symbols(cleaned)
+        except Exception:
+            equityish = [t for t in cleaned if t not in {"USD", "BTC", "ETH", "/", "EUR", "GBP"}]
+        if cleaned != list(merged.get("watchlist") or []) or equityish != cleaned:
+            # Prefer equity-shaped symbols for storage; drop deny-list leftovers.
+            if equityish != list(merged.get("watchlist") or []):
+                merged["watchlist"] = equityish
+                try:
+                    _save_json(CONFIG_PATH, merged)
+                except Exception:
+                    pass
+    return merged
 
 
 def save_config(cfg: dict[str, Any]) -> None:
@@ -1228,13 +1252,18 @@ def _broker_book_cached() -> dict[str, Any] | None:
         rows = []
         for p in (pos or {}).get("positions") or []:
             try:
+                avg = float(p.get("avg_entry_price") or 0)
+                last = _safe_money(p.get("current_price"))
+                if last is None and avg > 0:
+                    last = avg  # cost-basis fallback when broker mark not streamed yet
                 rows.append({
                     "ticker": str(p.get("symbol") or "").upper(),
                     "side": str(p.get("side") or "long").lower(),
                     "shares": abs(float(p.get("qty") or 0)),
-                    "avg_price": float(p.get("avg_entry_price") or 0),
-                    "last": _safe_money(p.get("current_price")),
+                    "avg_price": avg,
+                    "last": last,
                     "open_pnl_usd": _safe_money(p.get("unrealized_pl")),
+                    "mark_is_cost_basis": _safe_money(p.get("current_price")) is None and avg > 0,
                 })
             except (TypeError, ValueError):
                 continue
@@ -1301,11 +1330,40 @@ def _money_snapshot(cfg: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError):
             max_trades = None
     symbols = list(pol.get("symbols") or []) if la else []
+    eval_symbols: list[str] = []
+    eval_count = 0
+    if la:
+        try:
+            import live_agent as _la_mod
+            eval_symbols = _la_mod.order_universe(cfg, pol)
+            eval_count = len(eval_symbols)
+        except Exception:
+            try:
+                eval_symbols = paper_loop_mod.equity_loop_symbols(list(cfg.get("watchlist") or []))
+                eval_count = len(eval_symbols)
+            except Exception:
+                eval_symbols, eval_count = [], 0
+    # Live auto-orders track the full evaluated equity universe (not SPY-only).
+    order_symbols = list(eval_symbols) if la else []
+    spy_only_orders = False
     out["strategy_status"] = {
         "mode": cfg.get("mode"),
         "live_agent_enabled": bool(la and la.get("enabled")),
-        "symbols": symbols,
-        "spy_only": symbols == ["SPY"] or (len(symbols) == 1 and str(symbols[0]).upper() == "SPY"),
+        "symbols": order_symbols or symbols,
+        "order_symbols": order_symbols,
+        "spy_only": spy_only_orders,
+        "eval_symbols_count": eval_count,
+        "eval_symbols_sample": eval_symbols[:12],
+        "eval_full_universe": bool(la and eval_count > 1),
+        "universe_label": (
+            (
+                f"Live auto + eval: full equity watchlist ({eval_count})"
+                + (f" · sample {', '.join(eval_symbols[:6])}" if eval_symbols else "")
+                + (f" (+{eval_count-6} more)" if eval_count > 6 else "")
+            )
+            if la
+            else ("Universe: not set")
+        ),
         "max_order_usd": _finite_float(pol.get("max_order_usd") if la else ks.get("max_position_size_usd")),
         "max_daily_loss_usd": _finite_float(pol.get("max_daily_loss_usd") if la else ks.get("max_daily_loss_usd")),
         "max_orders_per_day": max_trades,
@@ -1315,7 +1373,10 @@ def _money_snapshot(cfg: dict[str, Any]) -> dict[str, Any]:
         "risk_ready": bool(book.get("risk_ready")) if book else False,
         "risk_error": book.get("risk_error") if book else None,
         "kill_switch_armed": bool(ks.get("armed")),
-        "note": "Status strip only — does not place orders or change caps.",
+        "note": (
+            "Status strip only — does not place orders. "
+            "Live Moss auto-orders use the full evaluated equity universe under broker rules."
+        ),
     }
     return out
 
@@ -1883,7 +1944,15 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
             if provider != "ibkr":
                 return blocked("Live agent requires the IBKR Gateway adapter")
             try:
-                sig["review_order"] = live_agent.execution_terms(sig, cfg, px, execution_quote)
+                if sig.get("asset_type") in ("OPT", "BAG"):
+                    import auto_live_options
+                    policy = ((cfg.get("live_agent") or {}).get("policy") or {})
+                    prem = float((execution_quote or {}).get("price") or px)
+                    sig["review_order"] = auto_live_options.execution_terms_option(
+                        sig, cfg, prem, execution_quote, float(policy.get("max_order_usd") or 0),
+                    )
+                else:
+                    sig["review_order"] = live_agent.execution_terms(sig, cfg, px, execution_quote)
                 sig["suggested_shares"] = sig["review_order"]["shares"]
             except ValueError as exc:
                 return blocked(str(exc))
@@ -1895,14 +1964,27 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
         sig["execution_quote"] = execution_quote
         day_pnl, equity, acct_error = _broker_day_pnl()
         manual = sig.get("manual_order")
-        is_opt = bool(sig.get("asset_type") == "OPT" or (manual and (manual.get("order") or {}).get("asset_type") == "OPT"))
+        reviewed_asset = (sig.get("review_order") or {}).get("asset_type")
+        is_opt = bool(
+            sig.get("asset_type") in ("OPT", "BAG")
+            or reviewed_asset in ("OPT", "BAG")
+            or (manual and (manual.get("order") or {}).get("asset_type") in ("OPT", "BAG"))
+        )
         side = str(sig.get("side") or "").lower()
         if side not in ("buy", "sell"):
             return blocked("Invalid order side")
         if is_opt:
             # Options: never use underlying stock qty or premium-as-stock-price caps.
             held = 0.0  # stock qty unused for OPT sizing
-            reducing = side == "sell"  # STC only in v1
+            opt_intent = str(
+                (manual or {}).get("intent")
+                or (sig.get("review_order") or {}).get("option_intent")
+                or sig.get("option_intent")
+                or ""
+            ).upper()
+            reducing = opt_intent in ("STC", "BTC", "CLOSE") or (
+                opt_intent == "" and side == "sell"
+            )
             if side == "sell":
                 # Holding check is enforced again in broker_ibkr by con_id.
                 pass
@@ -1930,14 +2012,27 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                     ok, reason = _broker_risk_gate(cfg, ledger, day_pnl, equity)
                 if not ok:
                     return blocked(reason)
+            asset_type = (reviewed_order or {}).get("asset_type") or sig.get("asset_type") or "OPT"
+            opt_intent = (
+                (manual or {}).get("intent")
+                or (reviewed_order or {}).get("option_intent")
+                or sig.get("option_intent")
+            )
             order = {"ticker": sig.get("ticker"), "side": side, "shares": shares, "contracts": shares,
                      "limit": (reviewed_order or {}).get("limit"), "signal_id": sig.get("id"), "via": via,
                      "type": (reviewed_order or {}).get("type") or "market", "broker_identity": identity,
-                     "asset_type": "OPT", "option_intent": (manual or {}).get("intent"),
-                     "right": (reviewed_order or {}).get("right"), "expiry": (reviewed_order or {}).get("expiry"),
-                     "strike": (reviewed_order or {}).get("strike"),
+                     "asset_type": asset_type, "option_intent": opt_intent,
+                     "right": (reviewed_order or {}).get("right") or sig.get("right"),
+                     "expiry": (reviewed_order or {}).get("expiry") or sig.get("expiry"),
+                     "strike": (reviewed_order or {}).get("strike") or sig.get("strike"),
+                     "long_strike": (reviewed_order or {}).get("long_strike") or sig.get("long_strike"),
+                     "short_strike": (reviewed_order or {}).get("short_strike") or sig.get("short_strike"),
+                     "option_strategy": (reviewed_order or {}).get("option_strategy") or sig.get("option_strategy"),
+                     "legs": (reviewed_order or {}).get("legs"),
+                     "allow_naked": (reviewed_order or {}).get("allow_naked") or sig.get("allow_naked_short"),
+                     "covered": (reviewed_order or {}).get("covered") or sig.get("covered"),
                      "contract_identity": copy.deepcopy(sig.get("review_contract")),
-                     "position_intent": (manual or {}).get("intent"),
+                     "position_intent": opt_intent,
                      "option_notional": notional}
             if reviewed_order:
                 order.update({k: v for k, v in reviewed_order.items() if k not in order})
@@ -2168,12 +2263,33 @@ _QUOTE_SNAPSHOTS: dict[str, dict] = {}
 
 
 def _fetch_last_price_raw(ticker: str) -> float | None:
-    """Only timestamp-verified quotes can update marks or execution prices."""
+    """Only timestamp-verified quotes can update marks or execution prices.
+
+    Prefer IBKR live/delayed mkt data when the live broker is connected; fall
+    back to Finnhub/Yahoo. Never invents a fresh stamp.
+    """
     import data_sources as ds
     ticker = (ticker or "").strip().upper()
     if not ticker:
         return None
-    quote = ds.latest_quote(ticker)
+    quote = None
+    try:
+        import broker_router
+        import os
+        if (os.environ.get("BROKER_PROVIDER", "") or "").strip().lower() == "ibkr":
+            ibq = broker_router.stock_quote(ticker)
+            if ibq.get("ok") and ibq.get("fresh") and ibq.get("price"):
+                quote = {
+                    "price": ibq["price"], "source": ibq.get("source") or "IBKR mkt data",
+                    "market_time": ibq.get("market_time"), "received_at": ibq.get("received_at"),
+                    "age_sec": ibq.get("age_sec"), "fresh": True,
+                    "bid": ibq.get("bid"), "ask": ibq.get("ask"), "error": None,
+                    "max_age_sec": 120,
+                }
+    except Exception:
+        quote = None
+    if not quote:
+        quote = ds.latest_quote(ticker)
     with _MARKS_LOCK:
         _QUOTE_SNAPSHOTS[ticker] = quote
     return quote.get("price") if quote.get("fresh") else None
@@ -6026,7 +6142,111 @@ def _state_aux_snapshot(cfg: dict[str, Any], watchlist: list[str], focus: str | 
 
 @app.route("/")
 def index():
-    return render_template("index.html", banner=BANNER)
+    return _desk_page(
+        "overview",
+        "live",
+        "Overview",
+        "Start here — market pulse and account snapshot. Auto, Paper, and Research are separate pages.",
+    )
+
+
+# --- PAGE_SPLIT_DESK_ROUTES ---
+def _desk_page(page: str, workspace: str, title: str, hint: str = ""):
+    """Render a page-split desk shell. Reads only; never places orders."""
+    return render_template(
+        f"pages/{page}.html",
+        banner=BANNER,
+        desk_page=page,
+        desk_workspace=workspace,
+        page_title=title,
+        page_hint=hint,
+    )
+
+
+@app.route("/desk")
+@app.route("/desk/")
+def desk_root():
+    return _desk_page(
+        "overview",
+        "live",
+        "Overview",
+        "Start here — market pulse and account snapshot. Auto, Paper, and Research are separate pages.",
+    )
+
+
+@app.route("/desk/overview")
+def desk_overview():
+    return _desk_page(
+        "overview",
+        "live",
+        "Overview",
+        "Start here — market pulse and account snapshot. Auto, Paper, and Research are separate pages.",
+    )
+
+
+@app.route("/desk/auto")
+def desk_auto():
+    return _desk_page(
+        "auto",
+        "live",
+        "Auto trading",
+        "Real broker account — Moss agent, ready meter, and live ticket. Not paper practice.",
+    )
+
+
+@app.route("/desk/paper")
+def desk_paper():
+    return _desk_page(
+        "paper",
+        "paper",
+        "Paper practice",
+        "Simulated funds only — practice without touching your live broker account.",
+    )
+
+
+@app.route("/desk/research")
+def desk_research():
+    return _desk_page(
+        "research",
+        "live",
+        "Research",
+        "Ideas, rankings, scanner, and Moss notes. Research does not place live orders by itself.",
+    )
+
+
+@app.route("/desk/ticket")
+def desk_ticket():
+    return _desk_page(
+        "ticket",
+        "live",
+        "Live ticket",
+        "Buy or sell ticket and your broker positions / orders.",
+    )
+
+
+@app.route("/desk/settings")
+def desk_settings():
+    return _desk_page(
+        "settings",
+        "live",
+        "Settings",
+        "Watchlist, brains, and journal. Live execution switches stay labeled separately.",
+    )
+
+
+@app.route("/desk/all")
+def desk_all_legacy():
+    """Legacy single-page desk (pre page-split). Kept for recovery."""
+    return render_template(
+        "index_all.html",
+        banner=BANNER,
+        desk_page="all",
+        desk_workspace="live",
+        page_title="Full desk (legacy)",
+        page_hint="Legacy single-page layout. Prefer Overview / Auto / Paper / Research.",
+    )
+
+# --- END PAGE_SPLIT_DESK_ROUTES ---
 
 
 @app.route("/api/state")
@@ -6196,6 +6416,47 @@ def api_broker_identity():
         status = broker_router.public_status()
     return jsonify({"ok": True, "broker": status})
 
+
+
+
+@app.route("/api/broker-ensure-gateway", methods=["POST"])
+def api_broker_ensure_gateway():
+    """Relaunch ibgateway.exe if the configured API port is down. Never places orders; 2FA may still be required after a full logout."""
+    import broker_router
+    status = broker_router.public_status()
+    if status.get("broker") != "ibkr":
+        return jsonify(ok=False, error="Ensure Gateway is only implemented for IBKR", broker=status), 400
+    ensure = getattr(broker_router, "ensure_gateway", None)
+    if not callable(ensure):
+        return jsonify(ok=False, error="IBKR adapter missing ensure_gateway"), 500
+    body = request.get_json(silent=True) or {}
+    launch = True if not isinstance(body, dict) else bool(body.get("launch_if_down", True))
+    try:
+        result = ensure(launch_if_down=launch)
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)[:200], gateway_restarted=False), 500
+    return jsonify(result if isinstance(result, dict) else {"ok": False, "error": "unexpected ensure result"})
+
+
+@app.route("/api/broker-pnl-refresh", methods=["POST"])
+def api_broker_pnl_refresh():
+    """Soft-refresh IBKR Daily P&L: bounce API client / re-subscribe. Never restarts Gateway or places orders."""
+    import broker_router
+    body = request.get_json(silent=True) or {}
+    soft = True if not isinstance(body, dict) else bool(body.get("soft_reconnect", True))
+    status = broker_router.public_status()
+    if status.get("broker") != "ibkr":
+        return jsonify(ok=False, error="Broker P&L refresh is only implemented for IBKR", broker=status), 400
+    refresh = getattr(broker_router, "refresh_broker_pnl", None)
+    if not callable(refresh):
+        return jsonify(ok=False, error="IBKR adapter missing refresh_broker_pnl"), 500
+    try:
+        result = refresh(soft_reconnect=soft)
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)[:200], risk_ready=False, account={}, refresh={"gateway_restarted": False}), 500
+    # Bust cached broker book so /api/state reflects the refresh immediately.
+    _BROKER_BOOK_CACHE.update(at=0.0, val=None, key=None)
+    return jsonify(result if isinstance(result, dict) else {"ok": False, "error": "unexpected refresh result"})
 
 @app.route("/api/config", methods=["GET", "POST"])
 def api_config():
@@ -7958,6 +8219,123 @@ def api_loop_stream():
     except Exception:
         release_slot()
         raise
+
+
+
+# --- BEGINNER_UX_MARKET_TODAY ---
+_MARKET_TODAY_CACHE: dict[str, Any] = {"at": 0.0, "payload": None}
+_MARKET_TODAY_TTL = 18.0
+_MARKET_TODAY_SYMBOLS: list[tuple[str, str, str]] = [
+    ("SPY", "S&P 500", "index"),
+    ("QQQ", "Nasdaq 100", "index"),
+    ("IWM", "Russell 2000", "index"),
+    ("DIA", "Dow 30", "index"),
+    ("XLF", "Financials", "sector"),
+    ("XLK", "Technology", "sector"),
+    ("XLE", "Energy", "sector"),
+    ("XLV", "Health Care", "sector"),
+    ("XLI", "Industrials", "sector"),
+    ("XLY", "Consumer Disc.", "sector"),
+    ("XLP", "Consumer Staples", "sector"),
+    ("XLU", "Utilities", "sector"),
+    ("XLB", "Materials", "sector"),
+    ("XLRE", "Real Estate", "sector"),
+    ("XLC", "Communication", "sector"),
+]
+
+
+def _market_today_payload() -> dict[str, Any]:
+    """Batch index/sector pulse for the live desk visualizer. Fail soft. No orders."""
+    import time as _time
+    from datetime import datetime, timezone
+    try:
+        from zoneinfo import ZoneInfo
+        et = ZoneInfo("America/New_York")
+    except Exception:
+        et = timezone.utc
+
+    now = _time.time()
+    cached = _MARKET_TODAY_CACHE.get("payload")
+    if cached and (now - float(_MARKET_TODAY_CACHE.get("at") or 0)) < _MARKET_TODAY_TTL:
+        return cached
+
+    symbols = [s for s, _, _ in _MARKET_TODAY_SYMBOLS]
+    meta = {s: (name, kind) for s, name, kind in _MARKET_TODAY_SYMBOLS}
+    quotes: dict = {}
+    source = "none"
+    err = None
+    try:
+        import data_sources as _ds
+        quotes = _ds.yahoo_quote_batch(symbols, timeout=10) or {}
+        source = "yahoo_batch"
+    except Exception as exc:  # noqa: BLE001
+        err = str(exc)[:180]
+        quotes = {}
+
+    sparks_map: dict[str, list] = {}
+    try:
+        spark_syms = [s for s, _, k in _MARKET_TODAY_SYMBOLS if k == "index"][:6]
+        sparks_map = (_sparks_for_tickers(spark_syms) or {}).get("sparks") or {}
+    except Exception:
+        sparks_map = {}
+
+    items: list[dict[str, Any]] = []
+    for sym in symbols:
+        q = quotes.get(sym) or {}
+        price = q.get("regularMarketPrice")
+        prev = q.get("regularMarketPreviousClose") or q.get("previousClose")
+        chg = q.get("regularMarketChangePercent")
+        try:
+            price_f = float(price) if price is not None else None
+        except (TypeError, ValueError):
+            price_f = None
+        try:
+            prev_f = float(prev) if prev is not None else None
+        except (TypeError, ValueError):
+            prev_f = None
+        try:
+            chg_f = float(chg) if chg is not None else None
+        except (TypeError, ValueError):
+            chg_f = None
+        if chg_f is None and price_f is not None and prev_f not in (None, 0):
+            chg_f = ((price_f - prev_f) / prev_f) * 100.0
+        name, kind = meta[sym]
+        items.append({
+            "symbol": sym,
+            "name": name,
+            "kind": kind,
+            "price": price_f,
+            "prev_close": prev_f,
+            "change_pct": round(chg_f, 4) if isinstance(chg_f, float) else None,
+            "spark": list(sparks_map.get(sym) or []),
+            "market_state": q.get("marketState"),
+        })
+
+    as_of = datetime.now(timezone.utc).astimezone(et)
+    payload = {
+        "ok": any(it.get("price") is not None for it in items),
+        "source": source,
+        "as_of": as_of.isoformat(),
+        "as_of_local": as_of.strftime("%I:%M:%S %p ET").lstrip("0"),
+        "ttl_sec": _MARKET_TODAY_TTL,
+        "items": items,
+        "error": err,
+    }
+    _MARKET_TODAY_CACHE["at"] = now
+    _MARKET_TODAY_CACHE["payload"] = payload
+    return payload
+
+
+@app.route("/api/market-today")
+def api_market_today():
+    """GET /api/market-today — index/sector % change pulse for the beginner desk."""
+    try:
+        return jsonify(_market_today_payload())
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "items": [], "error": str(exc)[:200]})
+
+
+# --- END BEGINNER_UX_MARKET_TODAY ---
 
 
 @app.route("/api/sparks")

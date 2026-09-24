@@ -1,76 +1,44 @@
 <section id="desk-live" class="desk-section live-section" aria-labelledby="desk-live-title">
-<div class="section-heading"><h2 id="desk-live-title">Live trading</h2><p>Actual broker account · account checks and explicit order review</p></div>
+<div class="section-heading">
+  <h2 id="desk-live-title">Auto trading</h2>
+  <p>Real broker account. Follow the flow top to bottom — market pulse, money &amp; readiness, what Moss is doing, then buy/sell and your positions.</p>
+</div>
 {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}{% include "desk/scanner_link.html" %}{% endif %}
-<div class="section-grid">
+<div class="section-grid bx-flow">
 <nav class="desk-live-subnav" aria-label="Live desk sections">
-  <a href="#desk-health">Status</a>
-  <a href="#broker-book">Holdings</a>
-  <a href="#live-stock-ticket">Ticket</a>
-  <a href="#broker-orders-list">Orders</a>
-  <a href="#opp-panel">Ideas</a>
-  <a href="#live-loop-panel">Research</a>
+  <a href="#market-today">Market today</a>
+  <a href="#beginner-ready">Ready &amp; money</a>
+  <a href="#beginner-moss">What Moss is doing</a>
+  <a href="#live-stock-ticket">Buy or sell</a>
+  <a href="#broker-book">Your positions</a>
+  <a href="#broker-orders-list">Your orders</a>
+  <a href="#opp-panel">Waiting for you</a>
+  <a href="#live-advanced">Advanced</a>
 </nav>
-<div class="live-status-hub" id="live-status-hub">
-<section class="desk-module panel workbench-wide" id="desk-health">
-  <h3 class="module-title" tabindex="-1">Account, data &amp; research health · <span id="health-overview">Waiting for snapshot</span></h3>
-  <div id="health-summary" class="table-wrap">Waiting for a desk snapshot…</div>
-  <p class="hint-line">A P&amp;L value can remain unchanged while Gateway is responsive. Missing daily P&amp;L remains unknown and blocks new risk.</p>
-  <p class="hint-line">Desk capabilities: whole-share US equity market and DAY limit orders. Fractional shares, attached broker brackets and guaranteed all-in budgets are unavailable.</p>
-</section>
-<section class="desk-module panel workbench-wide intel-strip" id="live-intel-strip" data-workspace-only="live" aria-labelledby="live-intel-title">
-  <h3 class="module-title" id="live-intel-title" tabindex="-1">Goal &amp; strategy status <span class="title-ctx">(display only · caps unchanged)</span></h3>
-  <div class="intel-grid" id="live-intel-grid">
-    <div class="intel-card" id="live-goal-card">
-      <div class="intel-card-head">
-        <span class="intel-lbl">Today's goal vs broker day P&amp;L</span>
-        <label class="intel-goal-set" title="Soft goal. Hitting it also pauses new broker risk (existing safety). Does not raise $ caps.">
-          Soft goal $
-          <input type="number" id="live-soft-goal" min="0" step="0.01" placeholder="—" inputmode="decimal" />
-          <button type="button" class="btn ghost sm" id="btn-live-soft-goal">Save</button>
-        </label>
-      </div>
-      <div class="intel-goal-row">
-        <span class="intel-goal-pnl" id="live-goal-pnl">—</span>
-        <span class="intel-goal-sep">/</span>
-        <span class="intel-goal-tgt" id="live-goal-tgt">no goal</span>
-      </div>
-      <div class="intel-track" aria-hidden="true"><div class="intel-fill" id="live-goal-fill"></div></div>
-      <p class="intel-sub" id="live-goal-sub">Waiting for broker day P&amp;L…</p>
-      <p class="hint-line quiet-hint">Display meter only. Saving the soft goal does not raise max order, daily loss, or trade-count caps. When day P&amp;L reaches the goal, new risk is paused (existing gate).</p>
-    </div>
-    <div class="intel-card" id="live-strategy-card">
-      <span class="intel-lbl">Strategy / rails</span>
-      <ul class="intel-flags" id="live-strategy-flags" aria-live="polite">
-        <li class="muted">Waiting for desk snapshot…</li>
-      </ul>
-      <p class="intel-sub" id="live-strategy-next">Next step appears when status loads.</p>
-    </div>
+
+<!-- 1) Market pulse — above the fold -->
+{% include "desk/market_today.html" %}
+
+<!-- 2) Ready status + money -->
+{% include "desk/ready_pulse.html" %}
+
+<!-- 3) What Moss is doing -->
+<section class="bx-card" id="beginner-moss" data-workspace-only="live" aria-labelledby="bx-moss-title">
+  <h3 class="bx-card-title" id="bx-moss-title">What Moss is doing <span class="bx-sub">Agent status</span></h3>
+  <p class="bx-plain">Moss is the desk helper that can research and, when you enable it, place whole-share orders. Policy and start/pause controls are under Advanced.</p>
+  <div class="bx-ready-row" style="flex-wrap:wrap;gap:10px 14px;">
+    <span class="bx-agent-chip is-paused" id="bx-agent-chip" aria-live="polite">Checking…</span>
+    <span class="bx-money-sub" id="bx-agent-detail" style="margin:0;">Reading agent status…</span>
   </div>
-</section>
-<section class="panel adv-only" id="risk-cockpit-panel" data-workspace-only="live">
-    <div class="panel-head">
-      <h2>Live broker checks <span class="title-ctx">(account data and submission checks)</span></h2>
+  <div class="bx-goal-mini" id="bx-goal-mini" hidden>
+    <span class="bx-money-k">Today's soft goal</span>
+    <div class="bx-ready-row" style="justify-content:space-between;gap:8px;">
+      <span class="bx-money-v" style="font-size:16px;" id="bx-goal-pnl">—</span>
+      <span class="bx-money-sub" style="margin:0;" id="bx-goal-tgt">no goal</span>
     </div>
-    <p class="hint-line quiet-hint">Operational checks only — this panel does not create a trading edge or authorize live mode.</p>
-    <div class="edge-grid" id="risk-cockpit-grid">
-      <div class="edge-cell"><span class="lbl">Trade permission</span><span class="val" id="risk-trade-allowed">-</span></div>
-      <div class="edge-cell"><span class="lbl">Open exposure</span><span class="val" id="risk-exposure">-</span></div>
-      <div class="edge-cell"><span class="lbl">Broker daily P&amp;L</span><span class="val" id="risk-slippage">-</span></div>
-      <div class="edge-cell"><span class="lbl">Account data</span><span class="val" id="risk-promotion">-</span></div>
-    </div>
-    <p class="muted-line" id="risk-quality-note"></p>
-  </section>
-<div class="field live-box hidden adv-only" id="live-box" data-workspace-only="live">
-    <p class="warn" id="broker-status-line">Broker connection is optional. Live mode stays disabled until the connected account is verified and you explicitly confirm the order.</p>
-    <p class="hint-line" id="broker-chip-line"><span class="broker-chip" id="broker-chip" title="Broker connection status">Broker: …</span></p>
-    <input type="text" id="live-confirm" placeholder="optional note (not an unlock phrase)" autocomplete="off" title="Optional note only — does not unlock live trading" />
-    <div class="kill-grid">
-      <label title="Broker daily loss limit">Max loss $<input type="number" id="ks-loss" min="1" step="1" /></label>
-      <label title="Broker daily trade limit">Max trades / day<input type="number" id="ks-trades" min="1" step="1" /></label>
-      <label title="Largest broker position size allowed in dollars">Max size $<input type="number" id="ks-pos" min="1" step="1" /></label>
-    </div>
+    <div class="bx-goal-track" aria-hidden="true"><div class="bx-goal-fill" id="bx-goal-fill"></div></div>
   </div>
-<div class="toolbar" id="session-toolbar" data-workspace-only="live">
+  <div class="toolbar" id="session-toolbar" data-workspace-only="live" style="margin-top:12px;">
     <div class="session-strip" role="group" aria-label="Session">
       <div class="session-controls" hidden>
         <div class="tool target-tool">
@@ -106,7 +74,240 @@
         <button type="button" class="btn stop-btn soft-danger hidden" id="btn-stop-session" title="Stop new live research. Existing broker positions and orders remain at the broker.">Stop</button>
       </div>
     </div>
-    <div class="tool adv-only">
+  </div>
+</section>
+
+<!-- 4) Buy or sell -->
+<details class="live-guide-details"><summary>Buy / sell shares · workflow guide</summary>
+{% include "desk/live_guide.html" %}
+</details>
+<div class="bx-card" id="beginner-ticket-wrap" style="padding:0;border:0;background:transparent;">
+  <h3 class="bx-card-title" style="padding:0 2px;">Buy or sell</h3>
+  <p class="bx-plain">Review every live order before it goes to the broker. Nothing here places an order until you confirm.</p>
+  {% include "desk/live_ticket.html" %}
+</div>
+
+<!-- 5) Holdings -->
+<section class="panel broker-book hidden bx-card" id="broker-book" data-workspace-only="live" aria-labelledby="broker-book-title" style="padding:16px;">
+  <div class="panel-head">
+    <h2 id="broker-book-title">Your positions <span class="title-ctx" id="broker-book-kind">(not connected)</span></h2>
+    <span class="muted" id="broker-book-day"></span>
+  </div>
+  <p class="muted broker-book-note">Shares and options sitting at your broker — separate from paper practice trades.</p>
+  <p class="muted" id="broker-book-balances"></p>
+  <p class="muted" id="broker-book-pnl-detail" hidden></p>
+  <p class="muted" id="broker-book-pnl-feed" hidden></p>
+  <div class="tool actions" id="broker-book-pnl-actions" hidden>
+    <button type="button" class="btn ghost" id="btn-broker-pnl-refresh"
+      title="Disconnect/reconnect the desk API client and re-request Daily P&amp;L. Does not restart IB Gateway or place orders.">
+      Refresh broker P&amp;L
+    </button>
+    <button type="button" class="btn ghost" id="btn-broker-ensure-gateway"
+      title="If the Gateway API port is down, relaunch ibgateway.exe. Full logout still needs human 2FA / IB Key.">
+      Ensure Gateway
+    </button>
+  </div>
+  <p class="muted" id="broker-book-pnl-tip" hidden>
+    Tip: use soft Refresh first. IB Key / 2FA is only required when Gateway fully logs out — not for a desk API soft reconnect.
+    Prefer Gateway <strong>Configure → Lock and Exit → Auto restart</strong> (daily, while you are around) so the session renews without cold login.
+  </p>
+  <p class="warn" id="broker-book-risk" hidden></p>
+  <div id="broker-book-list" class="broker-book-list"></div>
+</section>
+
+<!-- 6) Orders -->
+<section class="panel broker-orders bx-card" data-workspace-only="live" aria-labelledby="broker-orders-title" style="padding:16px;">
+  <h2 id="broker-orders-title">Your orders</h2>
+  <p class="hint-line">Orders this desk recorded, including ones still working. Activity done only at the broker may not show here.</p>
+  <div id="broker-orders-list" class="table-wrap"><div class="empty">Loading broker orders…</div></div>
+</section>
+
+<!-- Waiting for you / ideas -->
+<section class="panel opp-panel" id="opp-panel">
+  <div class="panel-head waiting-head">
+    <div class="waiting-row waiting-title-row">
+      <h2>
+        <span class="panel-ico simple-only" aria-hidden="true">❚❚</span>
+        <span class="simple-only">Waiting for you</span>
+        <span class="adv-only">Waiting for you</span>
+        <span class="title-ctx adv-only">(ideas needing Approve or Skip)</span>
+        <span class="count-chip is-zero" id="opp-waiting-count" aria-live="polite"></span>
+      </h2>
+    </div>
+  </div>
+  <p class="hint-line simple-only quiet-hint" id="opp-hint-simple">Paper ideas that need Approve or Skip.</p>
+  <p class="hint-line adv-only quiet-hint" id="opp-hint-adv">Ideas waiting for your Approve or Skip. Check the mode before approving.</p>
+  <div id="opp-churn" class="adv-only opp-churn" aria-live="polite"></div>
+  <div class="opp-feed-wrap">
+  <div id="opp-empty" class="empty opp-empty-calm">
+    <p class="opp-empty-icon soft-pulse-icon" aria-hidden="true">❚❚</p>
+    <p id="opp-empty-main">Nothing waiting.</p>
+    <p class="muted" id="opp-empty-sub">Live ideas appear here. Approve opens an account-bound broker review; Skip passes.</p>
+  </div>
+  <div id="opp-feed" class="opp-feed" aria-live="polite"></div>
+  </div>
+</section>
+
+<!-- Latest research call (kept visible — "what Moss found") -->
+<section class="panel live-loop-panel" id="live-loop-panel">
+  <div class="loop-head">
+    <h2><span class="panel-ico" aria-hidden="true">▸</span> <span id="workspace-call-label">Latest research call</span></h2>
+  </div>
+  <p class="hint-line simple-only quiet-hint">While Start is on, the desk checks tickers on a timer. The big tile shows the latest call. Ideas that need you show in Waiting for you.</p>
+  <p class="hint-line adv-only quiet-hint">While Start is on, the desk checks tickers on a timer. This tile shows the latest research call; reviewable ideas appear above.</p>
+  <div class="loop-banner outside-rth hidden" id="loop-rth-banner">Market closed — scheduled checks paused</div>
+
+  <div class="stage-wrap" id="one-job-stage">
+    <div class="stage-phase-tag simple-only" id="stage-phase-tag" hidden></div>
+    <div class="stage-thinking" id="stage-thinking" role="status" aria-live="polite" hidden>
+      <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span data-thinking-text>Checking…</span>
+    </div>
+
+    <div class="stage-decide" id="stage-decide" hidden></div>
+    <div class="stage">
+      <div class="goal-race simple-only" id="stage-goal-race" data-workspace-only="paper" aria-label="Goal race">
+        <span class="lbl">Goal</span>
+        <div class="race-track">
+          <div class="race-fill" id="stage-race-fill"></div>
+          <div class="race-pace" id="stage-race-pace" title="Expected progress through regular trading hours (informational)"></div>
+        </div>
+        <span class="rem" id="stage-race-rem"></span>
+      </div>
+
+      <div class="loop-action-row">
+        <div class="call-spoken big-action hold" id="loop-big-action" role="status" aria-live="polite">
+          <div class="conf-ring-wrap" id="conf-ring-wrap" title="Confidence">
+            <div class="conf-ring" id="conf-ring" aria-hidden="true"></div>
+            <div class="conf-ring-core">
+              <span class="action-label adv-only">Latest call</span>
+              <span class="action-word" id="loop-action-word">Hold</span>
+              <span class="conf-label" id="loop-action-conf-label">—</span>
+            </div>
+          </div>
+          <div class="spoken-body">
+            <p class="spoken-eyebrow simple-only">Latest call</p>
+            <p class="spoken-line simple-only" id="spoken-line">Standing by — press Start when you wish</p>
+            <span class="action-gloss" id="loop-action-gloss">No call yet — Start when you wish</span>
+            <p class="spoken-why simple-only" id="spoken-why" hidden></p>
+            <p class="spoken-news-match simple-only muted" id="spoken-news-match" hidden></p>
+            <span class="action-meta" id="loop-action-meta">No call yet — press Start</span>
+            <span class="action-outcome" id="loop-action-outcome" hidden></span>
+            <p class="butler-story simple-only" id="butler-story" aria-live="polite">Standing by</p>
+            <section class="desk-module how-call simple-only" id="how-call-made">
+              <h3 class="module-title" tabindex="-1">How this call was made</h3>
+              <div class="how-call-body" id="how-call-body">
+                <p class="muted" id="how-call-empty">No decision yet — details appear after the first check.</p>
+              </div>
+            </section>
+          </div>
+          <span class="call-conf simple-only" id="loop-action-conf" aria-hidden="true" hidden title="Confidence">
+            <span class="call-conf-fill" id="loop-action-conf-fill"></span>
+          </span>
+        </div>
+        <div class="prob-bars adv-only" id="loop-probs" aria-label="Buy, sell, or stay flat odds for the latest check">
+          <p class="prob-caption title-ctx">(model odds for this check — research only)</p>
+          <div class="prob-row buy" title="Model weight toward Buy"><span class="prob-lbl">Buy</span><div class="prob-track"><div class="prob-fill" id="prob-buy" style="width:0%"></div></div><span class="prob-pct" id="prob-buy-pct">0%</span></div>
+          <div class="prob-row sell" title="Model weight toward Sell"><span class="prob-lbl">Sell</span><div class="prob-track"><div class="prob-fill" id="prob-sell" style="width:0%"></div></div><span class="prob-pct" id="prob-sell-pct">0%</span></div>
+          <div class="prob-row flat" title="Model weight toward staying flat (no trade)"><span class="prob-lbl">Stay flat</span><div class="prob-track"><div class="prob-fill" id="prob-flat" style="width:50%"></div></div><span class="prob-pct" id="prob-flat-pct">50%</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="spark-strip" class="spark-strip adv-only" aria-label="Tiny price lines for focus tickers" title="Tiny price lines for recent focus tickers — research only, not a signal"></div>
+  <div class="loop-prefs-home" id="loop-prefs-home">
+  <div class="desk-alert-prefs" id="desk-alert-prefs" role="group" aria-label="Desk alerts">
+    <label class="chk" title="Quiet beep for Waiting, goal, and max-loss">
+      <input type="checkbox" id="chk-alert-sound" />
+      Soft alert sound
+    </label>
+    <label class="chk" title="Browser pop-ups for Waiting, goal, and max-loss — asks once when you turn this on">
+      <input type="checkbox" id="chk-browser-alerts" />
+      Desktop alerts
+    </label>
+  </div>
+  </div><!-- /loop-prefs-home -->
+
+  <div class="desk-alerts-wrap adv-only" id="desk-alerts-wrap">
+    <p class="feed-caption">Desk alerts <span class="title-ctx">(Waiting, goal, and max-loss notes)</span></p>
+    <div id="desk-alerts-empty" class="feed-empty feed-empty-calm desk-alerts-empty">
+      <p class="muted feed-empty-sub">Quiet for now — notes about Waiting ideas, goal hit, and max-loss pause land here.</p>
+    </div>
+    <div class="desk-alerts-log" id="desk-alerts-log" aria-live="polite"></div>
+  </div>
+</section>
+
+<!-- Advanced: health, risk, agent policy tooling, kill switches, idea queue -->
+<details class="bx-advanced" id="live-advanced">
+  <summary>Advanced <span class="bx-adv-hint">account checks · risk meters · agent policy · idea history</span></summary>
+  <div class="bx-advanced-body">
+
+  <div class="live-status-hub" id="live-status-hub">
+  <section class="desk-module panel workbench-wide" id="desk-health">
+    <h3 class="module-title" tabindex="-1">Is the desk ready? · details · <span id="health-overview">Waiting for snapshot</span></h3>
+    <div id="health-summary" class="table-wrap">Waiting for a desk snapshot…</div>
+    <p class="hint-line">A P&amp;L value can remain unchanged while Gateway is responsive. Missing daily P&amp;L remains unknown and blocks new risk.</p>
+    <p class="hint-line">Desk capabilities: whole-share US equity market and DAY limit orders. Fractional shares, attached broker brackets and guaranteed all-in budgets are unavailable.</p>
+  </section>
+
+  <section class="desk-module panel workbench-wide intel-strip" id="live-intel-strip" data-workspace-only="live" aria-labelledby="live-intel-title">
+    <h3 class="module-title" id="live-intel-title" tabindex="-1">Goal &amp; strategy status <span class="title-ctx">(display only · caps unchanged)</span></h3>
+    <div class="intel-grid" id="live-intel-grid">
+      <div class="intel-card" id="live-goal-card">
+        <div class="intel-card-head">
+          <span class="intel-lbl">Today's goal vs broker day P&amp;L</span>
+          <label class="intel-goal-set" title="Soft goal. Hitting it also pauses new broker risk (existing safety). Does not raise $ caps.">
+            Soft goal $
+            <input type="number" id="live-soft-goal" min="0" step="0.01" placeholder="—" inputmode="decimal" />
+            <button type="button" class="btn ghost sm" id="btn-live-soft-goal">Save</button>
+          </label>
+        </div>
+        <div class="intel-goal-row">
+          <span class="intel-goal-pnl" id="live-goal-pnl">—</span>
+          <span class="intel-goal-sep">/</span>
+          <span class="intel-goal-tgt" id="live-goal-tgt">no goal</span>
+        </div>
+        <div class="intel-track" aria-hidden="true"><div class="intel-fill" id="live-goal-fill"></div></div>
+        <p class="intel-sub" id="live-goal-sub">Waiting for broker day P&amp;L…</p>
+        <p class="hint-line quiet-hint">Display meter only. Saving the soft goal does not raise max order, daily loss, or trade-count caps. When day P&amp;L reaches the goal, new risk is paused (existing gate).</p>
+      </div>
+      <div class="intel-card" id="live-strategy-card">
+        <span class="intel-lbl">Strategy / rails</span>
+        <ul class="intel-flags" id="live-strategy-flags" aria-live="polite">
+          <li class="muted">Waiting for desk snapshot…</li>
+        </ul>
+        <p class="intel-sub" id="live-strategy-next">Next step appears when status loads.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="risk-cockpit-panel" data-workspace-only="live">
+    <div class="panel-head">
+      <h2>Live broker checks <span class="title-ctx">(account data and submission checks)</span></h2>
+    </div>
+    <p class="hint-line quiet-hint">Operational checks only — this panel does not create a trading edge or authorize live mode.</p>
+    <div class="edge-grid" id="risk-cockpit-grid">
+      <div class="edge-cell"><span class="lbl">Trade permission</span><span class="val" id="risk-trade-allowed">-</span></div>
+      <div class="edge-cell"><span class="lbl">Open exposure</span><span class="val" id="risk-exposure">-</span></div>
+      <div class="edge-cell"><span class="lbl">Broker daily P&amp;L</span><span class="val" id="risk-slippage">-</span></div>
+      <div class="edge-cell"><span class="lbl">Account data</span><span class="val" id="risk-promotion">-</span></div>
+    </div>
+    <p class="muted-line" id="risk-quality-note"></p>
+  </section>
+
+  <div class="field live-box" id="live-box" data-workspace-only="live">
+    <p class="warn" id="broker-status-line">Broker connection is optional. Live mode stays disabled until the connected account is verified and you explicitly confirm the order.</p>
+    <p class="hint-line" id="broker-chip-line"><span class="broker-chip" id="broker-chip" title="Broker connection status">Broker: …</span></p>
+    <input type="text" id="live-confirm" placeholder="optional note (not an unlock phrase)" autocomplete="off" title="Optional note only — does not unlock live trading" />
+    <div class="kill-grid">
+      <label title="Broker daily loss limit">Max loss $<input type="number" id="ks-loss" min="1" step="1" /></label>
+      <label title="Broker daily trade limit">Max trades / day<input type="number" id="ks-trades" min="1" step="1" /></label>
+      <label title="Largest broker position size allowed in dollars">Max size $<input type="number" id="ks-pos" min="1" step="1" /></label>
+    </div>
+  </div>
+
+  <div class="tool actions" style="display:flex;flex-wrap:wrap;gap:8px;">
+    <div class="tool">
       <label for="preset-row" title="Live broker position sizing limits">Live risk <span class="title-ctx">(position sizing)</span></label>
       <div class="preset-row" id="preset-row">
         <button type="button" class="preset-btn" data-preset="low" title="Smaller size, tighter comfort">Low</button>
@@ -114,171 +315,38 @@
         <button type="button" class="preset-btn" data-preset="high" title="Larger size, wider comfort">High</button>
       </div>
     </div>
-    <div class="tool actions adv-only">
-      <button type="button" class="btn ghost" id="btn-gen" title="Find one idea now. It waits in Waiting for your Approve — it never trades on its own.">Find an idea</button>
-      <button type="button" class="btn ghost" id="btn-refresh" title="Reload desk state from the server">Refresh</button>
-    </div>
+    <button type="button" class="btn ghost" id="btn-gen" title="Find one idea now. It waits in Waiting for your Approve — it never trades on its own.">Find an idea</button>
+    <button type="button" class="btn ghost" id="btn-refresh" title="Reload desk state from the server">Refresh</button>
   </div>
-</div>
-<section class="panel broker-book hidden" id="broker-book" data-workspace-only="live" aria-labelledby="broker-book-title">
-        <div class="panel-head">
-          <h2 id="broker-book-title">At your broker <span class="title-ctx" id="broker-book-kind">(not connected)</span></h2>
-          <span class="muted" id="broker-book-day"></span>
-        </div>
-        <p class="muted broker-book-note">Broker orders live here — they are separate from this desk's local paper book.</p>
-        <p class="muted" id="broker-book-balances"></p>
-        <p class="muted" id="broker-book-pnl-detail" hidden></p>
-        <p class="muted" id="broker-book-pnl-feed" hidden></p>
-        <p class="warn" id="broker-book-risk" hidden></p>
-        <div id="broker-book-list" class="broker-book-list"></div>
-      </section>
-<details class="live-guide-details"><summary>Buy / sell shares · workflow guide</summary>
-{% include "desk/live_guide.html" %}
+  </div><!-- /live-status-hub -->
+
+  <section class="panel queue">
+    <div class="panel-head queue-head">
+      <h2>Idea history <span class="title-ctx">(by status)</span></h2>
+    </div>
+    <div class="tabs" id="tabs" role="tablist" aria-label="Signal queue">
+      <button type="button" class="tab active" role="tab" aria-selected="true" aria-controls="signal-list" id="signal-tab-pending" data-tab="pending" title="Ideas waiting for approval or skip">Waiting</button>
+      <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="signal-list" id="signal-tab-approved" data-tab="approved" title="Ideas that were filled or approved">Filled</button>
+      <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="signal-list" id="signal-tab-rejected" data-tab="rejected" title="Ideas you skipped">Skipped</button>
+      <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="signal-list" id="signal-tab-expired" data-tab="expired" title="Ideas that timed out">Expired</button>
+    </div>
+    <p class="hint-line quiet-hint" id="signal-queue-hint">Research ideas grouped by status. Check the execution mode before approving.</p>
+    <div class="signal-list" id="signal-list" role="tabpanel" aria-labelledby="signal-tab-pending"></div>
+  </section>
+
+  <details class="live-secondary-tools"><summary>Live-test readiness &amp; cost planner</summary>
+  <section class="desk-module panel live-test-panel" id="live-test-panel" aria-labelledby="live-test-title">
+    <h3 class="module-title" tabindex="-1" id="live-test-title">Small live-test limitations · $10 budget</h3>
+    <div class="panel-head"><span class="pill warn-pill">Read-only check</span></div>
+    <p>Budget: <strong>$10 total, including fees</strong>. This check does not create or submit an order.</p>
+    <div id="live-test-status" role="status">Waiting for broker and market data…</div>
+    <button type="button" class="btn ghost" id="btn-live-test-check">Refresh readiness</button>
+    <p class="hint-line">A broker connection alone is insufficient. The budget needs a bounded order price and verified fees. Final real-money submission is yours.</p>
+  </section>
+  {% if config.get('COMPANION_AVAILABLE') %}{% include "desk/trade_planner.html" %}{% endif %}
+  </details>
+
+  </div>
 </details>
-{% include "desk/live_ticket.html" %}
-<section class="panel broker-orders" data-workspace-only="live" aria-labelledby="broker-orders-title">
-    <h2 id="broker-orders-title">Live broker orders</h2>
-    <p class="hint-line">Orders recorded by this desk, including unresolved submissions. External broker activity may not appear in this history.</p>
-    <div id="broker-orders-list" class="table-wrap"><div class="empty">Loading broker orders…</div></div>
-  </section>
-<section class="panel opp-panel" id="opp-panel">
-    <div class="panel-head waiting-head">
-      <div class="waiting-row waiting-title-row">
-        <h2>
-          <span class="panel-ico simple-only" aria-hidden="true">❚❚</span>
-          <span class="simple-only">Waiting for you</span>
-          <span class="adv-only">Idea board</span>
-          <span class="title-ctx adv-only">(ideas waiting for Approve or Skip)</span>
-          <span class="count-chip is-zero" id="opp-waiting-count" aria-live="polite"></span>
-        </h2>
-      </div>
-    </div>
-    <p class="hint-line simple-only quiet-hint" id="opp-hint-simple">Paper ideas that need Approve or Skip.</p>
-    <p class="hint-line adv-only quiet-hint" id="opp-hint-adv">Ranked research ideas. Check the execution mode before approving.</p>
-    <div id="opp-churn" class="adv-only opp-churn" aria-live="polite"></div>
-    <div class="opp-feed-wrap">
-    <div id="opp-empty" class="empty opp-empty-calm">
-      <p class="opp-empty-icon soft-pulse-icon" aria-hidden="true">❚❚</p>
-      <p id="opp-empty-main">Nothing waiting.</p>
-      <p class="muted" id="opp-empty-sub">Live ideas appear here. Approve opens an account-bound broker review; Skip passes.</p>
-    </div>
-    <div id="opp-feed" class="opp-feed" aria-live="polite"></div>
-    </div>
-  </section>
-<section class="panel queue adv-only">
-      <div class="panel-head queue-head">
-        <h2>Live ideas <span class="title-ctx">(ideas by status)</span></h2>
-      </div>
-      <div class="tabs" id="tabs" role="tablist" aria-label="Signal queue">
-        <button type="button" class="tab active" role="tab" aria-selected="true" aria-controls="signal-list" id="signal-tab-pending" data-tab="pending" title="Ideas waiting for approval or skip">Waiting</button>
-        <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="signal-list" id="signal-tab-approved" data-tab="approved" title="Ideas that were filled or approved">Filled</button>
-        <button type="button" class="tab" role="tab" aria-selected="false" aria-controls="signal-list" id="signal-tab-rejected" data-tab="rejected" title="Ideas you skipped">Skipped</button>
-        <button type="button" class="tab adv-only" role="tab" aria-selected="false" aria-controls="signal-list" id="signal-tab-expired" data-tab="expired" title="Ideas that timed out">Expired</button>
-      </div>
-      <p class="hint-line quiet-hint" id="signal-queue-hint">Research ideas grouped by status. Check the execution mode before approving.</p>
-      <div class="signal-list" id="signal-list" role="tabpanel" aria-labelledby="signal-tab-pending"></div>
-    </section>
-<section class="panel live-loop-panel" id="live-loop-panel">
-    <div class="loop-head">
-      <h2><span class="panel-ico" aria-hidden="true">▸</span> <span id="workspace-call-label">Live research · latest call</span></h2>
 
-    </div>
-    <p class="hint-line simple-only quiet-hint">While Start is on, nadzeeɫ checks tickers on a timer. The big tile shows the latest call. The list below is a log — not a to-do. Ideas that need you show in Waiting for you.</p>
-    <p class="hint-line adv-only quiet-hint">While Start is on, nadzeeɫ checks tickers on a timer. This tile shows the latest live research call; reviewable ideas appear below. Model odds and price lines are research tools.</p>
-    <div class="loop-banner outside-rth hidden" id="loop-rth-banner">Market closed — scheduled checks paused</div>
-
-
-    <!-- One Job sticky stage (Simple); Advanced still sees big-action + probs inside -->
-    <div class="stage-wrap" id="one-job-stage">
-      <div class="stage-phase-tag simple-only" id="stage-phase-tag" hidden></div>
-      <div class="stage-thinking" id="stage-thinking" role="status" aria-live="polite" hidden>
-        <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
-        <span data-thinking-text>Checking…</span>
-      </div>
-
-      <div class="stage-decide" id="stage-decide" hidden></div>
-      <div class="stage">
-        <div class="goal-race simple-only" id="stage-goal-race" data-workspace-only="paper" aria-label="Goal race">
-          <span class="lbl">Goal</span>
-          <div class="race-track">
-            <div class="race-fill" id="stage-race-fill"></div>
-            <div class="race-pace" id="stage-race-pace" title="Expected progress through regular trading hours (informational)"></div>
-          </div>
-          <span class="rem" id="stage-race-rem"></span>
-        </div>
-
-        <div class="loop-action-row">
-          <div class="call-spoken big-action hold" id="loop-big-action" role="status" aria-live="polite">
-            <div class="conf-ring-wrap" id="conf-ring-wrap" title="Confidence">
-              <div class="conf-ring" id="conf-ring" aria-hidden="true"></div>
-              <div class="conf-ring-core">
-                <span class="action-label adv-only">Latest call</span>
-                <span class="action-word" id="loop-action-word">Hold</span>
-                <span class="conf-label" id="loop-action-conf-label">—</span>
-              </div>
-            </div>
-            <div class="spoken-body">
-              <p class="spoken-eyebrow simple-only">Latest call</p>
-              <p class="spoken-line simple-only" id="spoken-line">Standing by — press Start when you wish</p>
-              <span class="action-gloss" id="loop-action-gloss">No call yet — Start when you wish</span>
-              <p class="spoken-why simple-only" id="spoken-why" hidden></p>
-              <p class="spoken-news-match simple-only muted" id="spoken-news-match" hidden></p>
-              <span class="action-meta" id="loop-action-meta">No call yet — press Start</span>
-              <span class="action-outcome" id="loop-action-outcome" hidden></span>
-              <p class="butler-story simple-only" id="butler-story" aria-live="polite">Standing by</p>
-              <section class="desk-module how-call simple-only" id="how-call-made">
-                <h3 class="module-title" tabindex="-1">How this call was made</h3>
-                <div class="how-call-body" id="how-call-body">
-                  <p class="muted" id="how-call-empty">No decision yet — details appear after the first check.</p>
-                </div>
-              </section>
-            </div>
-            <!-- legacy conf bar kept for any CSS hooks; hidden -->
-            <span class="call-conf simple-only" id="loop-action-conf" aria-hidden="true" hidden title="Confidence">
-              <span class="call-conf-fill" id="loop-action-conf-fill"></span>
-            </span>
-          </div>
-          <div class="prob-bars adv-only" id="loop-probs" aria-label="Buy, sell, or stay flat odds for the latest check">
-            <p class="prob-caption title-ctx">(model odds for this check — research only)</p>
-            <div class="prob-row buy" title="Model weight toward Buy"><span class="prob-lbl">Buy</span><div class="prob-track"><div class="prob-fill" id="prob-buy" style="width:0%"></div></div><span class="prob-pct" id="prob-buy-pct">0%</span></div>
-            <div class="prob-row sell" title="Model weight toward Sell"><span class="prob-lbl">Sell</span><div class="prob-track"><div class="prob-fill" id="prob-sell" style="width:0%"></div></div><span class="prob-pct" id="prob-sell-pct">0%</span></div>
-            <div class="prob-row flat" title="Model weight toward staying flat (no trade)"><span class="prob-lbl">Stay flat</span><div class="prob-track"><div class="prob-fill" id="prob-flat" style="width:50%"></div></div><span class="prob-pct" id="prob-flat-pct">50%</span></div>
-          </div>
-        </div>
-      </div>
-    </div>
-    <div id="spark-strip" class="spark-strip adv-only" aria-label="Tiny price lines for focus tickers" title="Tiny price lines for recent focus tickers — research only, not a signal"></div>
-    <div class="loop-prefs-home" id="loop-prefs-home">
-    <div class="desk-alert-prefs" id="desk-alert-prefs" role="group" aria-label="Desk alerts">
-      <label class="chk" title="Quiet beep for Waiting, goal, and max-loss">
-        <input type="checkbox" id="chk-alert-sound" />
-        Soft alert sound
-      </label>
-      <label class="chk" title="Browser pop-ups for Waiting, goal, and max-loss — asks once when you turn this on">
-        <input type="checkbox" id="chk-browser-alerts" />
-        Desktop alerts
-      </label>
-    </div>
-
-    </div><!-- /loop-prefs-home -->
-
-    <div class="desk-alerts-wrap adv-only" id="desk-alerts-wrap">
-      <p class="feed-caption">Desk alerts <span class="title-ctx">(Waiting, goal, and max-loss notes)</span></p>
-      <div id="desk-alerts-empty" class="feed-empty feed-empty-calm desk-alerts-empty">
-        <p class="muted feed-empty-sub">Quiet for now — notes about Waiting ideas, goal hit, and max-loss pause land here.</p>
-      </div>
-      <div class="desk-alerts-log" id="desk-alerts-log" aria-live="polite"></div>
-    </div>
-  </section>
-<details class="live-secondary-tools"><summary>Live-test readiness &amp; cost planner</summary>
-<section class="desk-module panel live-test-panel" id="live-test-panel" aria-labelledby="live-test-title">
-  <h3 class="module-title" tabindex="-1" id="live-test-title">Small live-test limitations · $10 budget</h3>
-  <div class="panel-head"><span class="pill warn-pill">Read-only check</span></div>
-  <p>Budget: <strong>$10 total, including fees</strong>. This check does not create or submit an order.</p>
-  <div id="live-test-status" role="status">Waiting for broker and market data…</div>
-  <button type="button" class="btn ghost" id="btn-live-test-check">Refresh readiness</button>
-  <p class="hint-line">A broker connection alone is insufficient. The budget needs a bounded order price and verified fees. Final real-money submission is yours.</p>
-</section>
-{% if config.get('COMPANION_AVAILABLE') %}{% include "desk/trade_planner.html" %}{% endif %}
-</details>
 </div></section>

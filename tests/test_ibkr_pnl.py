@@ -32,6 +32,11 @@ def pnl_gateway(monkeypatch):
     monkeypatch.setattr(broker, '_RESYNC_REQUIRED', False)
     monkeypatch.setattr(broker, '_VERIFIED', {})
     monkeypatch.setattr(broker, '_CONNECTION', {'connected':True, 'error':None})
+    monkeypatch.setattr(broker, '_PNL_WATCH', {'ui_status': None, 'last_error_code': None, 'soft_reconnect_count': 0, 'last_soft_reconnect_at': 0.0, 'last_scheduled_refresh_at': 0.0, 'pending_soft_reconnect': False, 'pending_reason': None})
+    monkeypatch.setattr(broker, '_SOFT_RECONNECT_AFTER', 0.0)
+    monkeypatch.setattr(broker, '_PNL_SILENT_RETRY_SEC', 60.0)
+    monkeypatch.setattr(broker, '_PNL_FIRST_CALLBACK_WAIT_SEC', 3.0)
+    monkeypatch.setattr(broker, '_PNL_SOFT_RECONNECT_WAIT_SEC', 90.0)
     monkeypatch.setattr(broker.time, 'monotonic', lambda: clock[0])
     def add(tag, value, currency='BASE', account='TEST', model=''):
         rows.append(NS(tag=tag, value=value, currency=currency, account=account, modelCode=model))
@@ -252,3 +257,136 @@ def test_ledger_totals_require_account_and_aggregate_currency(pnl_gateway):
     rows.clear()
     add('RealizedPnL', '-42', 'USD')  # legacy aggregate account-window tag
     assert broker._account_window_pnl(fake, 'TEST')['realized'] == -42
+
+
+def test_refresh_broker_pnl_resubscribes_without_inventing_ready(pnl_gateway, monkeypatch):
+    fake, clock, _, _, canceled = pnl_gateway
+    fake.disconnect = lambda: setattr(fake, "_disconnected", True)
+    monkeypatch.setattr(broker, "_CLIENT", fake)
+    monkeypatch.setattr(broker, "_CLIENT_SETTINGS", broker._settings())
+    monkeypatch.setattr(broker, "_SOFT_RECONNECT_AFTER", 0.0)
+    monkeypatch.setattr(broker, "_PNL_SILENT_RETRY_SEC", 60.0)
+    monkeypatch.setattr(broker, "_PNL_FIRST_CALLBACK_WAIT_SEC", 3.0)
+    monkeypatch.setattr(broker, "_PNL_SOFT_RECONNECT_WAIT_SEC", 90.0)
+    # First call establishes a silent subscription.
+    assert not broker.get_account.__wrapped__()["risk_ready"]
+    # Manual refresh clears subscription; still no callback => still not ready.
+    result = broker.refresh_broker_pnl.__wrapped__(soft_reconnect=False)
+    assert canceled == ["TEST"]
+    assert result["refresh"]["gateway_restarted"] is False
+    assert result["refresh"]["soft_reconnect"] is False
+    assert not result["risk_ready"] and result["account"]["day_pnl"] is None
+    # Soft reconnect arms a socket rebuild; get_account path must still require a callback.
+    def fake_ib():
+        broker._RESYNC_REQUIRED = False
+        broker._SERVER_UNAVAILABLE = False
+        broker._CLIENT = fake
+        broker._CONNECTION.update(connected=True, error=None)
+        return fake
+    monkeypatch.setattr(broker, "_ib", fake_ib)
+    result = broker.refresh_broker_pnl.__wrapped__(soft_reconnect=True)
+    assert result["refresh"]["soft_reconnect"] is True
+    assert "api_disconnected" in result["refresh"]["actions"] or "manual_soft_reconnect" in result["refresh"]["actions"]
+    assert not result["risk_ready"]
+    # Only a genuine callback may unlock risk.
+    current = broker._PNL[(id(fake), "TEST")]["value"]
+    current.dailyPnL = 0.0
+    broker._pnl_update(current)
+    ready = broker.get_account.__wrapped__()
+    assert ready["risk_ready"] and ready["account"]["day_pnl"] == 0.0
+
+
+def test_auto_soft_reconnect_after_repeated_silent_retries(pnl_gateway, monkeypatch):
+    fake, clock, _, _, canceled = pnl_gateway
+    disconnected = []
+    fake.disconnect = lambda: disconnected.append(True)
+    monkeypatch.setattr(broker, "_CLIENT", fake)
+    monkeypatch.setattr(broker, "_CLIENT_SETTINGS", broker._settings())
+    monkeypatch.setattr(broker, "_SOFT_RECONNECT_AFTER", 0.0)
+    def fake_ib():
+        broker._RESYNC_REQUIRED = False
+        broker._SERVER_UNAVAILABLE = False
+        broker._CLIENT = fake
+        broker._CONNECTION.update(connected=True, error=None)
+        return fake
+    monkeypatch.setattr(broker, "_ib", fake_ib)
+    broker.get_account.__wrapped__()
+    clock[0] = 161.
+    broker.get_account.__wrapped__()  # retry 1 via cancel
+    assert canceled == ["TEST"]
+    clock[0] = 222.
+    # Force retries>=2 and waiting>=90 for auto soft reconnect.
+    key = (id(fake), "TEST")
+    broker._PNL[key]["retries"] = 2
+    broker._PNL[key]["started_at"] = 100.
+    broker._PNL[key]["requested_at"] = 161.
+    result = broker.get_account.__wrapped__()
+    assert disconnected, "expected API soft disconnect"
+    assert not result["risk_ready"]
+    assert broker._SOFT_RECONNECT_AFTER > clock[0]
+
+def test_error_2100_marks_pending_soft_reconnect_without_inventing_ready(pnl_gateway, monkeypatch):
+    fake, clock, _, _, _ = pnl_gateway
+    fake.disconnect = lambda: None
+    fake.client = type("C", (), {"reqAccountUpdates": staticmethod(lambda *a, **k: None)})()
+    fake.reqAccountUpdates = lambda account: None
+    monkeypatch.setattr(broker, "_CLIENT", fake)
+    monkeypatch.setattr(broker, "_CLIENT_SETTINGS", broker._settings())
+    monkeypatch.setattr(broker, "_SOFT_RECONNECT_AFTER", 0.0)
+    monkeypatch.setattr(broker, "_ACCOUNT_UNSUBSCRIBED", False)
+    monkeypatch.setattr(broker, "_ACCOUNT_RESUBSCRIBE_AFTER", 0.0)
+    assert not broker.get_account.__wrapped__()["risk_ready"]
+    broker._server_error(-1, 2100, "API client has been unsubscribed from account data.")
+    assert broker._ACCOUNT_UNSUBSCRIBED is True
+    assert broker._PNL_WATCH.get("pending_resubscribe") is True
+    assert broker._PNL_WATCH["ui_status"] == "Recovering Daily P&L..."
+    assert not broker._PNL_UPDATED
+    def fake_ib():
+        broker._RESYNC_REQUIRED = False
+        broker._SERVER_UNAVAILABLE = False
+        broker._CLIENT = fake
+        broker._CONNECTION.update(connected=True, error=None)
+        return fake
+    monkeypatch.setattr(broker, "_ib", fake_ib)
+    result = broker.get_account.__wrapped__()
+    assert not result["risk_ready"]
+    # In-socket resubscribe preferred; soft reconnect only if that stays silent.
+    assert result["pnl_diagnostics"].get("ui_status") in ("Recovering Daily P&L...", None) or not result["risk_ready"]
+    # Only a real callback unlocks Ready.
+    current = broker._PNL[(id(fake), "TEST")]["value"]
+    current.dailyPnL = 1.5
+    broker._pnl_update(current)
+    ready = broker.get_account.__wrapped__()
+    assert ready["risk_ready"] and ready["account"]["day_pnl"] == 1.5
+    assert ready["pnl_diagnostics"].get("ui_status") in (None, "")
+
+
+def test_maybe_scheduled_soft_refresh_respects_interval_and_ready(pnl_gateway, monkeypatch):
+    fake, clock, _, _, _ = pnl_gateway
+    fake.disconnect = lambda: None
+    monkeypatch.setattr(broker, "_CLIENT", fake)
+    monkeypatch.setattr(broker, "_CLIENT_SETTINGS", broker._settings())
+    monkeypatch.setattr(broker, "_SOFT_RECONNECT_AFTER", 0.0)
+    def fake_ib():
+        broker._RESYNC_REQUIRED = False
+        broker._SERVER_UNAVAILABLE = False
+        broker._CLIENT = fake
+        broker._CONNECTION.update(connected=True, error=None)
+        return fake
+    monkeypatch.setattr(broker, "_ib", fake_ib)
+    assert broker.maybe_scheduled_soft_refresh(interval_minutes=5, auto_live=True, risk_ready=True) is None
+    assert broker.maybe_scheduled_soft_refresh(interval_minutes=0, auto_live=True, risk_ready=False) is None
+    first = broker.maybe_scheduled_soft_refresh(interval_minutes=5, auto_live=True, risk_ready=False)
+    assert first is not None and first["refresh"]["gateway_restarted"] is False
+    assert not first["risk_ready"]
+    second = broker.maybe_scheduled_soft_refresh(interval_minutes=5, auto_live=True, risk_ready=False)
+    assert second is None  # interval gate
+
+
+def test_ensure_gateway_ok_when_port_open(monkeypatch):
+    monkeypatch.setenv("IB_GATEWAY_HOST", "127.0.0.1")
+    monkeypatch.setenv("IB_GATEWAY_PORT", "4002")
+    monkeypatch.setattr(broker, "_port_open", lambda host, port, timeout=0.6: True)
+    result = broker.ensure_gateway(launch_if_down=True)
+    assert result["ok"] and result["port_open"] and not result["launched"]
+

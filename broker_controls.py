@@ -67,4 +67,21 @@ def register(app, desk):
             return jsonify(ok=True, terminal=terminal, status=result,
                            message="Broker terminal state verified" if terminal else "Cancellation not yet terminal; order remains tracked")
 
+    @bp.post("/api/broker-pnl-refresh")
+    def refresh_pnl():
+        """Soft-reconnect / re-subscribe Daily P&L. Never restarts Gateway or places orders."""
+        import broker_router as broker
+        body = request.get_json(silent=True)
+        soft = True if not isinstance(body, dict) else bool(body.get("soft_reconnect", True))
+        if not callable(getattr(broker, "refresh_broker_pnl", None)):
+            return jsonify(ok=False, error="Broker P&L refresh is not available for this provider",
+                           risk_ready=False), 400
+        # Bust the desk book cache so the next state poll shows the refresh result.
+        cache = getattr(desk, "_BROKER_BOOK_CACHE", None)
+        if isinstance(cache, dict):
+            cache.update(at=0.0, val=None)
+        result = broker.refresh_broker_pnl(soft_reconnect=soft)
+        code = 200 if result.get("ok") or result.get("refresh", {}).get("ok") else 502
+        return jsonify(result), code
+
     app.register_blueprint(bp)

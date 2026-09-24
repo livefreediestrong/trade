@@ -190,6 +190,19 @@ def get_account() -> dict[str, Any]:
     return {"ok": False, "http_status": code, "error": data, "paper_mode": paper_mode()}
 
 
+
+def refresh_broker_pnl(*, soft_reconnect: bool = True) -> dict[str, Any]:
+    """IBKR-only recovery path; Alpaca already returns day P&L with the account."""
+    return {
+        "ok": False,
+        "error": "Daily P&L refresh applies to IBKR Gateway only",
+        "risk_ready": False,
+        "account": {},
+        "refresh": {"ok": False, "soft_reconnect": soft_reconnect, "gateway_restarted": False,
+                    "actions": [], "note": "Not applicable for Alpaca"},
+    }
+
+
 def get_positions() -> dict[str, Any]:
     if not is_configured():
         return {"ok": False, "error": "not_configured", "positions": []}

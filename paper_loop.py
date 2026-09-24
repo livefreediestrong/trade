@@ -130,6 +130,20 @@ def is_rth(now: Optional[datetime] = None) -> bool:
     return RTH_OPEN <= t < close
 
 
+# Lone fragments from "BTC / USD" style imports — look like tickers but are not US equity rails.
+WATCHLIST_NON_EQUITY = frozenset({
+    "USD", "USDT", "USDC", "EUR", "GBP", "JPY", "CAD", "CHF", "AUD", "NZD", "CNH", "CNY",
+    "BTC", "ETH", "XRP", "SOL", "DOGE", "ADA", "BNB", "CRYPTO", "FOREX", "FX",
+    # Indices / non-STK rails that block the live agent on stale/unqualified quotes.
+    "VIX", "VIX1D", "NDX", "SPX", "DJX", "RUT", "COMP",
+    # Known delisted / no-data junk observed in desk logs.
+    "APLM", "APMC",
+    # Mutual funds / OTC / no IB delayed stream — were blocking live agent on stale quotes.
+    "FZROX", "FZILX", "FSPGX", "FSELX", "FNILX", "FXAIX", "FNCNF",
+    "FSKAX", "FTIHX", "FSMDX", "FSSNX", "SWTSX", "SWPPX",
+})
+
+
 def equity_loop_symbols(watchlist: list[str]) -> list[str]:
     """Prefer tradeable equity tickers for the paper loop.
 
@@ -142,6 +156,8 @@ def equity_loop_symbols(watchlist: list[str]) -> list[str]:
     for raw in watchlist or []:
         sym = str(raw or "").strip().upper()
         if not re.fullmatch(r"[A-Z][A-Z0-9]{0,5}(?:\.[AB])?", sym):
+            continue
+        if sym in WATCHLIST_NON_EQUITY:
             continue
         if not sym or sym.startswith("."):
             continue

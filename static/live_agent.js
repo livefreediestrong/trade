@@ -54,6 +54,23 @@
   const identity=s.identity,kind=identity?.paper_mode===false?'REAL MONEY':identity?.paper_mode===true?'BROKER PAPER':'UNVERIFIED';
   set('live-agent-account',identity?`${kind} · ${identity.broker} · account …${String(identity.account_id||'').slice(-4)}`:'Account not yet confirmed for execution · verify IBKR in broker settings');
   set('live-agent-state',!s.configured?'Not configured':!s.enabled?'Paused':s.session_active&&s.mode==='auto_live'?'Enabled':'Session stopped');
+  (function(){
+    const chip=document.getElementById('bx-agent-chip');
+    const detail=document.getElementById('bx-agent-detail');
+    if(!chip)return;
+    let label='Paused', cls='is-paused';
+    if(!s.configured){label='Not set up'; cls='is-blocked';}
+    else if(!s.enabled){label='Paused'; cls='is-paused';}
+    else if(s.blocked||s.block_reason){label='Blocked'; cls='is-blocked';}
+    else if(s.waiting_for_quote||s.quote_wait){label='Waiting for quote'; cls='is-waiting';}
+    else if(s.session_active&&s.mode==='auto_live'){label='Ready to trade'; cls='is-ready';}
+    else if(s.running||s.scanning||s.researching){label='Scanning'; cls='is-scanning';}
+    else if(s.session_active){label='Session on'; cls='is-scanning';}
+    else {label='Session stopped'; cls='is-paused';}
+    chip.className='bx-agent-chip '+cls;
+    chip.textContent=label;
+    if(detail) detail.textContent=s.message||s.next||'Moss agent status';
+  })();
   set('live-agent-status',s.message||'Waiting for agent status');
   set('live-agent-next',!identity?'Next: verify the account in broker settings. You can check your draft budget below.':!s.configured?'Next: check your symbols and budget, then save a policy.':s.enabled?'Agent enabled. Pause stops new work; working orders and positions stay at the broker.':dirty?'Next: save your edited policy. This leaves the agent paused.':'Policy saved and paused. After broker-paper testing, confirm the displayed account to start.');
   set('live-agent-today',`${s.today?.research||0} research attempts · ${s.today?.orders||0} broker attempts today${s.next_at?' · next cycle no earlier than '+new Date(s.next_at).toLocaleTimeString():''}`);
@@ -61,6 +78,16 @@
    $('la-symbols').value=s.policy.symbols.join(' ');
    for(const key of fields)$('la-'+key).value=s.policy[key];
    form.querySelector(`[name="la-order-type"][value="${s.policy.order_type}"]`).checked=true;
+   const ao=s.auto_options||{};
+   const strats=new Set(ao.strategies||[]);
+   if($('la-ao-enabled'))$('la-ao-enabled').checked=!!ao.enabled;
+   if($('la-ao-long-call'))$('la-ao-long-call').checked=strats.has('long_call');
+   if($('la-ao-long-put'))$('la-ao-long-put').checked=strats.has('long_put');
+   if($('la-ao-short-call'))$('la-ao-short-call').checked=strats.has('short_call');
+   if($('la-ao-spreads'))$('la-ao-spreads').checked=['call_debit','put_debit','call_credit','put_credit'].some(x=>strats.has(x));
+   if($('la-ao-naked'))$('la-ao-naked').checked=!!ao.allow_naked_short;
+   if($('la-ao-max-contracts') && ao.max_contracts!=null)$('la-ao-max-contracts').value=ao.max_contracts;
+   if($('la-auto-options-label') && s.auto_options_label)$('la-auto-options-label').textContent=s.auto_options_label+(s.auto_options_armed?' · ARMED':' · not armed');
   }
   $('live-agent-history').replaceChildren(...(s.events||[]).slice(0,8).map(e=>{const li=document.createElement('li');li.textContent=`${new Date(e.at).toLocaleTimeString()} · ${e.ticker?e.ticker+' · ':''}${e.message}`;return li;}));
   controls();
@@ -88,7 +115,7 @@
  }
  function edited(){if(!dirty)editRevision=snapshot?.revision;dirty=true;form.dataset.edits=String(Number(form.dataset.edits||0)+1);$('live-agent-confirm').value='';clearBudget();controls();}
  form.addEventListener('input',edited);form.addEventListener('change',edited);
- form.addEventListener('submit',event=>{event.preventDefault();if(!snapshot||busy)return;const policy={symbols:$('la-symbols').value.toUpperCase().split(/[\s,]+/).filter(Boolean),order_type:form.querySelector('[name="la-order-type"]:checked').value};for(const key of fields)policy[key]=Number($('la-'+key).value);mutate('policy',{policy,revision:dirty?editRevision:snapshot.revision});});
+ form.addEventListener('submit',event=>{event.preventDefault();if(!snapshot||busy)return;const policy={symbols:$('la-symbols').value.toUpperCase().split(/[\s,]+/).filter(Boolean),order_type:form.querySelector('[name="la-order-type"]:checked').value};for(const key of fields)policy[key]=Number($('la-'+key).value);const strategies=[];if($('la-ao-long-call')?.checked)strategies.push('long_call');if($('la-ao-long-put')?.checked)strategies.push('long_put');if($('la-ao-short-call')?.checked)strategies.push('short_call');if($('la-ao-spreads')?.checked)strategies.push('call_debit','put_debit','call_credit','put_credit');if(!strategies.length)strategies.push('long_call','long_put');const auto_options={enabled:!!$('la-ao-enabled')?.checked,strategies,allow_naked_short:!!$('la-ao-naked')?.checked,max_contracts:Number($('la-ao-max-contracts')?.value||2),dte_min:5,dte_max:45,max_quote_age_sec:15,prefer_otm_pct:0.5,spread_width_pct:1.0,every_n_stock_cycles:1};mutate('policy',{policy,auto_options,revision:dirty?editRevision:snapshot.revision});});
  $('live-agent-reload').addEventListener('click',()=>{if(busy)return;dirty=false;clearBudget();$('live-agent-confirm').value='';++epoch;received=0;read();controls();});
  $('live-agent-budget-check').addEventListener('click',checkBudget);
  $('live-agent-confirm').addEventListener('input',controls);

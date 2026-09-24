@@ -1,6 +1,6 @@
 <section class="desk-module panel workbench-wide lt-ticket" id="live-stock-ticket" aria-labelledby="live-stock-ticket-title">
   <h3 id="live-stock-ticket-title" class="module-title" tabindex="-1">Order ticket</h3>
-  <p class="muted">Your order · IBKR account · whole shares for stock · live long single-leg options (BTO/STC)</p>
+  <p class="muted">Your order · IBKR account · whole shares for stock · live options BTO/STC/STO/BTC · BAG verticals via auto</p>
   <p id="live-ticket-status" role="status">Waiting for account status. Composing a ticket sends no order.</p>
 
   <div class="lt-mode" role="tablist" aria-label="Instrument type">
@@ -98,7 +98,7 @@
 
   <div id="live-ticket-option-panel" class="lt-panel" role="tabpanel" aria-labelledby="live-ticket-mode-option" hidden>
     <form id="live-ticket-option-form" class="lt-card lt-option-card">
-      <p class="lt-option-banner" role="status">Live long single-leg only (BTO / STC). Naked shorts, multi-leg and auto-live options are disabled. Paper Options remains available for practice.</p>
+      <p class="lt-option-banner" role="status">Live options: BTO/STC long · STO/BTC (covered or allow_naked) · Moss auto can arm OPT/BAG when enabled. Paper Options remains available for practice.</p>
       <div class="lt-option-row lt-option-grid">
         <label class="lt-field" for="live-ticket-opt-symbol">Underlying<input class="lt-opt-input" id="live-ticket-opt-symbol" maxlength="10" placeholder="SPY" required autocomplete="off"></label>
         <label class="lt-field" for="live-ticket-opt-contracts">Contracts<input class="lt-opt-input" id="live-ticket-opt-contracts" type="number" min="1" max="20" step="1" value="1" required></label>
@@ -115,8 +115,10 @@
         <div class="lt-opt-actions" role="group" aria-label="Option action">
           <button type="button" class="lt-opt-act is-active" data-lt-opt="BTO" aria-pressed="true">BTO</button>
           <button type="button" class="lt-opt-act" data-lt-opt="STC" aria-pressed="false">STC</button>
-          <button type="button" class="lt-opt-act" data-lt-opt="STO" aria-pressed="false" title="Not available in live v1">STO</button>
-          <button type="button" class="lt-opt-act" data-lt-opt="BTC" aria-pressed="false" title="Not available in live v1">BTC</button>
+          <button type="button" class="lt-opt-act" data-lt-opt="STO" aria-pressed="false" title="Covered short call or naked with allow flag">STO</button>
+          <label class="chk lt-opt-flag"><input type="checkbox" id="live-ticket-opt-covered" /> Covered (long shares)</label>
+      <label class="chk lt-opt-flag"><input type="checkbox" id="live-ticket-opt-naked" /> Allow naked short</label>
+      <button type="button" class="lt-opt-act" data-lt-opt="BTC" aria-pressed="false" title="Buy to close a short option">BTC</button>
         </div>
       </div>
       <div class="lt-option-row lt-option-grid">

@@ -4,7 +4,19 @@
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
   let state = null;
-  let activeWorkspace = "live";
+  let activeWorkspace = (typeof document !== "undefined" && document.body && document.body.dataset && document.body.dataset.workspace === "paper") ? "paper" : "live";
+  /* PAGE_SPLIT_WORKSPACE */
+  (function syncWorkspaceFromPage() {
+    try {
+      const page = document.body && document.body.dataset && document.body.dataset.deskPage;
+      if (page === "paper") activeWorkspace = "paper";
+      else if (page === "auto" || page === "ticket" || page === "overview" || page === "research" || page === "settings") {
+        if (page === "paper") activeWorkspace = "paper";
+        else if (document.body.dataset.workspace === "paper") activeWorkspace = "paper";
+        else activeWorkspace = "live";
+      }
+    } catch (_) {}
+  })();
   let approvalContext = null;
   let approveReturnFocus = null, approveReturnSignalId = null;
   const liveSettingsFields = ["#mode-select", "#ks-loss", "#ks-trades", "#ks-pos"];
@@ -815,7 +827,7 @@
     if (!chip) return;
     // Session chip follows session_active only (mode alone insufficient)
     const active = !!cfg.session_active;
-    const goal = brokerMode(cfg) ? null : cfg.daily_profit_target_usd;
+    const goal = cfg.daily_profit_target_usd;  // soft goal is display/pause only; valid in broker modes too
     const rth = loop?.rth_only !== false;
     const outside = isOutsideRth(loop, cfg);
     // Short chill status — never long pipe strings that ellipsis mid-token
@@ -935,6 +947,7 @@
   }
 
   function renderBrokerBook(data) {
+    syncBeginnerPulse(data);
     const panel = $("#broker-book");
     if (!panel) return;
     const book = data && data.broker_book;
@@ -973,9 +986,11 @@
     if (pnlFeed) {
       const feed = book.ok && book.pnl_diagnostics;
       if (feed && feed.update_mode === "on_change") {
+        const recoveringLabel = feed.ui_status || "Recovering Daily P&L...";
         const status = feed.status === "ready" ? "active subscription"
-          : feed.status === "waiting" ? "waiting for first Gateway value"
-          : feed.status === "recovering" ? "recovering; waiting for a new Gateway value" : feed.status;
+          : feed.status === "waiting" ? (feed.ui_status || "waiting for first Gateway value")
+          : feed.status === "recovering" ? recoveringLabel
+          : (feed.ui_status || feed.status);
         const valueAge = feed.last_update_age_seconds != null
           ? `last value update ${Math.round(feed.last_update_age_seconds)}s ago`
           : `waiting ${Math.round(feed.waiting_seconds)}s`;
@@ -989,6 +1004,16 @@
           : "";
       }
       pnlFeed.hidden = !pnlFeed.textContent;
+    }
+    const pnlActions = $("#broker-book-pnl-actions");
+    if (pnlActions) {
+      const showRefresh = !!(book && book.ok && (book.risk_ready !== true || book.day_pnl_usd == null));
+      pnlActions.hidden = !showRefresh;
+    }
+    const pnlTip = $("#broker-book-pnl-tip");
+    if (pnlTip) {
+      const show = !!(book && (book.risk_ready !== true || book.day_pnl_usd == null));
+      pnlTip.hidden = !show;
     }
     const riskStatus = $("#broker-book-risk");
     if (riskStatus) {
@@ -1626,14 +1651,14 @@
       const ksLoss = $("#ks-loss");
       const ksTrades = $("#ks-trades");
       const ksPos = $("#ks-pos");
-      if (ksLoss && ksLoss.dataset.dirty !== "1" && document.activeElement !== ksLoss && ks.max_daily_loss_usd != null) {
-        ksLoss.value = ks.max_daily_loss_usd;
+      if (ksLoss && ksLoss.dataset.dirty !== "1" && document.activeElement !== ksLoss) {
+        ksLoss.value = ks.max_daily_loss_usd != null ? ks.max_daily_loss_usd : "";
       }
-      if (ksTrades && ksTrades.dataset.dirty !== "1" && document.activeElement !== ksTrades && ks.max_trades_per_day != null) {
-        ksTrades.value = ks.max_trades_per_day;
+      if (ksTrades && ksTrades.dataset.dirty !== "1" && document.activeElement !== ksTrades) {
+        ksTrades.value = ks.max_trades_per_day != null ? ks.max_trades_per_day : "";
       }
-      if (ksPos && ksPos.dataset.dirty !== "1" && document.activeElement !== ksPos && ks.max_position_size_usd != null) {
-        ksPos.value = ks.max_position_size_usd;
+      if (ksPos && ksPos.dataset.dirty !== "1" && document.activeElement !== ksPos) {
+        ksPos.value = ks.max_position_size_usd != null ? ks.max_position_size_usd : "";
       }
     }
 
@@ -2688,6 +2713,39 @@
   });
 
   $("#btn-refresh")?.addEventListener("click", () => refresh());
+  $("#btn-broker-ensure-gateway")?.addEventListener("click", async () => {
+    const button = $("#btn-broker-ensure-gateway");
+    if (button) button.disabled = true;
+    try {
+      const res = await api("/api/broker-ensure-gateway", { method: "POST", body: JSON.stringify({ launch_if_down: true }), timeoutMs: 20000 });
+      const note = (res && res.note) || (res && res.error) || "Ensure Gateway requested";
+      const open = !!(res && res.port_open);
+      toast(open ? note : `${note} Complete Gateway sign-in / 2FA if prompted.`, !open);
+      await refresh();
+    } catch (e) {
+      toast((e && e.message) || "Ensure Gateway failed", true);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  });
+
+  $("#btn-broker-pnl-refresh")?.addEventListener("click", async () => {
+    const button = $("#btn-broker-pnl-refresh");
+    if (button) button.disabled = true;
+    try {
+      const res = await api("/api/broker-pnl-refresh", { method: "POST", body: JSON.stringify({ soft_reconnect: true }), timeoutMs: 45000 });
+      const note = (res && res.refresh && res.refresh.note) || (res && res.error) || "P&L refresh requested";
+      const ready = res && res.risk_ready === true && res.account && res.account.day_pnl != null;
+      toast(ready
+        ? `Daily P&L restored (${fmtSigned(res.account.day_pnl)}). Gateway was not restarted.`
+        : `${note} risk_ready remains blocked until Gateway sends a Daily P&L callback.`, !ready);
+      await refresh();
+    } catch (e) {
+      toast((e && e.message) || "P&L refresh failed", true);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  });
 
   $$(".tab").forEach((tab) => {
     tab.addEventListener("click", () => {
@@ -4683,41 +4741,59 @@
     const ks = cfg.kill_switch || {};
     const symbols = strat.symbols && strat.symbols.length ? strat.symbols
       : (pol.symbols || []);
-    const spyOnly = strat.spy_only != null ? !!strat.spy_only
-      : (symbols.length === 1 && String(symbols[0]).toUpperCase() === "SPY");
-    const maxOrder = strat.max_order_usd != null ? Number(strat.max_order_usd)
-      : Number(pol.max_order_usd ?? ks.max_position_size_usd);
-    const maxLoss = strat.max_daily_loss_usd != null ? Number(strat.max_daily_loss_usd)
-      : Number(pol.max_daily_loss_usd ?? ks.max_daily_loss_usd);
-    const maxOrd = strat.max_orders_per_day != null ? Number(strat.max_orders_per_day)
-      : Number(pol.max_orders_per_day ?? ks.max_trades_per_day);
+    const spyOnly = false; // live auto-orders track full evaluated equity universe
+    let maxOrder = practicalRail(
+      strat.max_order_usd != null ? Number(strat.max_order_usd)
+      : Number(pol.max_order_usd ?? ks.max_position_size_usd), "usd");
+    let maxLoss = practicalRail(
+      strat.max_daily_loss_usd != null ? Number(strat.max_daily_loss_usd)
+      : Number(pol.max_daily_loss_usd ?? ks.max_daily_loss_usd), "usd");
+    let maxOrd = practicalRail(
+      strat.max_orders_per_day != null ? Number(strat.max_orders_per_day)
+      : Number(pol.max_orders_per_day ?? ks.max_trades_per_day), "trades");
     const used = strat.orders_used != null ? Number(strat.orders_used)
       : Number(data.broker_trades_today ?? 0);
-    const left = strat.orders_left != null ? Number(strat.orders_left)
-      : (Number.isFinite(maxOrd) ? Math.max(0, maxOrd - (Number.isFinite(used) ? used : 0)) : null);
+    let left = maxOrd != null
+      ? Math.max(0, maxOrd - (Number.isFinite(used) ? used : 0))
+      : null;
     const minConf = strat.min_confidence != null ? Number(strat.min_confidence)
       : (pol.min_confidence != null ? Number(pol.min_confidence) : null);
     const ready = strat.risk_ready != null ? !!strat.risk_ready : book.risk_ready === true;
     const flags = [];
     flags.push({ ok: true, text: `Mode ${mode}${laOn ? " · Moss live agent on" : ""}` });
+    const evalCount = strat.eval_symbols_count != null ? Number(strat.eval_symbols_count) : null;
+    const sample = (strat.eval_symbols_sample && strat.eval_symbols_sample.length)
+      ? strat.eval_symbols_sample
+      : (symbols || []);
+    const universeText = strat.universe_label
+      || (Number.isFinite(evalCount) && evalCount > 0
+        ? `Live auto + eval: full equity watchlist (${evalCount}) · sample ${sample.slice(0, 6).join(", ")}${evalCount > 6 ? "…" : ""}`
+        : (symbols.length
+          ? `Universe: ${symbols.slice(0, 6).join(", ")}${symbols.length > 6 ? "…" : ""}`
+          : "Universe: not set"));
     flags.push({
-      ok: spyOnly,
-      text: spyOnly ? "Universe: SPY-only (school rail)" : (symbols.length ? `Universe: ${symbols.slice(0, 6).join(", ")}${symbols.length > 6 ? "…" : ""}` : "Universe: not set"),
+      ok: true,
+      text: universeText,
+    });
+    const uncappedOrder = !Number.isFinite(maxOrder) || maxOrder >= 1e8;
+    const uncappedLoss = !Number.isFinite(maxLoss) || maxLoss >= 1e8;
+    const uncappedTrades = !Number.isFinite(maxOrd) || maxOrd >= 1e5;
+    flags.push({
+      ok: true,
+      text: uncappedOrder ? "Max order uncapped (broker rules)" : `Max order ${fmtMoney(maxOrder)}`,
     });
     flags.push({
-      ok: Number.isFinite(maxOrder),
-      text: Number.isFinite(maxOrder) ? `Max order ${fmtMoney(maxOrder)}` : "Max order unset",
+      ok: true,
+      text: uncappedLoss ? "Daily loss uncapped (broker rules)" : `Daily loss cap ${fmtMoney(maxLoss)}`,
     });
-    flags.push({
-      ok: Number.isFinite(maxLoss),
-      text: Number.isFinite(maxLoss) ? `Daily loss cap ${fmtMoney(maxLoss)}` : "Daily loss cap unset",
-    });
-    const ordersOk = left == null ? true : left > 0;
+    const ordersOk = left == null || uncappedTrades ? true : left > 0;
     flags.push({
       ok: ordersOk,
-      text: Number.isFinite(maxOrd)
-        ? `Orders ${Number.isFinite(used) ? used : 0}/${maxOrd} · ${left} left`
-        : "Order cap unset",
+      text: uncappedTrades
+        ? `Orders ${Number.isFinite(used) ? used : 0} today · uncapped`
+        : (Number.isFinite(maxOrd)
+          ? `Orders ${Number.isFinite(used) ? used : 0}/${maxOrd} · ${left} left`
+          : "Order cap unset"),
     });
     if (minConf != null && Number.isFinite(minConf)) {
       flags.push({ ok: true, text: `Min confidence ${Math.round(minConf * 100)}%` });
@@ -4734,15 +4810,87 @@
     if (nextEl) {
       let next = "Stand by — no forced trade.";
       if (!ready) next = "Do not take new risk until broker day P&L / risk_ready is available.";
-      else if (left === 0) next = "School 1-trade cap used — manage open risk / journal; no new entries today.";
+      else if (!uncappedTrades && left === 0) next = "Daily order cap used — manage open risk / journal; no new entries today.";
       else if (hit) next = "Goal hit — new risk paused. Journal the win; do not chase size.";
-      else if (spyOnly && left > 0) next = "One slot left under school rails — wait for a high-quality SPY PASS with fresh quote.";
-      else if (left > 0) next = "Slot available — prefer PASS + confidence above min; skip late/chasing entries.";
+      else next = "Full-universe live auto on — prefer PASS + confidence above min; skip late/chasing entries.";
       nextEl.textContent = next;
     }
   }
 
+
+  function practicalRail(value, kind) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    if (kind === "trades") return n >= 10000 ? null : n;
+    return n >= 1e8 ? null : n;
+  }
+
+  
+  /* BEGINNER_UX_PULSE */
+  function syncBeginnerPulse(data) {
+    try {
+      const book = (data && data.broker_book) || {};
+      const dayPnl = book.day_pnl_usd;
+      const pnlKnown = typeof dayPnl === "number" && Number.isFinite(dayPnl);
+      const ready = book.ok && book.risk_ready === true && pnlKnown;
+      const readyWord = ready ? "Ready" : !book.ok ? "Not connected" : book.risk_ready === true ? "Almost — waiting on P&L" : "Not ready";
+      const readyCls = ready ? "is-ready" : readyWord.indexOf("Almost") >= 0 ? "is-partial" : "is-blocked";
+      const dot = $("#bx-ready-dot");
+      if (dot) {
+        dot.classList.remove("is-ready", "is-partial", "is-blocked");
+        dot.classList.add(readyCls);
+      }
+      const readyLabel = $("#bx-ready-label");
+      if (readyLabel) readyLabel.textContent = readyWord;
+      const readySub = $("#bx-ready-sub");
+      if (readySub) {
+        readySub.textContent = book.risk_error
+          ? String(book.risk_error).slice(0, 120)
+          : ready
+            ? "Daily P&L verified — order checks still apply"
+            : "New risk stays blocked until day P&L is verified";
+      }
+      const pnlEl = $("#bx-day-pnl");
+      if (pnlEl) {
+        pnlEl.textContent = pnlKnown ? (typeof fmtSigned === "function" ? fmtSigned(dayPnl) : String(dayPnl)) : "—";
+        pnlEl.classList.toggle("pos", pnlKnown && dayPnl >= 0);
+        pnlEl.classList.toggle("neg", pnlKnown && dayPnl < 0);
+      }
+      const pnlCard = $("#bx-pnl-card");
+      if (pnlCard) pnlCard.classList.toggle("is-live", pnlKnown);
+      const bp = book.buying_power;
+      const bpEl = $("#bx-buying-power");
+      if (bpEl) bpEl.textContent = typeof bp === "number" && Number.isFinite(bp) ? fmtMoney(bp) : "—";
+      const eq = book.equity;
+      const eqEl = $("#bx-equity");
+      if (eqEl) eqEl.textContent = typeof eq === "number" && Number.isFinite(eq) ? fmtMoney(eq) : "—";
+
+      const goalMini = $("#bx-goal-mini");
+      const soft = Number(data?.config?.soft_daily_goal_usd ?? data?.config?.daily_target_usd ?? $("#live-soft-goal")?.value);
+      const hasGoal = Number.isFinite(soft) && soft > 0;
+      if (goalMini) goalMini.hidden = !hasGoal && !pnlKnown;
+      if (hasGoal || pnlKnown) {
+        const gPnl = $("#bx-goal-pnl");
+        if (gPnl) {
+          gPnl.textContent = pnlKnown ? (typeof fmtSigned === "function" ? fmtSigned(dayPnl) : String(dayPnl)) : "—";
+          gPnl.classList.toggle("pos", pnlKnown && dayPnl >= 0);
+          gPnl.classList.toggle("neg", pnlKnown && dayPnl < 0);
+        }
+        const gTgt = $("#bx-goal-tgt");
+        if (gTgt) gTgt.textContent = hasGoal ? ("goal " + fmtMoney(soft)) : "no goal";
+        const fill = $("#bx-goal-fill");
+        if (fill && hasGoal && pnlKnown) {
+          const pct = Math.max(0, Math.min(100, Math.round((dayPnl / soft) * 100)));
+          fill.style.width = pct + "%";
+          fill.classList.toggle("is-hit", dayPnl >= soft);
+          fill.classList.toggle("is-near", dayPnl >= soft * 0.8 && dayPnl < soft);
+        }
+      }
+    } catch (_) {}
+  }
+
   function renderRiskCockpit(data) {
+    syncBeginnerPulse(data);
     const grid = $("#risk-cockpit-grid");
     const book = data.broker_book || {};
     const broker = data.broker || {};
@@ -4751,10 +4899,24 @@
     const dayPnl = book.day_pnl_usd;
     const lossCap = Number(ks.max_daily_loss_usd ?? ks.max_daily_loss ?? $("#ks-loss")?.value);
     const maxTrades = Number(ks.max_trades_per_day ?? ks.max_orders_per_day ?? $("#ks-trades")?.value);
-    const used = Number(data?.loop?.session_totals?.intents ?? data?.broker_trades_today ?? data?.daily?.trades ?? 0);
+    // Prefer broker-attributed fills / strategy rails — never paper loop intents.
+    const used = Number(
+      data?.strategy_status?.orders_used ??
+      data?.broker_trades_today ??
+      data?.daily?.broker_trades ??
+      0
+    );
     const rows = book.positions || [];
-    const priced = book.ok && rows.every(position => Number.isFinite(Number(position.last)) && position.last != null);
-    const exposure = priced ? rows.reduce((sum, position) => sum + Math.abs(Number(position.shares) * Number(position.last)), 0) : null;
+    const markOf = (position) => {
+      const last = Number(position.last);
+      if (Number.isFinite(last) && last > 0) return last;
+      const avg = Number(position.avg_price);
+      return Number.isFinite(avg) && avg > 0 ? avg : null;
+    };
+    const priced = book.ok && rows.every(position => markOf(position) != null);
+    const exposure = priced
+      ? rows.reduce((sum, position) => sum + Math.abs(Number(position.shares) * markOf(position)), 0)
+      : null;
     const permission = broker.paper_mode == null ? "Identity unverified" : "Order checks required";
     const accountState = !book.ok ? "Unavailable" : book.risk_error ? "Incomplete" : "Available";
     const ready = book.ok && book.risk_ready === true && typeof dayPnl === "number" && Number.isFinite(dayPnl);

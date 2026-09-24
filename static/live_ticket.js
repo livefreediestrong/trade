@@ -39,6 +39,14 @@
     $('live-ticket-send').disabled = true;
   }
 
+  /** Treat validator-ceiling live_agent numbers as open (null display). */
+  function practicalCap(value, kind) {
+    const n = Number(value);
+    if (!finite(n)) return null;
+    if (kind === 'trades') return n >= 10000 ? null : n;
+    return n >= 1e8 ? null : n; // order / daily-loss USD
+  }
+
   function capsFromSnapshot() {
     const cfg = snapshot?.config || {};
     const agent = cfg.live_agent;
@@ -50,12 +58,13 @@
           max_position_size_usd: agent.policy?.max_order_usd
         }
       : (cfg.kill_switch || {});
-    const maxOrder = finite(Number(ks.max_position_size_usd)) ? Number(ks.max_position_size_usd) : null;
-    const dailyLoss = finite(Number(ks.max_daily_loss_usd)) ? Number(ks.max_daily_loss_usd) : null;
-    const maxTrades = finite(Number(ks.max_trades_per_day)) ? Number(ks.max_trades_per_day) : null;
+    const maxOrder = practicalCap(ks.max_position_size_usd, 'usd');
+    const dailyLoss = practicalCap(ks.max_daily_loss_usd, 'usd');
+    const maxTrades = practicalCap(ks.max_trades_per_day, 'trades');
     const used = Number(snapshot?.loop?.session_totals?.intents || snapshot?.daily?.trades || 0);
     const left = maxTrades != null ? Math.max(0, maxTrades - (finite(used) ? used : 0)) : null;
-    return { maxOrder, dailyLoss, left, armed: ks.armed === true };
+    const armed = ks.armed === true && (maxOrder != null || dailyLoss != null || maxTrades != null);
+    return { maxOrder, dailyLoss, left, armed };
   }
 
   function quoteForSymbol(symbol) {
@@ -127,16 +136,20 @@
       : (Array.isArray(pol.symbols) ? pol.symbols.map(s => String(s).toUpperCase()) : null);
     const items = [];
 
-    // Edge / universe
+    // Edge / live ORDER allow-list (evaluation may cover the full watchlist)
+    const evalCount = strat.eval_symbols_count != null ? Number(strat.eval_symbols_count) : null;
     if (allowed && allowed.length) {
       const ok = !sym || allowed.includes(sym);
+      const n = Number.isFinite(evalCount) && evalCount > 0 ? evalCount : allowed.length;
+      const orderLabel = n > 1
+        ? `Live orders: full equity universe (${n}) · uncapped (broker rules)`
+        : `Live orders: ${allowed[0]} · uncapped (broker rules)`;
+      const evalNote = Number.isFinite(evalCount) ? ` · eval: full watchlist (${evalCount})` : ' · eval: full watchlist';
       items.push({ ok, text: ok
-        ? (allowed.length === 1 && allowed[0] === 'SPY'
-          ? 'Universe OK · SPY-only school rail'
-          : `Symbol ${sym || '—'} in allowed set (${allowed.slice(0, 4).join(', ')})`)
-        : `Symbol ${sym} outside Moss live universe (${allowed.join(', ')}) — do not force` });
+        ? `${orderLabel}${evalNote}`
+        : `Symbol ${sym} outside live-order allow-list — eval may still rank it; do not force auto-order` });
     } else {
-      items.push({ ok: true, text: 'Universe policy not attached to ticket · check Strategy strip' });
+      items.push({ ok: true, text: 'Live orders: full universe · uncapped (broker rules) · review/ack/risk_ready stay' });
     }
 
     // Risk ready
@@ -223,12 +236,12 @@
     const maxEl = $('live-ticket-cap-max');
     const lossEl = $('live-ticket-cap-loss');
     const ordersEl = $('live-ticket-cap-orders');
-    if (maxEl) maxEl.textContent = maxOrder != null ? money(maxOrder) : '—';
-    if (lossEl) lossEl.textContent = dailyLoss != null ? money(dailyLoss) : '—';
+    if (maxEl) maxEl.textContent = maxOrder != null ? money(maxOrder) : 'open';
+    if (lossEl) lossEl.textContent = dailyLoss != null ? money(dailyLoss) : 'open';
     if (ordersEl) {
       ordersEl.textContent = left != null
         ? (maxTrades != null ? `${left} left (${used}/${maxTrades})` : String(left))
-        : '—';
+        : 'open';
     }
 
     const maxMeter = ensureCapMeter(maxEl);
@@ -380,7 +393,7 @@
     $('live-ticket-option-panel').hidden = instrument !== 'option';
     if (instrument === 'option') {
       clearReview();
-      message('Live long single-leg options (BTO/STC). STO/BTC and multi-leg stay paper-only.');
+      message('Live options BTO/STC/STO/BTC. Naked STO needs Allow naked; covered needs long shares.');
     }
   }
 
@@ -391,7 +404,7 @@
 
   function statusText() {
     if (instrument === 'option') {
-      return 'Live long single-leg (BTO/STC). Confirm the OCC symbol on review before anything sends.';
+      return 'Live options (BTO/STC/STO/BTC). Confirm the OCC symbol on review before anything sends.';
     }
     const fresh = snapshot && Date.now() - received < 25000;
     if (!fresh) return 'Waiting for a fresh desk status. Composing a ticket sends no order.';
@@ -573,7 +586,7 @@
       const { maxOrder } = capsFromSnapshot();
       const key = btn.getAttribute('data-lt-preset');
       $('live-ticket-size').value =
-        key === 'max' ? String(maxOrder != null ? maxOrder : 10) : key;
+        key === 'max' ? String(maxOrder != null ? maxOrder : '') : key;
       clearReview();
       update();
     });
@@ -643,13 +656,11 @@
   document.querySelectorAll('#live-ticket-option-panel [data-lt-opt]').forEach(btn => {
     btn.addEventListener('click', () => {
       const act = btn.getAttribute('data-lt-opt');
-      if (act === 'STO' || act === 'BTC') {
-        message(`${act} is not available on live options v1 (no naked shorts). Use Paper Options.`);
-        return;
-      }
       document.querySelectorAll('#live-ticket-option-panel [data-lt-opt]').forEach(b => setPressed(b, false));
       setPressed(btn, true);
       optIntent = act;
+      if (act === 'STO') message('STO selected — check Covered (long shares) or Allow naked short before review.');
+      else if (act === 'BTC') message('BTC selected — requires an existing short option holding.');
       optSummary();
     });
   });
@@ -679,9 +690,13 @@
       message('Direct tickets require IBKR and Approve each — live broker mode.');
       return;
     }
-    if (optIntent === 'STO' || optIntent === 'BTC') {
-      message(`${optIntent} is blocked in live options v1.`);
-      return;
+    if (optIntent === 'STO') {
+      const covered = !!$('live-ticket-opt-covered')?.checked;
+      const naked = !!$('live-ticket-opt-naked')?.checked;
+      if (!covered && !naked) {
+        message('STO needs Covered (long shares) or Allow naked short.');
+        return;
+      }
     }
     clearReview();
     const mine = generation;
@@ -691,6 +706,8 @@
     const body = {
       ticker: $('live-ticket-opt-symbol').value.trim().toUpperCase(),
       intent: optIntent,
+          covered: !!$('live-ticket-opt-covered')?.checked,
+          allow_naked: !!$('live-ticket-opt-naked')?.checked,
       contracts: Number($('live-ticket-opt-contracts').value),
       right: optRight,
       expiry: $('live-ticket-opt-expiry').value,
@@ -705,7 +722,7 @@
       show({
         ...data,
         ticker: data.ack_symbol || data.local_symbol || data.ticker,
-        intent: data.intent === 'STC' ? 'sell' : 'buy',
+        intent: (data.intent === 'STC' || data.intent === 'STO') ? 'sell' : 'buy',
         held_shares: data.held_contracts,
         available_whole_shares: data.held_contracts,
         order: {
@@ -731,7 +748,7 @@
   form.addEventListener('submit', async event => {
     event.preventDefault();
     if (instrument !== 'stock') {
-      message('Live long single-leg options (BTO/STC). STO/BTC and multi-leg stay paper-only.');
+      message('Live options BTO/STC/STO/BTC. Naked STO needs Allow naked; covered needs long shares.');
       return;
     }
     if (previewing || submitting || $('live-ticket-preview').disabled) return;

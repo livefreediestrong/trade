@@ -14,7 +14,7 @@ def test_option_notional_uses_multiplier():
 
 
 def test_canonical_option_order_refuses_sto():
-    with pytest.raises(ValueError, match="STO|naked|short"):
+    with pytest.raises(ValueError, match="STO|naked|short|covered|allow_naked"):
         order_terms.canonical_option_order(
             {"side": "sell", "suggested_shares": 1},
             {"type": "market", "right": "C", "expiry": "2026-10-17", "strike": 500, "intent": "STO"},
@@ -40,7 +40,7 @@ def test_place_option_helper_refuses_sto_without_broker_io():
 
     class FakeIB:
         def qualifyContracts(self, *a, **k):
-            raise Boom("should not qualify STO")
+            raise Boom("should not qualify unflagged STO")
         def positions(self, *a, **k):
             return []
         def openTrades(self):
@@ -49,8 +49,10 @@ def test_place_option_helper_refuses_sto_without_broker_io():
             raise Boom("should not place")
         def sleep(self, *a, **k):
             return None
+        def accountSummary(self, *a, **k):
+            return []
 
-    with pytest.raises(ValueError, match="STO|naked|short|refuses"):
+    with pytest.raises(ValueError, match="STO|naked|short|covered|allow_naked|refuses"):
         ibkr._place_option_from_desk(
             FakeIB(),
             {"option_intent": "STO", "side": "sell", "contracts": 1, "right": "C",

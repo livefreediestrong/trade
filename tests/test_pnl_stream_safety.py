@@ -45,6 +45,17 @@ def stream(monkeypatch):
     monkeypatch.setattr(broker, "_SERVER_UNAVAILABLE", False)
     monkeypatch.setattr(broker, "_RESYNC_REQUIRED", False)
     monkeypatch.setattr(broker, "_CONNECTION", {"connected": True, "error": None})
+    monkeypatch.setattr(broker, "_PNL_WATCH", {
+        "ui_status": None, "last_error_code": None, "soft_reconnect_count": 0,
+        "last_soft_reconnect_at": 0.0, "last_scheduled_refresh_at": 0.0,
+        "pending_soft_reconnect": False, "pending_reason": None,
+    })
+    monkeypatch.setattr(broker, "_SOFT_RECONNECT_AFTER", 0.0)
+    monkeypatch.setattr(broker, "_PNL_SILENT_RETRY_SEC", 60.0)
+    monkeypatch.setattr(broker, "_PNL_FIRST_CALLBACK_WAIT_SEC", 3.0)
+    monkeypatch.setattr(broker, "_PNL_SOFT_RECONNECT_WAIT_SEC", 90.0)
+    monkeypatch.setattr(broker, '_ACCOUNT_UNSUBSCRIBED', False)
+    monkeypatch.setattr(broker, '_ACCOUNT_RESUBSCRIBE_AFTER', 0.0)
     monkeypatch.setattr(broker, "_pnl_day", lambda: day[0])
     monkeypatch.setattr(broker.time, "monotonic", lambda: clock[0])
 
