@@ -1463,7 +1463,10 @@
     if (startup) {
       const broker = data.broker || {};
       const book = data.broker_book;
-      startup.textContent = broker.paper_mode == null ? (broker.connection_error || data.startup?.message || "")
+      startup.textContent = broker.configured === false
+        ? "No broker is configured, so live trading is off. Paper practice still works."
+        : broker.connected === false && broker.connection_error ? `Broker not connected: ${broker.connection_error}`
+        : broker.paper_mode == null ? (broker.connection_error || data.startup?.message || "")
         : book?.ok === false ? `Broker account identified; account data unavailable: ${book.error || "check Gateway"}`
         : book?.risk_error ? `Broker account connected. ${book.risk_error}`
         : "Broker account identified. Each order still passes account and risk checks.";

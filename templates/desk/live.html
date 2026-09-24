@@ -1,6 +1,7 @@
 <section id="desk-live" class="desk-section live-section" aria-labelledby="desk-live-title">
-<div class="section-heading">
-  <h2 id="desk-live-title">Auto trading</h2>
+{# The Ticket page has its own "Buy or sell" heading; an "Auto trading" title here would contradict it. #}
+<div class="section-heading"{% if desk_page|default("") == "ticket" %} hidden{% endif %}>
+  <h2 id="desk-live-title">{% if desk_page|default("") == "ticket" %}Buy or sell{% else %}Auto trading{% endif %}</h2>
   <p>Real broker account. Follow the flow top to bottom — market pulse, money &amp; readiness, what Moss is doing, then buy/sell and your positions.</p>
 </div>
 {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}{% include "desk/scanner_link.html" %}{% endif %}

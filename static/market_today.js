@@ -7,6 +7,13 @@
 
   function $(sel, el) { return (el || document).querySelector(sel); }
 
+  // null/undefined/"" mean "no quote"; Number(null) would turn them into 0.00%.
+  function num(v) {
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
   function fmtPct(n) {
     if (typeof n !== "number" || !Number.isFinite(n)) return "—";
     const sign = n > 0 ? "+" : "";
@@ -52,9 +59,11 @@
     const when = (data && (data.as_of_local || data.as_of)) || "";
     if (ts) ts.textContent = when ? ("Updated " + when) : "Waiting…";
 
-    let up = 0, dn = 0, flat = 0;
+    let up = 0, dn = 0, flat = 0, missing = 0;
     items.forEach((it) => {
-      const t = tone(it.change_pct);
+      const chg = num(it.change_pct);
+      if (chg === null) { missing += 1; return; }
+      const t = tone(chg);
       if (t === "up") up += 1;
       else if (t === "dn") dn += 1;
       else flat += 1;
@@ -62,13 +71,16 @@
     if (summary) {
       if (!items.length) {
         summary.innerHTML = '<span class="flat">Loading market pulse…</span>';
+      } else if (missing === items.length) {
+        summary.innerHTML = '<span class="flat">Quotes unavailable right now — no index or sector data to show.</span>';
       } else {
         const lean = up > dn + 1 ? "Mostly higher" : dn > up + 1 ? "Mostly lower" : "Mixed";
         summary.innerHTML =
           '<span class="' + (lean.indexOf("higher") >= 0 ? "up" : lean.indexOf("lower") >= 0 ? "dn" : "flat") + '">' + lean + "</span>" +
           '<span class="up">' + up + " up</span>" +
           '<span class="dn">' + dn + " down</span>" +
-          (flat ? '<span class="flat">' + flat + " flat</span>" : "");
+          (flat ? '<span class="flat">' + flat + " flat</span>" : "") +
+          (missing ? '<span class="flat">' + missing + " no quote</span>" : "");
       }
     }
 
@@ -83,12 +95,12 @@
     }
 
     const sig = items.map((it) => it.symbol + ":" + (it.change_pct ?? "")).join("|");
-    const maxAbs = Math.max(0.5, ...items.map((it) => Math.abs(Number(it.change_pct) || 0)));
+    const maxAbs = Math.max(0.5, ...items.map((it) => Math.abs(num(it.change_pct) || 0)));
 
     grid.innerHTML = items.map((it) => {
-      const chg = Number(it.change_pct);
-      const t = tone(chg);
-      const barPct = Math.max(4, Math.min(100, Math.round((Math.abs(chg) / maxAbs) * 100)));
+      const chg = num(it.change_pct);
+      const t = chg === null ? "na" : tone(chg);
+      const barPct = chg === null ? 0 : Math.max(4, Math.min(100, Math.round((Math.abs(chg) / maxAbs) * 100)));
       const path = sparkPath(it.spark);
       const flash = lastSig && lastSig.indexOf(it.symbol + ":") >= 0 && lastSig !== sig ? " is-flash" : "";
       return (
@@ -96,7 +108,7 @@
           '<span class="mt-sym">' + String(it.symbol || "") + "</span>" +
           '<span class="mt-name">' + String(it.name || "") + "</span>" +
           '<span class="mt-chg">' + fmtPct(chg) + "</span>" +
-          '<span class="mt-px">' + fmtPx(Number(it.price)) + "</span>" +
+          '<span class="mt-px">' + (chg === null && num(it.price) === null ? "No quote" : fmtPx(num(it.price))) + "</span>" +
           '<div class="mt-bar" aria-hidden="true"><div class="mt-bar-fill" style="width:' + barPct + '%"></div></div>' +
           (path
             ? '<svg class="mt-spark" viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden="true"><path d="' + path + '"/></svg>'

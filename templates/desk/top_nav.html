@@ -12,5 +12,6 @@
     <a role="listitem" href="/desk/ticket" class="desk-topnav-link{% if desk_page == 'ticket' %} is-active{% endif %}" title="Buy or sell ticket">Ticket</a>
     <a role="listitem" href="/desk/settings" class="desk-topnav-link desk-topnav-muted{% if desk_page == 'settings' %} is-active{% endif %}">Settings</a>
   </div>
-  <p class="desk-topnav-hint" id="desk-page-hint">{{ page_hint|default("") }}</p>
+  {# Split pages repeat the hint in their banner; only the legacy full desk needs it here. #}
+  {% if desk_page|default("") == "all" %}<p class="desk-topnav-hint" id="desk-page-hint">{{ page_hint|default("") }}</p>{% endif %}
 </nav>
