@@ -9,7 +9,7 @@
   const val = id => $(id).value;
   const checked = id => $(id).checked;
   const instrument = r => r.asset_type==='OPT' ? `${r.local_symbol||r.ticker} · ${r.expiry||''} ${r.right||''} ${r.strike??''} · multiplier ${r.multiplier||'unknown'}` : r.ticker;
-  let snapshot, initialized = false, paperInitialized = false, workdayInitialized = false, pollTimer, fetching = false, busyBefore = false, costRevision = 0;
+  let snapshot, initialized = false, paperInitialized = false, workdayInitialized = false, pollTimer, fetching = false, pageActive = true, busyBefore = false, costRevision = 0;
   async function api(url, body) {
     const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), 25000);
     try {
@@ -94,10 +94,10 @@
     busyBefore=s.busy || w?.busy;
   }
   async function refresh() {
-    if(document.hidden || fetching) return;
+    if(!pageActive || document.hidden || fetching) return;
     fetching=true;const startedAt=Date.now();
     try { render(await api('/api/companion'),startedAt); } catch(e) { txt('moss-status','Notebook unavailable'); txt('moss-insight',e.message); window.dispatchEvent(new CustomEvent('moss:state',{detail:{error:true}}));window.dispatchEvent(new CustomEvent('moss:workday',{detail:{error:true,startedAt}})); }
-    finally { fetching=false; clearTimeout(pollTimer); if(!document.hidden) pollTimer=setTimeout(refresh,busyBefore?5000:15000); }
+    finally { fetching=false; clearTimeout(pollTimer); if(pageActive&&!document.hidden) pollTimer=setTimeout(refresh,busyBefore?5000:15000); }
   }
   $('moss-research').addEventListener('click',e=>task(e.currentTarget,'moss-insight',async()=>{await api('/api/companion/research',{}); await refresh();}));
   $('moss-history').addEventListener('change',showEntry);
@@ -139,6 +139,7 @@
   document.addEventListener('click',e=>{const link=e.target.closest('a[href^="#"]');if(!link)return;const target=document.getElementById(link.getAttribute('href').slice(1));if(target?.tagName==='DETAILS')target.open=true;});
   document.addEventListener('visibilitychange',()=>{clearTimeout(pollTimer);if(!document.hidden)refresh();});
   window.addEventListener('moss:refresh',refresh);
-  window.addEventListener('pagehide',()=>clearTimeout(pollTimer));
+  window.addEventListener('pagehide',()=>{pageActive=false;clearTimeout(pollTimer);});
+  window.addEventListener('pageshow',()=>{pageActive=true;clearTimeout(pollTimer);refresh();});
   refresh();
 })();

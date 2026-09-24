@@ -135,3 +135,17 @@ Invoke-DeskLauncher
 $status = Get-Content -LiteralPath (Join-Path $Root 'data\launcher-status.json') -Raw | ConvertFrom-Json
 if ($status.gateway -ne 'startup_error' -or $script:opened -ne 'http://127.0.0.1:59433/') { throw 'Gateway failure hid the healthy desk' }
 ''')
+
+
+def test_installer_rechecks_python_and_pydantic_after_repair(tmp_path):
+    run_ps(tmp_path, r'''
+New-Item -ItemType Directory -Force -Path (Join-Path $Root '.venv\Scripts') | Out-Null
+New-Item -ItemType File -Path (Join-Path $Root '.venv\Scripts\python.exe') | Out-Null
+$script:calls = @()
+function Invoke-SetupCommand($Executable,$Arguments,$LogPath) {
+    $script:calls += ($Arguments -join ' ')
+    if ($script:calls.Count -eq 1) { return 1 }; return 0
+}
+Ensure-DeskPython $Root | Out-Null
+if ($script:calls.Count -ne 3 -or $script:calls[0] -notlike '*pydantic.VERSION*' -or $script:calls[0] -notlike '*sys.version_info*' -or $script:calls[2] -ne $script:calls[0]) { throw 'Dependency versions not rechecked' }
+''')

@@ -39,5 +39,5 @@
   }
   document.addEventListener('keydown',e=>{if(e.key==='Escape')hide();});
   document.addEventListener('pointerdown',e=>{if(active&&!active.button.contains(e.target)&&!active.tip.contains(e.target))hide();});
-  window.addEventListener('resize',hide);window.addEventListener('scroll',hide,{passive:true});
+  window.addEventListener('resize',hide);window.addEventListener('scroll',hide,{passive:true,capture:true});
 })();

@@ -13,25 +13,32 @@ import zipfile
 VERSION = "source-release-v1"
 FOLDERS = {"static", "templates", "tools", "tests", "docs"}
 EXTENSIONS = {".py", ".js", ".cjs", ".css", ".html", ".md", ".ps1", ".cmd", ".bat", ".vbs", ".png", ".svg", ".ico", ".txt", ".ttf", ".woff2"}
+ROOT_FILES = {"README.md", "requirements.txt", "Launch.vbs", "Launch.bat", "Start-Tomahawk.ps1",
+              "run.bat", "force_restart.ps1", "install_and_restart.ps1", "restart_signal_desk.ps1",
+              "import_gf_watchlist.ps1", ".env.example", ".gitignore"}
 
 
 def allowed(name):
     path = Path(name)
+    if name in {".env.example", ".gitignore"}:
+        return True
     return (not path.is_absolute() and ".." not in path.parts and ":" not in name and "\\" not in name
             and not any(p.startswith(".") or p == "__pycache__" for p in path.parts)
-            and (len(path.parts) == 1 or path.parts[0] in FOLDERS)
+            and (path.parts[0] in FOLDERS if len(path.parts) > 1 else
+                 name in ROOT_FILES or (path.suffix == ".py" and not path.name.startswith("_")))
             and path.suffix.lower() in EXTENSIONS
             and (path.suffix != ".txt" or name == "requirements.txt"))
 
 
 def source_files(root):
-    root = Path(root)
+    root = Path(root).resolve()
     candidates = list(root.iterdir())
     for folder in FOLDERS:
         base = root/folder
         if base.is_dir() and not base.is_symlink():
             candidates.extend(base.rglob("*"))
-    return sorted(p for p in candidates if p.is_file() and not p.is_symlink() and allowed(p.relative_to(root).as_posix()))
+    return sorted(p for p in candidates if p.is_file() and not p.is_symlink()
+                  and p.resolve().is_relative_to(root) and allowed(p.relative_to(root).as_posix()))
 
 
 def manifest(root):

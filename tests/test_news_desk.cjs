@@ -1,6 +1,6 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const {newsQuip}=require('../static/news_quips.js');
-const nodes={},events={},timers=new Map(),spoken=[],requests=[],storage=new Map();let next=0,fail=false,accept=true;
+const nodes={},events={},timers=new Map(),spoken=[],requests=[],storage=new Map();let next=0,fail=false,accept=true,stall=false;
 function node(id){return nodes[id]??={id,children:[],textContent:'',hidden:false,append(...x){this.children.push(...x);},replaceChildren(...x){this.children=x;}};}
 const now=Date.now(),row={id:'story',title:'<script>earnings</script>',url:'https://www.cnbc.com/story',source:'CNBC',fresh:true,published_ts:(now-50000)/1000,checked_at:(now-1000)/1000};
 const payload={busy:false,sources:[{name:'CNBC',home:'https://www.cnbc.com/',kind:'Reporting',status:'connected',focus:'US markets',recent:1,checked_at:now/1000}],items:[row]};
@@ -8,7 +8,8 @@ const doc={hidden:false,getElementById:node,createElement:tag=>({...node('new-'+
 const context={document:doc,window:{NadzeelNews:{newsQuip},addEventListener:(k,f)=>events[k]=f,dispatchEvent(e){spoken.push(e);if(accept)e.preventDefault();return !e.defaultPrevented;}},
  sessionStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},
  CustomEvent:class{constructor(type,opts){this.type=type;Object.assign(this,opts);this.defaultPrevented=false;}preventDefault(){this.defaultPrevented=true;}},
- fetch:async(url,options)=>{assert.equal(url,'/api/companion/news');assert.equal(options,undefined);requests.push(url);return {ok:!fail,json:async()=>payload};},
+ AbortController,
+ fetch:async(url,options)=>{assert.equal(url,'/api/companion/news');assert.ok(options.signal);requests.push(url);if(stall)return new Promise((_,reject)=>options.signal.addEventListener('abort',()=>reject(new Error('aborted'))));return {ok:!fail,json:async()=>payload};},
  setTimeout(fn){timers.set(++next,fn);return next;},clearTimeout:id=>timers.delete(id)};
 const settle=()=>new Promise(r=>setImmediate(r));
 (async()=>{
@@ -19,7 +20,8 @@ const settle=()=>new Promise(r=>setImmediate(r));
  payload.items=[{...row,id:'second'}];accept=false;events.pageshow();await settle();assert.equal(spoken.length,2);assert(!storage.get('changing_woman_news_v1').includes('second'),'suppressed speech remains eligible later');
  accept=true;events.pageshow();await settle();assert.equal(spoken.length,3);assert(storage.get('changing_woman_news_v1').includes('second'));
  payload.items=[{...row,id:'stale',fresh:false}];events.pageshow();await settle();assert.equal(spoken.length,3);assert.equal(node('headline-story').hidden,true);
- fail=true;events.pageshow();await settle();assert.match(node('headline-status').textContent,/unavailable/);assert.equal(spoken.length,3);
+ fail=true;events.pageshow();await settle();assert.match(node('headline-status').textContent,/unavailable/);assert.match(node('headline-health').textContent,/unavailable/);assert.equal(spoken.length,3);
+ stall=true;events.pageshow();await settle();[...timers.values()][0]();await settle();assert.match(node('headline-health').textContent,/unavailable/);stall=false;
  const count=requests.length;doc.hidden=true;events.visibilitychange();assert.equal(timers.size,0);events.pageshow();await settle();assert.equal(requests.length,count);
  doc.hidden=false;events.visibilitychange();await settle();assert.equal(requests.length,count+1);
  events.pagehide();assert.equal(timers.size,0);

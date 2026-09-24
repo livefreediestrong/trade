@@ -401,3 +401,27 @@ assert.equal($('#risk-exposure').textContent,'$200');
 assert.equal($('#risk-slippage').textContent,'$4');
 assert.equal($('#risk-trade-allowed').textContent,'Order checks required');
 """)
+
+
+def test_compact_stream_preserves_history_clears_removed_rows_and_updates_risk():
+    run_js(['liteSignature','applyStateLite'], r'''
+let _liteSig='',fullStateSeen=false;
+let state={config:{mode:'live_manual'},signals:{expired:[{id:'old'}],approved:[{id:'filled'}],pending:[{id:'pending'}]},ledger:{}};
+const emitted=[];
+const window={dispatchEvent:e=>emitted.push(JSON.parse(JSON.stringify(e.detail)))};
+const CustomEvent=class{constructor(type,opts){this.type=type;this.detail=opts.detail;}};
+const workspaceView=x=>x;
+const renderStartupStatus=()=>{},renderOpenPnl=()=>{},renderBrokerBook=()=>{},syncThinking=()=>{},renderBleed=()=>{},renderBenchmark=()=>{},
+ renderTop=()=>{},renderLoopPanel=()=>{},renderBrainLedger=()=>{},renderPaperChrome=()=>{},renderBuzz=()=>{},renderHeat=()=>{},renderRadar=()=>{},
+ renderPace=()=>{},renderOpportunities=()=>{},renderPositions=()=>{},syncTradeGlowLedger=()=>{},updateDeskGuide=()=>{},scheduleSparks=()=>{},
+ renderSignals=()=>{},renderFills=()=>{},renderBrokerStatus=()=>{},renderWorkspaceChrome=()=>{};
+applyStateLite({ok:true,signal_history_delta:true,signals:{pending:[],approving:[],broker_pending:[]},broker:{paper_mode:false},
+ broker_book:{day_pnl_usd:null,risk_ready:false},config:{mode:'live_manual',kill_switch:{armed:false}},desk_call:{ticker:'LATEST'}});
+assert.deepEqual(state.signals.expired,[{id:'old'}]);assert.deepEqual(state.signals.pending,[]);
+assert.equal(emitted.at(-1).broker.paper_mode,false);assert.equal(emitted.at(-1).desk_call.ticker,'LATEST');
+assert.equal(emitted.at(-1).broker_book.day_pnl_usd,null);
+applyStateLite({ok:true,signal_history_delta:true,signals:{expired:[],pending:[]},broker_book:{day_pnl_usd:0,risk_ready:true}});
+assert.deepEqual(state.signals.expired,[]);assert.deepEqual(state.signals.approved,[{id:'filled'}]);assert.equal(state.broker_book.day_pnl_usd,0);
+applyStateLite({ok:true,signals:{pending:[],approved:[],expired:[]},broker_book:{day_pnl_usd:null,risk_ready:false}});
+assert.deepEqual(state.signals.approved,[]);assert.equal(state.broker_book.day_pnl_usd,null);
+''')

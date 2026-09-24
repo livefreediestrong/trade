@@ -4,10 +4,14 @@
  const $=id=>document.getElementById(id);if(!$('sale-market-filters'))return;
  const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  const number=v=>typeof v==='number'&&Number.isFinite(v)?v.toLocaleString('en-US',{maximumFractionDigits:2}):'Unavailable';
- let page=1,rows=[],timer,loading=false,sequence=0,selected=null,filters=new URLSearchParams(new FormData($('sale-market-filters')));
+ let page=1,rows=[],timer,loading=false,active=true,sequence=0,selected=null,filters=new URLSearchParams(new FormData($('sale-market-filters')));
  async function request(data){
-  const response=await fetch('/api/markets/scanner'+(data?'':'?'+new URLSearchParams([...filters,['page',String(page)]])),data?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}:{});
-  const value=await response.json();if(!response.ok||!value.ok)throw Error(value.error||'Market scan unavailable');return value;
+  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),15000);
+  try{
+   const response=await fetch('/api/markets/scanner'+(data?'':'?'+new URLSearchParams([...filters,['page',String(page)]])),{signal:controller.signal,...(data?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}:{})});
+   const value=await response.json();if(!response.ok||!value.ok)throw Error(value.error||'Market scan unavailable');return value;
+  }catch(e){if(e.name==='AbortError')throw Error('Scanner response timed out. Refresh status before repeating a control action');throw e;}
+  finally{clearTimeout(timeout);}
  }
  function inspect(row){
   selected=row.symbol;
@@ -36,8 +40,8 @@
   const current=rows.find(r=>r.symbol===selected);if(current&&!issues)inspect(current);
  }
  async function refresh(){
-  if(loading)return;loading=true;const version=sequence;
-  try{const d=await request();if(version===sequence)render(d);}catch(e){$('sale-market-message').textContent=e.message+' · Saved results may be out of date.';}finally{loading=false;if(version!==sequence)refresh();}
+  if(loading||!active||document.hidden)return;loading=true;const version=sequence;
+  try{const d=await request();if(active&&!document.hidden&&version===sequence)render(d);}catch(e){$('sale-market-message').textContent=e.message+' · Saved results may be out of date.';}finally{loading=false;if(version!==sequence&&active&&!document.hidden)refresh();}
  }
  async function control(action,button){
   button.disabled=true;sequence++;
@@ -58,6 +62,6 @@
   if(action==='cost'&&$('cost-symbol')){$('cost-symbol').value=selected;$('cost-symbol').dispatchEvent(new Event('input',{bubbles:true}));jump('cost-planner');}
   if(action==='chat'&&$('chat-ticker')){$('chat-ticker').value=selected;jump('chat-panel');}
  });
- function schedule(){clearInterval(timer);if(!document.hidden){refresh();timer=setInterval(refresh,8000);}}
- document.addEventListener('visibilitychange',schedule);window.addEventListener('pagehide',()=>clearInterval(timer));window.addEventListener('pageshow',schedule);schedule();
+ function schedule(){clearInterval(timer);if(active&&!document.hidden){refresh();timer=setInterval(refresh,8000);}}
+ document.addEventListener('visibilitychange',schedule);window.addEventListener('pagehide',()=>{active=false;clearInterval(timer);});window.addEventListener('pageshow',()=>{active=true;schedule();});schedule();
 })();

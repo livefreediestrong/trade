@@ -12,6 +12,7 @@ const row={symbol:'TEST',name:'<b>Company</b>',close:50,below_typical_pct:10,bel
 const context={document:{hidden:false,getElementById:node,querySelectorAll:()=>[],addEventListener:(k,fn)=>events[k]=fn},
  window:{addEventListener:(k,fn)=>windowEvents[k]=fn,dispatchEvent:e=>dispatched.push(e)},URLSearchParams,Date,Number,JSON,
  FormData:class{constructor(){return fields;}},Event:class{constructor(type){this.type=type;}},CustomEvent:class{constructor(type,opts){this.type=type;this.detail=opts.detail;}},
+ AbortController,setTimeout,clearTimeout,
  setInterval(fn){intervals.set(++next,fn);return next;},clearInterval:id=>intervals.delete(id),
  fetch:async(url,opts)=>{assert.ok(url.startsWith('/api/markets/scanner'),url);calls.push({url,opts});if(opts.method==='POST')state=JSON.parse(opts.body).action==='pause'?'paused':'running';
   return {ok:true,json:async()=>({ok:true,state,message:'Checking',results:[row],page:1,page_size:40,matched:1,total:11000,checked:10,valid:9,excluded:1,failed:0,pending:10990,

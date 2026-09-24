@@ -14,7 +14,7 @@
   if(next){
    const event=new CustomEvent('moss:news',{detail:next,cancelable:true});
    window.dispatchEvent(event);
-   if(event.defaultPrevented){seen.add(next.id);try{sessionStorage.setItem('changing_woman_news_v1',JSON.stringify([...seen].slice(-200)));}catch(_){}}
+   if(event.defaultPrevented){seen.add(next.id);seen=new Set([...seen].slice(-200));try{sessionStorage.setItem('changing_woman_news_v1',JSON.stringify([...seen]));}catch(_){}}
   }
   const preview=candidates[0];
   $('headline-story').hidden=!preview;
@@ -39,9 +39,10 @@
  }
  async function poll(){
   clearTimeout(timer);if(!active||document.hidden||busy)return;busy=true;let loading=false;
-  try{const r=await fetch('/api/companion/news');if(!r.ok)throw Error('Headline service unavailable');const d=await r.json();loading=d.busy;render(d);}
-  catch(_){$('headline-status').textContent='Headline service unavailable. Cached headlines keep their dates.';rows=[];present();}
-  finally{busy=false;if(active&&!document.hidden)timer=setTimeout(poll,loading?10000:60000);}
+  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),15000);
+  try{const r=await fetch('/api/companion/news',{signal:controller.signal});if(!r.ok)throw Error('Headline service unavailable');const d=await r.json();loading=d.busy;if(active&&!document.hidden)render(d);}
+  catch(_){$('headline-health').textContent='Feed status unavailable';$('headline-status').textContent='Headline service unavailable. Cached headlines keep their dates.';rows=[];present();}
+  finally{clearTimeout(timeout);busy=false;if(active&&!document.hidden)timer=setTimeout(poll,loading?10000:60000);}
  }
  document.addEventListener('visibilitychange',()=>{clearTimeout(timer);if(!document.hidden)poll();});
  window.addEventListener('pagehide',()=>{active=false;clearTimeout(timer);});window.addEventListener('pageshow',()=>{active=true;poll();});poll();

@@ -5004,7 +5004,6 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
       JSON.stringify(lite.config || null), JSON.stringify(lite.signals || null),
       JSON.stringify(lite.paper_daily || null), JSON.stringify(lite.paper_daily_recap || null),
       lite.paper_desk_call?.ts, lite.paper_desk_call?.execution_block, Math.floor((lite.paper_desk_call?.age_sec || 0) / 60),
-      JSON.stringify(lite.broker_book || null),
       loop.decision_in_flight, loop.last_skip,
     ].join("|");
   }
@@ -5032,7 +5031,8 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
       window.__oppEmptyStreak = 0;
     }
     if (lite.config) state.config = {...state.config, ...lite.config};
-    if (lite.signals) state.signals = lite.signals;
+    if (lite.signals) state.signals = lite.signal_history_delta
+      ? {...state.signals, ...lite.signals} : lite.signals;
     if (lite.broker_ledger) state.ledger = {...state.ledger, ...lite.broker_ledger};
     if (lite.paper_ledger) state.ledger = {...state.ledger, ...lite.paper_ledger};
     if (lite.paper_daily) state.paper_daily = lite.paper_daily;
@@ -5044,7 +5044,6 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
     if (lite.open_pnl_usd !== undefined) state.open_pnl_usd = lite.open_pnl_usd;
     if (lite.broker_trades_today !== undefined) state.broker_trades_today = lite.broker_trades_today;
     state.broker_book = lite.broker_book || null;
-    window.dispatchEvent(new CustomEvent("desk:state", {detail: state}));
     state.desk_call = lite.desk_call || null;
     state.startup = lite.startup || state.startup;
     if (lite.broker) state.broker = lite.broker;
@@ -5134,6 +5133,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
       if (lite.fee_bps != null) state.config.fee_bps = lite.fee_bps;
     }
     if (lite.model_cost) state.model_cost = lite.model_cost;
+    window.dispatchEvent(new CustomEvent("desk:state", {detail: state}));
     const view = workspaceView(state);
     // Soft updates - never touch #watchlist from lite (no cfg.watchlist array)
     renderTop(view);
@@ -5485,7 +5485,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
         clearTimeout(sseReconnectTimer);
         sseReconnectTimer = null;
       }
-      const q = loopFeedSeq ? `?since_seq=${loopFeedSeq}` : "";
+      const q = `?compact=1${loopFeedSeq ? `&since_seq=${loopFeedSeq}` : ""}`;
       const es = new EventSource("/api/loop/stream" + q);
       sseEs = es;
       es.addEventListener("hello", () => {
@@ -5641,7 +5641,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
           method: "POST",
           body: JSON.stringify({ brain_mode: mode }),
         });
-        toast(`Brain set to ${mode} (paper only)`);
+        toast(`Research brain set to ${mode} (live and paper research)`);
         await refresh();
       } catch (err) {
         toast(String(err.message || err), true);

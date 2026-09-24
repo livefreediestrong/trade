@@ -1,6 +1,6 @@
-# Plain single-page UI
+# Single-page UI map
 
-Updated 2026-09-23. This is a deliberately plain foundation for a later redesign. It keeps the existing Flask/Jinja and vanilla JavaScript stack, one page, and the current execution workflow.
+Updated 2026-09-24. The desk uses Flask/Jinja and vanilla JavaScript, with visible modules on one page. The current desert scene, logo and sidebar companions are layered on the existing trading workflow; no frontend build step is required.
 
 ## Where to edit
 
@@ -28,10 +28,15 @@ Updated 2026-09-23. This is a deliberately plain foundation for a later redesign
 | Options contract preview and separate paper book | `templates/desk/options.html`, `static/options.js`, `options_desk.py` |
 | Hover/focus secondary explanations | `static/context_help.js` |
 | Broad US stock and ETF directory | `market_universe.py`, `templates/desk/moss_workday.html` |
+| Shared scanner and Stocks on Sale | `templates/desk/scanner_workspace.html`, `static/sale_market.js`, `sale_scanner.py` |
+| Live automation summary and agent brief | `templates/desk/live_automation.html`, `templates/desk/agent_summary.html`, `static/agent_desk.js` |
+| Changing Woman's headlines and source health | `templates/desk/news_sources.html`, `static/news_desk.js`, `static/news_quips.js`, `companion_news.py` |
+| Sidebar habitat and scene motion | `templates/desk/sidebar_companions.html`, `static/nadzeel_motion.js`, `static/nadzeel_motion.css` |
+| Current compact layout overrides | `static/desk_layout.css` |
 
-The stylesheet has five base sections: tokens/base, page layout, data components, dialogs, and responsive rules, followed by workbench styles and a compact companion/planning section. Change its first token block for color, spacing, width, and fonts. The light-theme block overrides color tokens only. There is no generated stylesheet, CSS generator, frontend dependency installation, or build step.
+`app.css` holds base tokens, layout, data components, dialogs, responsive rules and workbench styles. `nadzeel.css` supplies the current visual theme; guidance, motion and layout have focused stylesheets loaded afterward in `index.html`. Inspect that order before changing an override. There is no generated stylesheet, CSS generator, frontend dependency installation, or build step.
 
-`desk_motion.js`, `trade_glow.js`, `desk_pulse.js` and the standalone old mock are archived under `docs/legacy-ui/`, outside the publicly served assets. Their decorative panels were removed. Existing optional hooks tolerate their absence. There is no Simple-mode control. The functional equity chart remains. New workflows use focused modules instead of expanding the large core renderer. See `WORKBENCH_IMPLEMENTATION.md` for behavior and qualification boundaries.
+`desk_motion.js`, `trade_glow.js`, `desk_pulse.js` and the standalone old mock are archived under `docs/legacy-ui/`, outside the publicly served assets. The current animated scene and companions use the separate files above. There is no Simple-mode control. New workflows use focused modules instead of expanding the large core renderer. See `WORKBENCH_IMPLEMENTATION.md` for behavior and qualification boundaries.
 
 ## How to change the layout
 
@@ -40,7 +45,7 @@ Moss's open-to-close configuration is `templates/desk/moss_workday.html`, includ
 - Reorder includes in `index.html` to reorder sections. Keep navigation targets and section headings in agreement.
 - Use `.panel` for a content block and `.wide-panel` when it should span both desktop columns. Below 850px, sections use one column.
 - Keep tables inside `.table-wrap`. Wide tables scroll inside their panel; they should not widen the document.
-- Use actual buttons, labels and native `details` for interactions. Avoid adding another component framework while the design is temporary.
+- Use actual buttons and labels. Keep primary modules visible rather than putting them in dropdown containers. Secondary explanations belong in hover/focus help; critical order and risk information stays visible.
 - Keep `.hidden` and `[hidden]` authoritative. In particular, CSS must not expose paper bracket fields during a live review, or display an approval modal that JavaScript has closed.
 - Preserve element IDs and data attributes used by `app.js`, especially review/confirmation controls and `data-workspace-only`. Moving a control across live/paper sections changes its meaning and requires a behavior test.
 - Keep account identity, real/simulated funds, quote age, broker response status, actual order status, and explicit confirmation visible where relevant. Color is supplementary to the text labels.
@@ -61,8 +66,8 @@ Then use the browser at desktop and narrow widths. Verify account/status text, p
 
 Reload the browser after CSS or template changes. Jinja template auto-reload checks file modification times, so future template edits do not require restarting the app or broker session. This does not enable the Flask debugger or process reloader. Python changes still require a controlled app restart through the existing launcher and a broker/P&L check afterward. A temporary read-only preview was used for this redesign to inspect the new templates before the one-time deployment restart.
 
-## Scope of this redesign
+## State updates and boundaries
 
-Implemented: neutral colors, system font, simple borders, plain controls, responsive columns, explicit sections, consolidated themes, and small template files. Removed: animated decorative panels, decorative script loading, generated theme overrides, and duplicate header text from view.
+The browser opts into `/api/loop/stream?compact=1`. Every connection begins with a complete signal history. Later frames may omit unchanged approved, rejected or expired groups and carry `signal_history_delta: true`; merge these groups by key. An explicit empty list clears a group. Pending signals, approvals, broker orders, balances and risk controls still arrive on each state frame. Legacy stream clients retain full snapshots. Keep `desk:state` dispatch after all incoming state has been merged.
 
-Preserved: the one-page workflow, live as the first section, separate paper funds/auto-approval/sizing, exact-order review, current P&L handling, research and history panels, launcher, and backend APIs. The original visual redesign introduced no trading features or broker permissions. The subsequent workbench changes are documented in `WORKBENCH_IMPLEMENTATION.md`; the original platform research remains in `TRADING_PLATFORM_REVIEW.md`.
+Preserve separate paper funds/auto-approval/sizing, exact-order review and current P&L validity handling when editing the UI. Missing P&L is not zero. The workbench behavior is documented in `WORKBENCH_IMPLEMENTATION.md`; the original platform research remains in `TRADING_PLATFORM_REVIEW.md`.

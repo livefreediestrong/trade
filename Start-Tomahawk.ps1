@@ -89,10 +89,13 @@ function Ensure-DeskPython([string]$LogDir) {
         $code = Invoke-SetupCommand $bootstrap.Source @('-m', 'venv', ('"' + (Join-Path $Root '.venv') + '"')) (Join-Path $LogDir 'setup.log')
         if ($code -ne 0) { throw 'Could not create the Python environment. See data\setup.log.' }
     }
-    $code = Invoke-SetupCommand $python @('-c', '"import flask,waitress,yfinance,pandas,numpy,requests,dotenv,tzdata,anthropic,ib_insync"') (Join-Path $LogDir 'dependency-check.log')
+    $check = '"import sys; assert sys.version_info >= (3,11); import flask,waitress,yfinance,pandas,numpy,requests,dotenv,tzdata,anthropic,ib_insync,pydantic; assert (2,13) <= tuple(map(int,pydantic.VERSION.split(''.'')[:2])) < (3,0)"'
+    $code = Invoke-SetupCommand $python @('-c', $check) (Join-Path $LogDir 'dependency-check.log')
     if ($code -ne 0) {
         $code = Invoke-SetupCommand $python @('-m', 'pip', 'install', '-r', ('"' + (Join-Path $Root 'requirements.txt') + '"')) (Join-Path $LogDir 'setup.log')
         if ($code -ne 0) { throw 'Dependency setup failed. Check your connection and data\setup.log, then open the shortcut again.' }
+        $code = Invoke-SetupCommand $python @('-c', $check) (Join-Path $LogDir 'dependency-check.log')
+        if ($code -ne 0) { throw 'Dependencies are still incompatible after setup. Python 3.11+ and Pydantic 2.13+ (below 3) are required. See data\dependency-check.log.' }
     }
     return $python
 }

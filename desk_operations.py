@@ -48,12 +48,22 @@ class EvidenceStore:
             conn.close()
 
     def put(self, kind, scope, logical_id, payload):
-        content = {"kind": kind, "scope": scope, "logical_id": str(logical_id), "payload": payload}
-        ident = fingerprint(content)
+        return self.put_many([(kind, scope, logical_id, payload)])[0]
+
+    def put_many(self, records):
+        """Validate all records first, then persist the batch in one transaction."""
+        rows = []
+        observed_at = utc()
+        for kind, scope, logical_id, payload in records:
+            content = {"kind": kind, "scope": scope, "logical_id": str(logical_id), "payload": payload}
+            ident = fingerprint(content)
+            rows.append((ident, kind, scope, str(logical_id), observed_at,
+                         json.dumps(payload, sort_keys=True, allow_nan=False)))
+        if not rows:
+            return []
         with self.db() as db:
-            db.execute("INSERT OR IGNORE INTO records VALUES(?,?,?,?,?,?)",
-                       (ident, kind, scope, str(logical_id), utc(), json.dumps(payload, sort_keys=True, allow_nan=False)))
-        return ident
+            db.executemany("INSERT OR IGNORE INTO records VALUES(?,?,?,?,?,?)", rows)
+        return [row[0] for row in rows]
 
     def list(self, kind=None, limit=150):
         with self.db() as db:
@@ -112,15 +122,15 @@ def sync(desk, store):
                ("fill", ledger.get("fills", []), "paper"), ("fill", ledger.get("broker_fills", []), "live"),
                ("execution", broker, "live"), ("notebook", briefs, "research"),
                ("option_fill", options.get("fills", []), "paper")]
-    count = 0
+    records = []
     for kind, rows, default in batches:
         for row in rows:
             logical = row.get("execution_id") or row.get("id") or row.get("seq")
             if logical is None:
                 continue
-            store.put(kind, scope(row, default), logical, row)
-            count += 1
-    return count
+            records.append((kind, scope(row, default), logical, row))
+    store.put_many(records)
+    return len(records)
 
 
 def dossier(store, ident):

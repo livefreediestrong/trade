@@ -79,25 +79,25 @@ def entry_quality(close, current_price=None):
     if lateness >= 75:
         label = "chasing"
         suggestion = (
-            "Right at the top. Wait for a real pullback (5%+) or take a "
-            "partial entry only — full size here invites whipsaw."
+            "Price is extended relative to this history. Check a fresh quote, "
+            "liquidity and your risk limits before evaluating an entry."
         )
     elif lateness >= 50:
         label = "late"
         suggestion = (
-            "The easy money is made. Either size down significantly or "
-            "wait for a flag/consolidation."
+            "Price has already moved substantially. This historical measure "
+            "does not establish whether the move will continue."
         )
     elif lateness >= 25:
         label = "fair"
         suggestion = (
-            "Reasonable entry — not bargain-hunting territory but not "
-            "extended either."
+            "Moderate historical extension. Entry quality still depends on "
+            "current data, costs and risk checks."
         )
     else:
         label = "early"
         suggestion = (
-            "Plenty of room. If the setup checks out, fine to enter at full size."
+            "Low historical extension; this does not establish upside or authorize position size."
         )
 
     warnings = []

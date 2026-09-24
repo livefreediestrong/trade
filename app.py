@@ -4744,6 +4744,13 @@ def ensure_paper_loop_started() -> None:
 _bg_stop = threading.Event()
 
 
+def _scheduled_scan_enabled(cfg: dict[str, Any]) -> bool:
+    """Scheduled ideas obey the session clock; explicit research stays available."""
+    return bool(cfg.get("session_active") or cfg.get("paper_research_enabled")) and (
+        not cfg.get("rth_only", True) or paper_loop_mod.is_rth(datetime.now(timezone.utc))
+    )
+
+
 def _bg_loop() -> None:
     """Background watchlist scan loop (volume-screener rules).
 
@@ -4782,7 +4789,7 @@ def _bg_loop() -> None:
                         should = True
                 if should and len(pending) >= 8:
                     should = False
-                should = should and bool(cfg.get("session_active") or cfg.get("paper_research_enabled"))
+                should = should and _scheduled_scan_enabled(cfg)
                 # One brain: pause background scan while paper loop is the active decision path.
                 if (
                     should
@@ -4812,7 +4819,8 @@ def _bg_loop() -> None:
                     pass
             if should and cfg is not None:
                 sig = generate_scan_signal(cfg, force=False)
-                if sig:
+                # A slow scan may finish after Stop or the market close.
+                if sig and _scheduled_scan_enabled(load_config()):
                     ingest_signal(sig)
         except Exception as exc:  # noqa: BLE001
             append_journal("bg_error", {"error": str(exc)})
@@ -5388,10 +5396,6 @@ def _buzz_lite(buzz_sum: dict[str, Any] | None, *, heat_enabled: bool = True) ->
     }
 
 
-_state_lite_cache: dict[str, Any] = {"at": 0.0, "payload": None}
-_STATE_LITE_TTL = 1.5
-
-
 def _latest_desk_call(cfg: dict, signals: list, loop: dict) -> dict | None:
     """Use the active research path, retaining old calls only as dated history."""
     workspace = "live" if cfg.get("mode") in ("live_manual", "auto_live") else "paper"
@@ -5430,9 +5434,8 @@ def _build_state_lite() -> dict[str, Any]:
     """Lightweight snapshot for SSE — cache-only buzz, no Reddit/yfinance.
 
     Short lock for config/signals/ledger snapshot only. expire_stale off hot path.
-    Never jsonify under lock. Optional publish into _state_lite_cache for readers.
+    Never jsonify under lock.
     """
-    import time as _time
     with _lock:
         cfg = dict(load_config())
         signals = list(load_signals())
@@ -5485,7 +5488,7 @@ def _build_state_lite() -> dict[str, Any]:
         "paper_desk_call": _latest_desk_call(paper_research_config(cfg), signals, loop_st),
         "paper_daily": daily_target_progress(paper_research_config(cfg), ledger),
         "paper_daily_recap": daily_recap(paper_research_config(cfg), ledger),
-        "config": {key: cfg.get(key) for key in ("mode", "session_active", "paper_research_enabled", "paper_auto_approve", "paper_risk_preset", "risk_preset")},
+        "config": {key: cfg.get(key) for key in ("mode", "session_active", "paper_research_enabled", "paper_auto_approve", "paper_risk_preset", "risk_preset", "kill_switch", "rth_only", "broker_identity")},
         "signals": signal_bags,
         "broker_ledger": {"broker_fills": (ledger.get("broker_fills") or [])[:100], "pending_broker_orders": ledger.get("pending_broker_orders") or []},
         "paper_ledger": {key: ledger.get(key) for key in ("positions", "fills", "cash", "equity", "daily")},
@@ -5569,12 +5572,6 @@ def _build_state_lite() -> dict[str, Any]:
         payload["alerts"] = desk_alerts.drain_for_state(8)
     except Exception:
         payload["alerts"] = {"items": []}
-    try:
-        import time as _time
-        _state_lite_cache["at"] = _time.time()
-        _state_lite_cache["payload"] = payload
-    except Exception:
-        pass
     return payload
 
 
@@ -7499,6 +7496,34 @@ _SSE_STREAM_LIMIT = _HTTP_WORKER_THREADS // 2
 _SSE_SLOTS = threading.BoundedSemaphore(_SSE_STREAM_LIMIT)
 
 
+def _stream_state_payload(payload: dict, previous: dict) -> dict:
+    """Omit unchanged terminal history per connection; always send live state.
+
+    Pending ideas, approvals, broker orders, balances, and risk controls are never
+    suppressed. Historical quote age alone does not resend an entire archive.
+    Every new connection receives a complete history baseline.
+    """
+    out = dict(payload)
+    if not isinstance(payload.get("signals"), dict):
+        return out
+    groups = dict(payload["signals"])
+    for status in ("approved", "rejected", "expired"):
+        if status not in groups:
+            continue
+        stable = []
+        for row in groups[status]:
+            item = dict(row)
+            if isinstance(item.get("quote"), dict):
+                item["quote"] = {k: v for k, v in item["quote"].items() if k != "age_sec"}
+            stable.append(item)
+        digest = hashlib.sha256(json.dumps(_json_safe(stable), sort_keys=True, default=str).encode()).hexdigest()
+        if previous.get(status) == digest:
+            groups.pop(status)
+        previous[status] = digest
+    out.update(signals=groups, signal_history_delta=True)
+    return out
+
+
 @app.route("/api/loop/stream")
 def api_loop_stream():
     """SSE: decision + loop (~2s) and periodic state_lite (~4–6s). Cache-only buzz."""
@@ -7526,6 +7551,8 @@ def api_loop_stream():
         last_seq = 0
         tick = 0
         last_lite_at = 0.0
+        previous_history = {}
+        compact = request.args.get("compact") == "1"
         raw = request.args.get("since_seq") or request.args.get("since")
         if raw and str(raw).isdigit():
             last_seq = int(raw)
@@ -7534,6 +7561,8 @@ def api_loop_stream():
         # Emit an immediate state_lite so the desk paints without waiting
         try:
             lite0 = _build_state_lite()
+            if compact:
+                lite0 = _stream_state_payload(lite0, previous_history)
             yield "event: state_lite\ndata: " + _dump(lite0, default=str) + "\n\n"
             last_lite_at = _time.time()
         except Exception as exc:  # noqa: BLE001
@@ -7558,6 +7587,8 @@ def api_loop_stream():
                 if now - last_lite_at >= 5.0:
                     try:
                         lite = _build_state_lite()
+                        if compact:
+                            lite = _stream_state_payload(lite, previous_history)
                         yield "event: state_lite\ndata: " + _dump(lite, default=str) + "\n\n"
                     except Exception as exc:  # noqa: BLE001
                         yield "event: state_lite\ndata: " + _dump({"ok": False, "error": str(exc)}) + "\n\n"
