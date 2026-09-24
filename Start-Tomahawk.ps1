@@ -113,30 +113,58 @@ function Find-Gateway {
     return ($candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName)
 }
 function Get-GatewayStampPath { Join-Path (Get-LaunchDataRoot) 'gateway_launch.json' }
+function Get-GatewayStamp {
+    try { return (Get-Content -LiteralPath (Get-GatewayStampPath) -Raw -ErrorAction Stop | ConvertFrom-Json) } catch { return $null }
+}
+function Get-GatewayLaunchCount([double]$WindowSec, [string]$Key = 'launches') {
+    # Launches recorded by any desk component (broker_ibkr.ensure_gateway, this launcher, Ensure-IBGateway).
+    $stamp = Get-GatewayStamp
+    if (-not $stamp) { return 0 }
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    return @(@($stamp.$Key) | Where-Object { $null -ne $_ -and ($now - [double]$_) -ge 0 -and ($now - [double]$_) -lt $WindowSec }).Count
+}
 function Test-RecentGatewayLaunch([int]$CooldownSec = 180) {
     # Shared with broker_ibkr.ensure_gateway so no two components launch Gateway back to back.
+    $stamp = Get-GatewayStamp
+    if (-not $stamp) { return $false }
     try {
-        $stamp = Get-Content -LiteralPath (Get-GatewayStampPath) -Raw -ErrorAction Stop | ConvertFrom-Json
         $age = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [double]$stamp.at
         return ($age -ge 0 -and $age -lt $CooldownSec)
     } catch { return $false }
 }
-function Set-GatewayLaunchStamp([string]$Exe) {
+function Set-GatewayLaunchStamp([string]$Exe, [string]$Source = 'launcher', [switch]$Automatic) {
+    # Merge into the shared record: keep api_seen_at (sign-in history) and the launch counts.
     try {
         $path = Get-GatewayStampPath
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
-        @{ at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); exe = $Exe; source = 'launcher' } |
-            ConvertTo-Json -Compress | Set-Content -LiteralPath $path -Encoding ASCII
+        $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $data = [ordered]@{}
+        $stamp = Get-GatewayStamp
+        if ($stamp) { foreach ($property in $stamp.PSObject.Properties) { $data[$property.Name] = $property.Value } }
+        $launches = @(@($data['launches']) | Where-Object { $null -ne $_ -and ($now - [double]$_) -lt 86400 })
+        $data['launches'] = @($launches) + @($now)
+        if ($Automatic) {
+            $auto = @(@($data['automatic_launches']) | Where-Object { $null -ne $_ -and ($now - [double]$_) -lt 86400 })
+            $data['automatic_launches'] = @($auto) + @($now)
+        }
+        $data['at'] = $now; $data['exe'] = $Exe; $data['source'] = $Source; $data['pid'] = $null
+        $data | ConvertTo-Json -Compress | Set-Content -LiteralPath $path -Encoding ASCII
     } catch {}
 }
-function Get-RunningGateway {
-    # Gateway/TWS by image name (any version or path), plus Gateway/TWS JVMs started
-    # by IBC or a re-executing launcher (java.exe / javaw.exe with a Jts/IBC command line).
-    @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.Name -in @('ibgateway.exe', 'tws.exe') -or
+function Get-GatewayCheck {
+    # ok = $false when Windows could not be asked: a failed check must never read as "not running",
+    # or every launcher run would open another login window.
+    try { $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop) } catch { return @{ ok = $false; running = @() } }
+    $running = @($processes | Where-Object {
+        $_.Name -in @('ibgateway.exe', 'tws.exe') -or "$($_.Name)" -match '(?i)^(ib(kr)?gateway|tws)[\w.-]*\.exe$' -or
         ($_.Name -in @('java.exe', 'javaw.exe') -and "$($_.CommandLine)" -match '(?i)ibgateway|ibcalpha|\\jts\\|/jts/|jclient|twslaunch')
     })
+    # Login windows are titled "IBKR Gateway" (10.51+), "IB Gateway" or "Trader Workstation".
+    $running += @(Get-Process -ErrorAction SilentlyContinue | Where-Object { "$($_.MainWindowTitle)" -match '(?i)\bIB(KR)?\s*Gateway\b|Trader Workstation' })
+    return @{ ok = $true; running = $running }
 }
+function Get-RunningGateway { (Get-GatewayCheck).running }
+function Test-GatewayAutolaunchDisabled { (Get-LaunchSetting 'IB_GATEWAY_AUTOLAUNCH' '1') -match '^(?i)(0|false|no|off)$' }
 function Start-ConfiguredBroker {
     if ($NoBroker -or (Get-LaunchSetting 'BROKER_PROVIDER' 'alpaca') -ne 'ibkr') {
         return @{ state = 'not_needed'; message = 'Desk ready.' }
@@ -149,19 +177,38 @@ function Start-ConfiguredBroker {
     if ($server -notin @('127.0.0.1', 'localhost', '::1')) {
         return @{ state = 'remote_unavailable'; message = "Desk ready. Start the configured remote Gateway on ${server}:$port." }
     }
+    $signIn = @{ state = 'sign_in_required'; message = "Desk ready. Complete sign-in in IB Gateway. If already signed in, enable its API on port $port. Broker execution stays blocked until the account is verified." }
+    if (Test-GatewayAutolaunchDisabled) {
+        return @{ state = 'sign_in_required'; message = "Desk ready. Gateway launching is off (IB_GATEWAY_AUTOLAUNCH=0): start IB Gateway yourself and sign in." }
+    }
     $gateway = Find-Gateway
     if (-not $gateway) {
         return @{ state = 'not_installed'; message = 'Desk ready. Install IB Gateway from Interactive Brokers, or set IB_GATEWAY_EXE to its installed path.' }
     }
-    # Any running Gateway/TWS (any version or path) counts: its API port stays closed
+    # Any running Gateway/TWS (any version, path or window) counts: its API port stays closed
     # until sign-in, so a closed port must never stack another login window.
-    $existing = @(Get-RunningGateway)
-    if ($existing.Count -eq 0 -and -not (Test-RecentGatewayLaunch)) {
-        # Interactive sign-in window: the user completes login and 2FA.
-        Set-GatewayLaunchStamp $gateway
-        Start-Process -FilePath $gateway -WorkingDirectory (Split-Path -Parent $gateway) -WindowStyle Normal | Out-Null
+    $check = Get-GatewayCheck
+    if (-not $check.ok) {
+        return @{ state = 'sign_in_required'; message = "Desk ready. Windows could not list running programs, so IB Gateway was not started again. Sign in to the open Gateway window, or start Gateway yourself." }
     }
-    return @{ state = 'sign_in_required'; message = "Desk ready. Complete sign-in in IB Gateway. If already signed in, enable its API on port $port. Broker execution stays blocked until the account is verified." }
+    if (@($check.running).Count -gt 0 -or (Test-RecentGatewayLaunch)) { return $signIn }
+    if ((Get-GatewayLaunchCount 1800) -ge 3) {
+        return @{ state = 'sign_in_required'; message = "Desk ready. IB Gateway was already started 3 times in 30 minutes, so it was not started again. Close extra Gateway windows and sign in to one." }
+    }
+    # One launch at a time across the desk, this launcher and the daily task (same name in broker_ibkr.py).
+    $mutex = New-Object Threading.Mutex($false, 'Local\TomahawkGatewayLaunch')
+    $held = $false
+    try {
+        try { $held = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $held = $true }
+        if (-not $held -or (Test-RecentGatewayLaunch)) { return $signIn }
+        # Interactive sign-in window: the user completes login and 2FA.
+        Set-GatewayLaunchStamp $gateway 'launcher'
+        Start-Process -FilePath $gateway -WorkingDirectory (Split-Path -Parent $gateway) -WindowStyle Normal | Out-Null
+    } finally {
+        if ($held) { $mutex.ReleaseMutex() }
+        $mutex.Dispose()
+    }
+    return $signIn
 }
 function Invoke-SetupCommand([string]$Executable, [string[]]$Arguments, [string]$LogPath) {
     # Capture native stderr without PowerShell treating an expected import failure as fatal.

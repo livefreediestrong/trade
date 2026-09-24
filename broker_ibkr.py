@@ -12,7 +12,7 @@ import threading
 import time
 from concurrent.futures import Future
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, time as dtime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -1924,7 +1924,20 @@ GATEWAY_LAUNCH_COOLDOWN_SEC = 180.0
 # Automatic (unattended) launches wait until Gateway has been absent this long,
 # so a Gateway auto-restart or a window the user is opening is not raced.
 GATEWAY_ABSENT_DEBOUNCE_SEC = 90.0
+# Hard launch budget, whoever asks: a missed process check can never stack windows.
+GATEWAY_LAUNCH_BUDGET = (3, 1800.0)            # at most 3 launches in 30 minutes
+GATEWAY_AUTOMATIC_BUDGET = (2, 86400.0)        # at most 2 unattended launches a day
+GATEWAY_AUTOMATIC_CHECK_SEC = 30.0             # unattended callers re-check at most this often
 _GATEWAY_ABSENT_SINCE: list[float | None] = [None]
+_GATEWAY_LAST_AUTOMATIC: dict[str, Any] = {"at": 0.0, "result": None}
+# "IBKR Gateway" (10.51+), "IB Gateway", or TWS login and main windows.
+_GATEWAY_TITLE_RE = re.compile(r"\bIB(?:KR)?\s*Gateway\b|Trader Workstation", re.I)
+_GATEWAY_IMAGE_RE = re.compile(r"^(?:ib(?:kr)?gateway|tws)[\w.-]*\.exe$", re.I)
+GATEWAY_MUTEX_NAME = "Local\\TomahawkGatewayLaunch"  # shared with Start-Tomahawk.ps1 / Ensure-IBGateway.ps1
+
+
+def _gateway_autolaunch_disabled() -> bool:
+    return (os.environ.get("IB_GATEWAY_AUTOLAUNCH") or "").strip().lower() in ("0", "false", "no", "off")
 
 
 def _gateway_launch_stamp_path():
@@ -1933,37 +1946,57 @@ def _gateway_launch_stamp_path():
     return Path(root) / "gateway_launch.json"
 
 
-def _running_gateway_processes() -> list[str]:
-    """Names of IB Gateway / TWS processes already running (any version, any path).
+def _tasklist_gateway_matches(listing: str, pid: Any = None) -> list[str]:
+    """Gateway/TWS rows in `tasklist /V /FO CSV /NH` output: by image name, window title or launched PID."""
+    import csv
+    import io
+    hits = []
+    for row in csv.reader(io.StringIO(listing or "")):
+        if not row:
+            continue
+        image = row[0].strip()
+        title = row[-1].strip() if len(row) >= 9 else ""
+        by_image = image.lower() in _GATEWAY_IMAGES or bool(_GATEWAY_IMAGE_RE.match(image))
+        by_title = bool(title) and title.upper() != "N/A" and bool(_GATEWAY_TITLE_RE.search(title))
+        by_pid = pid is not None and len(row) > 1 and row[1].strip() == str(pid)
+        if by_image or by_title or by_pid:
+            hits.append(image or "Gateway window")
+    return hits
 
-    Gateway only opens its API port after sign-in, so "port closed" alone must
-    never trigger another launch while a login window is still up. Gateway
-    started by IBC (or a launcher that re-executes the JVM) runs as java.exe /
-    javaw.exe, so those count when their command line names Gateway/TWS.
+
+def _running_gateway_processes() -> list[str] | None:
+    """Names of IB Gateway / TWS processes already running, or None when Windows could not be asked.
+
+    Gateway only opens its API port after sign-in, so "port closed" alone must never trigger
+    another launch while a login window is up. Three independent checks: process image name,
+    window title ("IBKR Gateway", "IB Gateway", "Trader Workstation") and the PID this desk last
+    started; then Gateway/TWS JVMs (IBC, launchers that re-execute Java) by command line.
+    A check that fails or times out returns None, which callers treat as "maybe running".
     """
     if os.name != "nt":
         return []
     import subprocess
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    found = []
-    for image in _GATEWAY_IMAGES:
-        try:
-            out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"],
-                                 capture_output=True, text=True, timeout=8, creationflags=flags).stdout
-        except Exception:
-            continue
-        if image.lower() in out.lower():
-            found.append(image)
+    try:
+        proc = subprocess.run(["tasklist", "/V", "/FO", "CSV", "/NH"], capture_output=True, text=True,
+                              errors="replace", timeout=20, creationflags=flags)
+    except Exception:
+        return None
+    if proc.returncode != 0 or not (proc.stdout or "").strip():
+        return None
+    found = _tasklist_gateway_matches(proc.stdout, _read_gateway_stamp().get("pid"))
     if found:
         return found
-    query = ("Get-CimInstance Win32_Process -Filter \"Name='java.exe' OR Name='javaw.exe'\" | "
-             "ForEach-Object { $_.Name + '|' + $_.CommandLine }")
+    query = ("Get-CimInstance Win32_Process -Filter \"Name='java.exe' OR Name='javaw.exe'\" -ErrorAction Stop | "
+             "ForEach-Object { $_.Name + '|' + $_.CommandLine }; 'ok'")
     try:
         out = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", query],
-                             capture_output=True, text=True, timeout=15, creationflags=flags).stdout
+                             capture_output=True, text=True, errors="replace", timeout=20, creationflags=flags)
     except Exception:
-        return found
-    return _java_gateway_matches(out)
+        return None
+    if out.returncode != 0 or "ok" not in (out.stdout or "").split():
+        return None
+    return _java_gateway_matches(out.stdout)
 
 
 def _java_gateway_matches(listing: str) -> list[str]:
@@ -2005,6 +2038,18 @@ def _stamp_time(data: dict[str, Any], key: str) -> float:
         return 0.0
 
 
+def _stamp_times(data: dict[str, Any], key: str, window: float, now: float) -> list[float]:
+    out = []
+    for value in data.get(key) or []:
+        try:
+            stamp = float(value)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= now - stamp < window:
+            out.append(stamp)
+    return out
+
+
 def _recent_gateway_launch(now: float | None = None) -> float | None:
     """Seconds since the last launch by ANY desk component (shared stamp file)."""
     stamp = _stamp_time(_read_gateway_stamp(), "at")
@@ -2014,10 +2059,33 @@ def _recent_gateway_launch(now: float | None = None) -> float | None:
     return age if 0 <= age < GATEWAY_LAUNCH_COOLDOWN_SEC else None
 
 
-def _mark_gateway_launch(exe: str, source: str) -> None:
-    # A new launch has not served the API yet; api_seen_at stays as history.
+def _launch_budget_blocker(automatic: bool, now: float) -> str | None:
     data = _read_gateway_stamp()
-    data.update(at=time.time(), exe=exe, source=source)
+    limit, window = GATEWAY_LAUNCH_BUDGET
+    if len(_stamp_times(data, "launches", window, now)) >= limit:
+        return (f"IB Gateway was already started {limit} times in the last {int(window // 60)} minutes; "
+                "not starting another. Close any extra Gateway windows and sign in to one of them.")
+    limit, window = GATEWAY_AUTOMATIC_BUDGET
+    if automatic and len(_stamp_times(data, "automatic_launches", window, now)) >= limit:
+        return (f"The desk already reopened IB Gateway {limit} times today; it will not reopen it again "
+                "automatically. Use Ensure Gateway or start Gateway yourself.")
+    return None
+
+
+def _mark_gateway_launch(exe: str, source: str, automatic: bool = False, now: float | None = None) -> None:
+    # A new launch has not served the API yet; api_seen_at stays as history.
+    now = now or time.time()
+    data = _read_gateway_stamp()
+    data.update(at=now, exe=exe, source=source, pid=None)
+    data["launches"] = _stamp_times(data, "launches", 86400.0, now) + [now]
+    if automatic:
+        data["automatic_launches"] = _stamp_times(data, "automatic_launches", 86400.0, now) + [now]
+    _write_gateway_stamp(data)
+
+
+def _note_gateway_pid(pid: int) -> None:
+    data = _read_gateway_stamp()
+    data["pid"] = int(pid)
     _write_gateway_stamp(data)
 
 
@@ -2036,20 +2104,36 @@ def _note_gateway_api_up(now: float | None = None) -> None:
     _write_gateway_stamp(data)
 
 
+def _gateway_hours(now: float | None = None) -> bool:
+    """Unattended relaunches only make sense from 9:00 ET to the close on a trading day."""
+    try:
+        import paper_loop
+        moment = datetime.fromtimestamp(now or time.time(), timezone.utc).astimezone(paper_loop.NY_TZ)
+        close = paper_loop.session_close_time(moment.date())
+    except Exception:  # noqa: BLE001 - unknown hours never start Gateway unattended
+        return False
+    if close is None:
+        return False
+    clock = moment.time()
+    return clock >= dtime(9, 0) and clock < close
+
+
 def _automatic_launch_blocker(now: float) -> str | None:
     """Unattended relaunch policy: never reopen a Gateway the owner closed.
 
     Automatic callers (live agent tick, upkeep watchdog) may relaunch only a
     Gateway that signed in and served the API after its last launch, i.e. one
-    that went away unexpectedly. A login window that was closed, or that exited
-    without signing in, stays closed until the owner opens it (desk button or
-    desktop shortcut).
+    that went away unexpectedly, during trading hours. A login window that was
+    closed, or that exited without signing in, stays closed until the owner
+    opens it (desk button or desktop shortcut).
     """
     data = _read_gateway_stamp()
     launched, seen = _stamp_time(data, "at"), _stamp_time(data, "api_seen_at")
     if launched and seen < launched:
         return ("IB Gateway was closed before it signed in; not reopening it automatically. "
                 "Use Ensure Gateway on the desk or the desktop shortcut when you want to sign in.")
+    if not _gateway_hours(now):
+        return "Outside trading hours; the desk does not reopen IB Gateway on its own."
     absent_since = _GATEWAY_ABSENT_SINCE[0]
     if absent_since is None:
         _GATEWAY_ABSENT_SINCE[0] = now
@@ -2061,6 +2145,60 @@ def _automatic_launch_blocker(now: float) -> str | None:
     return None
 
 
+class _CrossProcessLock:
+    """One Gateway launch at a time across the desk, the launcher and the daily task.
+
+    Windows: the named mutex Start-Tomahawk.ps1 and Ensure-IBGateway.ps1 also take.
+    Elsewhere (tests, development): an exclusive lock file next to the stamp.
+    """
+
+    def __init__(self) -> None:
+        self.handle = None
+        self.path = None
+
+    def __enter__(self) -> bool:
+        if os.name == "nt":
+            try:
+                import ctypes
+                kernel32 = ctypes.windll.kernel32
+                handle = kernel32.CreateMutexW(None, False, GATEWAY_MUTEX_NAME)
+                if not handle:
+                    return False
+                state = kernel32.WaitForSingleObject(handle, 0)
+                if state in (0, 0x80):  # WAIT_OBJECT_0, WAIT_ABANDONED
+                    self.handle = handle
+                    return True
+                kernel32.CloseHandle(handle)
+                return False
+            except Exception:  # noqa: BLE001
+                return False
+        self.path = _gateway_launch_stamp_path().with_suffix(".lock")
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            if self.path.exists() and time.time() - self.path.stat().st_mtime > 120:
+                self.path.unlink()  # stale lock from a crashed process
+            fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            return True
+        except OSError:
+            self.path = None
+            return False
+
+    def __exit__(self, *exc) -> None:
+        if self.handle is not None:
+            try:
+                import ctypes
+                ctypes.windll.kernel32.ReleaseMutex(self.handle)
+                ctypes.windll.kernel32.CloseHandle(self.handle)
+            except Exception:  # noqa: BLE001
+                pass
+        if self.path is not None:
+            try:
+                self.path.unlink()
+            except OSError:
+                pass
+
+
 _GATEWAY_LAUNCH_LOCK = threading.Lock()
 
 
@@ -2068,10 +2206,12 @@ def ensure_gateway(*, launch_if_down: bool = True, automatic: bool = False) -> d
     """Ensure IB Gateway API port is reachable; optionally relaunch ibgateway.exe.
 
     ``automatic`` marks unattended callers (live agent tick, upkeep watchdog).
-    They relaunch only a Gateway that had signed in and then went away, after
-    it has been absent for GATEWAY_ABSENT_DEBOUNCE_SEC; see
-    _automatic_launch_blocker. Owner actions (desk button, launcher) skip that
-    policy but still never stack a second Gateway or launch inside the cooldown.
+    They relaunch only a Gateway that had signed in and then went away, during
+    trading hours, after it has been absent for GATEWAY_ABSENT_DEBOUNCE_SEC; see
+    _automatic_launch_blocker. Every launch, owner or automatic: never while a
+    Gateway/TWS process or window exists, never when that cannot be checked,
+    one at a time across processes, not inside the cooldown, and within the
+    launch budget. IB_GATEWAY_AUTOLAUNCH=0 turns desk launching off entirely.
 
     Never places orders. Never disables 2FA. Login / IB Key may still be required
     if the Gateway session was fully logged out (not a soft API bounce).
@@ -2100,6 +2240,15 @@ def ensure_gateway(*, launch_if_down: bool = True, automatic: bool = False) -> d
     if not launch_if_down:
         result["note"] = f"Gateway port {port} is down; launch_if_down=false."
         return result
+    if _gateway_autolaunch_disabled():
+        result.update(autolaunch_disabled=True,
+                      note="Desk Gateway launching is off (IB_GATEWAY_AUTOLAUNCH=0). Start IB Gateway yourself.")
+        return result
+    now = time.time()
+    if automatic:
+        last = _GATEWAY_LAST_AUTOMATIC
+        if last["result"] is not None and now - last["at"] < GATEWAY_AUTOMATIC_CHECK_SEC:
+            return dict(last["result"])
     candidates = _gateway_exe_candidates()
     exe = next((p for p in candidates if os.path.isfile(p)), None)
     if not exe:
@@ -2111,39 +2260,73 @@ def ensure_gateway(*, launch_if_down: bool = True, automatic: bool = False) -> d
         result["note"] = "Another Gateway launch check is in progress."
         return result
     try:
-        running = _running_gateway_processes()
-        if running:
-            _GATEWAY_ABSENT_SINCE[0] = None
-            result.update(already_running=running, human_2fa_may_be_required=True,
-                          note=f"{running[0]} is already running; complete sign-in or enable its API on port {port}. "
-                               "Not launching another copy.")
-            return result
-        if automatic:
-            blocker = _automatic_launch_blocker(time.time())
-            if blocker:
-                result.update(automatic_launch_held=True, note=blocker)
-                return result
-        recent = _recent_gateway_launch()
-        if recent is not None:
-            result["note"] = (f"Gateway was launched {int(recent)}s ago; waiting for sign-in instead of "
-                              f"launching another copy (cooldown {int(GATEWAY_LAUNCH_COOLDOWN_SEC)}s).")
-            return result
-        _mark_gateway_launch(exe, "desk-auto" if automatic else "desk")
-        _GATEWAY_ABSENT_SINCE[0] = None
-        return _launch_gateway(exe, host, port, result)
+        outcome = _ensure_gateway_locked(exe, host, port, result, automatic)
     finally:
         _GATEWAY_LAUNCH_LOCK.release()
+    if automatic:
+        _GATEWAY_LAST_AUTOMATIC.update(at=time.time(), result=dict(outcome))
+    return outcome
+
+
+def _ensure_gateway_locked(exe: str, host: str, port: int, result: dict[str, Any], automatic: bool) -> dict[str, Any]:
+    now = time.time()
+    if automatic:
+        data = _read_gateway_stamp()
+        launched, seen = _stamp_time(data, "at"), _stamp_time(data, "api_seen_at")
+        if (launched and seen < launched) or not _gateway_hours(now):  # cheap checks first: no scan every tick
+            result.update(automatic_launch_held=True, note=_automatic_launch_blocker(now))
+            return result
+    running = _running_gateway_processes()
+    if running is None:
+        result.update(detection_failed=True, human_2fa_may_be_required=True,
+                      note="Couldn't check whether IB Gateway is already running, so the desk will not start "
+                           "another copy. Sign in to the open Gateway window, or start Gateway yourself.")
+        return result
+    if running:
+        _GATEWAY_ABSENT_SINCE[0] = None
+        result.update(already_running=running, human_2fa_may_be_required=True,
+                      note=f"{running[0]} is already running; complete sign-in or enable its API on port {port}. "
+                           "Not launching another copy.")
+        return result
+    if automatic:
+        blocker = _automatic_launch_blocker(now)
+        if blocker:
+            result.update(automatic_launch_held=True, note=blocker)
+            return result
+    recent = _recent_gateway_launch(now)
+    if recent is not None:
+        result["note"] = (f"Gateway was launched {int(recent)}s ago; waiting for sign-in instead of "
+                          f"launching another copy (cooldown {int(GATEWAY_LAUNCH_COOLDOWN_SEC)}s).")
+        return result
+    budget = _launch_budget_blocker(automatic, now)
+    if budget:
+        result.update(launch_budget_reached=True, note=budget)
+        return result
+    with _CrossProcessLock() as held:
+        if not held:
+            result["note"] = "Another program on this PC is starting IB Gateway right now; not starting a second copy."
+            return result
+        if _recent_gateway_launch() is not None:  # launched by another process while we checked
+            result["note"] = "IB Gateway was just started by another desk component; waiting for sign-in."
+            return result
+        _mark_gateway_launch(exe, "desk-auto" if automatic else "desk", automatic, now)
+        _GATEWAY_ABSENT_SINCE[0] = None
+        return _launch_gateway(exe, host, port, result)
 
 
 def _launch_gateway(exe: str, host: str, port: int, result: dict[str, Any]) -> dict[str, Any]:
     try:
         import subprocess
-        subprocess.Popen(
+        proc = subprocess.Popen(
             [exe],
             cwd=os.path.dirname(exe),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        try:
+            _note_gateway_pid(proc.pid)
+        except Exception:  # noqa: BLE001
+            pass
         result["launched"] = True
         result["gateway_restarted"] = True  # process relaunch; session may still need login
         result["human_2fa_may_be_required"] = True

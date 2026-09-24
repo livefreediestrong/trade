@@ -326,10 +326,24 @@ Gateway only when it had signed in and served the API since its last launch and 
 90 seconds (so Gateway's own auto-restart is not raced). The watchdog and the agent also require an active
 live session (`live_manual` or `auto_live`, session started), so a Gateway you close after trading stays closed. A login window you close, or one that exits
 without signing in, stays closed: the desk shows "closed before it signed in" and waits for you to use
-**Ensure Gateway** (Live trading section) or the desktop shortcut. Nothing ever starts a second Gateway while one is running
-(`ibgateway.exe`, `tws.exe`, or a Gateway/TWS `java.exe`/`javaw.exe` such as IBC), and launches share a
-180-second cooldown. Launch and sign-in times are kept in `data/gateway_launch.json` (`at`, `source`,
-`api_seen_at`).
+**Ensure Gateway** (Live trading section) or the desktop shortcut.
+
+Every desk launcher follows the same rules, whether it is the desk, the desktop shortcut or the daily task:
+
+- **Only one Gateway.** Nothing starts a second Gateway while one is running. Running means any of:
+  - an `ibgateway.exe` or `tws.exe` process (including renamed images such as `ibkrgateway.exe`);
+  - a Gateway/TWS `java.exe`/`javaw.exe` (IBC);
+  - a window titled **IBKR Gateway**, IB Gateway or Trader Workstation;
+  - the process ID the desk last started.
+- **An unknown answer counts as running.** If Windows cannot list running programs, Gateway is not started.
+- **One launch at a time.** Launches share one lock across processes and a 180-second cooldown.
+- **Launch budget.** At most three launches in any 30 minutes. Unattended launches: at most two a day, and only
+  from 9:00 ET to the close on trading days.
+- **Off switch.** Set `IB_GATEWAY_AUTOLAUNCH=0` to stop the desk from ever starting Gateway, for example if you
+  start it yourself or with IBC.
+
+Launches, sign-ins and counts are kept in `data/gateway_launch.json` (`at`, `source`, `api_seen_at`, `launches`,
+`automatic_launches`, `pid`).
 - **Tomahawk-Desk-Upkeep** (daily 16:40): moves root `_*` backups/scratch and `data/_*` probe dumps into
   `_archive/`, deletes `_archive` items untouched for `UPKEEP_BACKUP_DAYS` (default 30), rolls
   `data/*.log` over `UPKEEP_LOG_MAX_MB` (default 25) when not in use, clears `__pycache__`, runs SQLite
