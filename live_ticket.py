@@ -66,14 +66,15 @@ def register(app, desk):
             quote = copy.deepcopy(desk._QUOTE_SNAPSHOTS.get(ticker) or {})
         if desk._finite_float(px) is None or px <= 0 or not quote:
             return jsonify(ok=False, error="A fresh verified market price is required; no order was sent"), 409
+        created = datetime.now(timezone.utc)
         sig = {"id": uuid.uuid4().hex, "ticker": ticker, "side": side, "status": "pending",
                "workspace": "live", "source": "manual_ticket", "origin": "user_directed",
                "mode_at_create": "live_manual", "suggested_shares": ticket["shares"],
                "signal_price": max(px, ticket.get("limit", px)), "quote": quote,
                "manual_order": {"intent": intent, "order": ticket},
                "reason": "User-directed stock ticket; not an AI recommendation",
-               "created_at": datetime.now(timezone.utc).isoformat(),
-               "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=90)).isoformat()}
+               "ts": created.isoformat(), "created_at": created.isoformat(),
+               "expires_at": (created + timedelta(seconds=90)).isoformat()}
         restriction = desk.signal_execution_block(sig, broker=True)
         if restriction:
             return jsonify(ok=False, error=restriction), 409

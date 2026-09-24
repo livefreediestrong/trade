@@ -22,6 +22,7 @@ Useful feature references:
 - [UI structure](docs/UI_STRUCTURE.md)
 - [Manual live enablement reference](docs/MANUAL_LIVE_ENABLEMENT.md)
 - [Direct stock tickets and position closing](docs/LIVE_STOCK_TICKETS.md)
+- [Automation debugging and scheduler boundaries](docs/AUTOMATION_DEBUG.md)
 
 The detailed implementation notes below use the legacy Tomahawk name.
 

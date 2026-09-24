@@ -30,7 +30,7 @@ import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from flask import Flask, jsonify, render_template, request
 
@@ -2438,6 +2438,7 @@ def generate_scan_signal(
     *,
     force: bool = False,
     ticker: str | None = None,
+    still_authorized: Callable[[], bool] | None = None,
 ) -> dict | None:
     """Scan watchlist with volume-screener rules; emit first eligible buy signal."""
     from screener_logic import analyze_ticker
@@ -2473,6 +2474,8 @@ def generate_scan_signal(
     rank_lateness = {"early": 3, "fair": 2, "late": 1, "chasing": 0}
 
     for sym in watchlist:
+        if still_authorized is not None and not still_authorized():
+            return None
         sym = sym.strip().upper()
         if not sym:
             continue
@@ -2487,6 +2490,8 @@ def generate_scan_signal(
             errors.append(f"{sym}: {analysis['error']}")
             continue
 
+        if still_authorized is not None and not still_authorized():
+            return None
         verdict = (analysis.get("verdict") or "").upper()
         checks = analysis.get("checks") or {}
         if checks.get("sector_dying"):
@@ -2534,6 +2539,8 @@ def generate_scan_signal(
         if verdict == "PASS":
             sig = _analysis_to_signal(analysis, cfg, preset, force=force)
             if sig:
+                if still_authorized is not None and not still_authorized():
+                    return None
                 sig = _enrich_signal_with_llm(sig, analysis, cfg)
                 append_journal(
                     "scan_hit",
@@ -2554,6 +2561,8 @@ def generate_scan_signal(
                 best_watch = analysis
 
     if best_watch is not None:
+        if still_authorized is not None and not still_authorized():
+            return None
         # Queue best WATCH or AVOID research candidate when no PASS found
         sig = _analysis_to_signal(best_watch, cfg, preset, force=force)
         if sig:
@@ -3666,11 +3675,15 @@ def paper_fill(
         return {"ok": True, "fill": fill, "ledger": ledger}
 
 
-def ingest_signal(sig: dict[str, Any], *, research_only: bool = False) -> dict[str, Any]:
+def ingest_signal(sig: dict[str, Any], *, research_only: bool = False,
+                  expected_config: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """Keep live ideas and independent paper experiments separately identified."""
     from research_metrics import quote_benchmark
     sig.setdefault("execution_benchmarks", {}).setdefault("decision", quote_benchmark(sig.get("quote") or {}, _now_iso()))
-    cfg = dict(load_config())
+    with _lock:
+        cfg = copy.deepcopy(load_config())
+        if expected_config is not None and cfg != expected_config:
+            return None
     primary = "live" if cfg.get("mode") in ("live_manual", "auto_live") else "paper"
     workspace = sig.get("workspace") or primary
     sig["workspace"] = workspace
@@ -4862,6 +4875,22 @@ def _scheduled_scan_enabled(cfg: dict[str, Any]) -> bool:
     )
 
 
+def _scheduled_scan_config(cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """Choose one authorized research owner without borrowing the live session."""
+    moss_owns_paper = bool((cfg.get("moss_paper") or {}).get("enabled"))
+    if cfg.get("session_active") and cfg.get("mode") in ("live_manual", "auto_live"):
+        selected = cfg
+    elif cfg.get("session_active") and cfg.get("mode") in ("manual", "auto_paper"):
+        if moss_owns_paper or cfg.get("loop_enabled"):
+            return None
+        selected = cfg
+    elif cfg.get("paper_research_enabled") and not moss_owns_paper:
+        selected = paper_research_config(cfg)
+    else:
+        return None
+    return copy.deepcopy(selected) if _scheduled_scan_enabled(selected) else None
+
+
 def _bg_loop() -> None:
     """Background watchlist scan loop (volume-screener rules).
 
@@ -4869,13 +4898,14 @@ def _bg_loop() -> None:
     generate_scan_signal (yfinance + Gemini) outside the lock so /api/state
     and other routes stay responsive. ingest_signal takes its own lock.
     """
+    next_scan_at = 0.0
     while not _bg_stop.wait(timeout=5):
         try:
             _reconcile_pending_broker_orders()
             cfg = None
             should = False
             with _lock:
-                cfg = dict(load_config())
+                cfg = copy.deepcopy(load_config())
                 signals_snap = list(load_signals())
             try:
                 signals = expire_stale_signals(signals_snap)
@@ -4887,52 +4917,42 @@ def _bg_loop() -> None:
                     or cfg.get("demo_signal_interval_sec")
                     or 120
                 )
-                pending = [s for s in signals if _pending_scan_blocks(s, cfg)]
-                last_ts = signals[0]["ts"] if signals else None
-                if not last_ts:
-                    should = True
-                else:
+                scan_cfg = _scheduled_scan_config(cfg)
+                pending = [s for s in signals if _pending_scan_blocks(s, scan_cfg or cfg)]
+                # A manual draft or malformed legacy timestamp cannot stop the
+                # scheduler or reset its research cadence.
+                now = datetime.now(timezone.utc)
+                stamps = []
+                expected = "live" if (scan_cfg or cfg).get("mode") in ("live_manual", "auto_live") else "paper"
+                for signal in signals:
+                    if signal.get("source") == "manual_ticket" or signal_workspace(signal) != expected:
+                        continue
                     try:
-                        last = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
-                        age = (datetime.now(timezone.utc) - last).total_seconds()
-                        should = age >= interval
-                    except ValueError:
-                        should = True
-                if should and len(pending) >= 8:
-                    should = False
-                should = should and _scheduled_scan_enabled(cfg)
-                # One brain: pause background scan while paper loop is the active decision path.
-                if (
-                    should
-                    and cfg.get("session_active")
-                    and cfg.get("loop_enabled")
-                    and cfg.get("mode") in ("auto_paper", "manual")
-                ):
-                    should = False
-                    # Journal occasionally (not every 5s wake)
-                    now_mono = datetime.now(timezone.utc).timestamp()
-                    last = getattr(_bg_loop, "_last_pause_journal_ts", 0.0)
-                    if now_mono - last >= 120:
-                        _bg_loop._last_pause_journal_ts = now_mono  # type: ignore[attr-defined]
-                        append_journal(
-                            "scan_paused_for_loop",
-                            {
-                                "session_active": True,
-                                "loop_enabled": True,
-                                "mode": cfg.get("mode"),
-                            },
-                        )
+                        stamp = datetime.fromisoformat(str(signal.get("ts") or signal.get("created_at") or "").replace("Z", "+00:00"))
+                        if stamp.tzinfo is not None and stamp <= now:
+                            stamps.append(stamp)
+                    except (ValueError, TypeError):
+                        continue
+                due = not stamps or (now-max(stamps)).total_seconds() >= interval
+                should = scan_cfg is not None and due and len(pending) < 8 and time.monotonic() >= next_scan_at
             # Network I/O must not hold `_lock`
             if cfg is not None and bool(cfg.get("radar_enabled")):
                 try:
                     market_radar.maybe_refresh(cfg)
                 except Exception:
                     pass
-            if should and cfg is not None:
-                sig = generate_scan_signal(cfg, force=False)
-                # A slow scan may finish after Stop or the market close.
-                if sig and _scheduled_scan_enabled(load_config()):
-                    ingest_signal(sig)
+            if should and scan_cfg is not None:
+                # Empty results and provider failures also consume a cycle.
+                next_scan_at = time.monotonic() + max(5, interval)
+                def still_authorized():
+                    return _scheduled_scan_config(load_config()) == scan_cfg
+                sig = generate_scan_signal(scan_cfg, force=False, still_authorized=still_authorized)
+                # Stop, account, mode and other settings changes invalidate work
+                # collected under the previous policy.
+                if sig and still_authorized():
+                    if scan_cfg.get("_paper_research"):
+                        sig.update(workspace="paper", paper_research=True)
+                    ingest_signal(sig, expected_config=cfg)
         except Exception as exc:  # noqa: BLE001
             append_journal("bg_error", {"error": str(exc)})
 

@@ -39,7 +39,7 @@ def test_actual_background_loop_skips_closed_and_revoked_scans(monkeypatch, open
     monkeypatch.setattr(desk, '_reconcile_pending_broker_orders', lambda: None)
     monkeypatch.setattr(desk.paper_loop_mod, 'is_rth', lambda _: opens)
     monkeypatch.setattr(desk, 'generate_scan_signal', scan)
-    monkeypatch.setattr(desk, 'ingest_signal', lambda _: calls.append('ingest'))
+    monkeypatch.setattr(desk, 'ingest_signal', lambda _, **kwargs: calls.append('ingest'))
     monkeypatch.setattr(desk, 'append_journal', lambda *args: pytest.fail(str(args)))
     desk._bg_loop()
     assert calls == expected

@@ -171,8 +171,17 @@ class PaperWorkday:
         symbols = market_universe.candidates(self.desk, p, cursor, now)
         ranked = []
         for symbol in symbols:
-            analysis = analyze_ticker(symbol)
-            quality = policy.assess(analysis, cfg, now_utc())
+            current = self.desk.load_config()
+            if not (current.get("paper_research_enabled") and current.get("paper_auto_approve")
+                    and policy.settings(current) == p and paper_loop.is_rth(now_utc())):
+                self.finish(day, "Paper collection paused or settings changed; wait for a fresh cycle", False)
+                return
+            try:
+                analysis = analyze_ticker(symbol)
+                quality = policy.assess(analysis, cfg, now_utc())
+            except Exception as exc:
+                analysis = {"ticker": symbol, "error": f"Market analysis unavailable: {type(exc).__name__}"}
+                quality = policy.assess(analysis, cfg, now_utc())
             with self.lock:
                 raw = self.load()
                 day_state = raw["days"][day]
@@ -192,7 +201,8 @@ class PaperWorkday:
             return
         training = policy.fit(history(self.desk), now_utc())
         current = self.desk.load_config()
-        if not (current.get("paper_research_enabled") and current.get("paper_auto_approve")) or policy.settings(current) != p:
+        if not (current.get("paper_research_enabled") and current.get("paper_auto_approve")
+                and paper_loop.is_rth(now_utc())) or policy.settings(current) != p:
             self.finish(day, "Settings changed during collection; wait for a fresh cycle", False)
             return
         pcfg = self.desk.paper_research_config(cfg)

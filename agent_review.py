@@ -9,6 +9,7 @@ import time
 from desk_operations import EvidenceStore
 from desk_workbench import fingerprint, timestamp
 import moss_policy
+import moss_paper
 import paper_loop
 import research_metrics
 
@@ -65,7 +66,10 @@ class AgentReview:
                 raise ValueError("Research review storage needs repair before saving conclusions.")
             # Broker sync and market collection remain in their existing workers.
             with self.desk._lock:
-                events = copy.deepcopy(self.companion.events())
+                current_events = copy.deepcopy(self.companion.events())
+                retained = {row["id"]: row for row in moss_paper.history(self.desk)}
+                retained.update({row["id"]: row for row in current_events if row.get("id")})
+                events = list(retained.values()) + [row for row in current_events if not row.get("id")]
                 executions = copy.deepcopy(self.companion.trades.load().get("executions", []))
                 signals = copy.deepcopy(self.desk.load_signals())
                 previous = self.status()["latest"]

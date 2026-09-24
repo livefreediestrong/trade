@@ -125,6 +125,7 @@ class Companion:
         self.last_error = None
         self.last_attempt = 0.0
         self.stop = threading.Event()
+        self._threads = {}
         self.paper = PaperWorkday(desk)
         self.trades = TradeJournal(desk)
         from agent_review import AgentReview
@@ -322,7 +323,6 @@ class Companion:
                     self.run(scheduled=True)
                 except Exception:
                     self.last_error = "Notebook unavailable; scheduled research paused."
-        threading.Thread(target=loop, name="moss-daily-schedule", daemon=True).start()
         def paper_workday():
             while not self.stop.wait(5):
                 try:
@@ -336,8 +336,14 @@ class Companion:
                 except Exception:
                     pass
                 self.stop.wait(60)
-        threading.Thread(target=paper_workday, name="moss-paper-workday", daemon=True).start()
-        threading.Thread(target=broker_journal, name="moss-broker-read-only", daemon=True).start()
+        with self.lock:
+            for name, target in (("moss-daily-schedule", loop), ("moss-paper-workday", paper_workday),
+                                 ("moss-broker-read-only", broker_journal)):
+                thread = self._threads.get(name)
+                if thread is None or not thread.is_alive():
+                    thread = threading.Thread(target=target, name=name, daemon=True)
+                    thread.start()
+                    self._threads[name] = thread
 
 
 def register(app, desk):
