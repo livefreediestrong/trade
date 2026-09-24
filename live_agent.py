@@ -537,6 +537,9 @@ class LiveAgent:
             event["exit_reason"] = signal["agent_exit"]
         if isinstance(fill, dict):
             event["fill"] = {"shares": fill.get("shares"), "price": fill.get("price")}
+        if str((signal or {}).get("asset_type") or "").upper() in ("OPT", "BAG"):
+            event["asset_type"] = signal["asset_type"].upper()
+            event["option_strategy"] = signal.get("option_strategy")
         with self.desk._lock:
             raw = self.load()
             raw["events"].insert(0, event)
@@ -767,7 +770,13 @@ class LiveAgent:
         fill = result.get("fill") if isinstance(result.get("fill"), dict) else None
         if fill:
             verb = "Bought" if signal.get("side") == "buy" else "Sold"
-            message = f"{verb} {float(fill.get('shares') or 0):g} {signal.get('ticker')} at ${float(fill.get('price') or 0):,.2f}"
+            qty = float(fill.get('shares') or 0)
+            if str(signal.get("asset_type") or "").upper() in ("OPT", "BAG"):
+                what = (f"{qty:g} {signal.get('ticker')} {signal.get('option_strategy') or 'option'} "
+                        f"contract{'s' if qty != 1 else ''}")
+                message = f"{verb} {what} at ${float(fill.get('price') or 0):,.2f} premium"
+            else:
+                message = f"{verb} {qty:g} {signal.get('ticker')} at ${float(fill.get('price') or 0):,.2f}"
         else:
             message = result.get("reject_reason") or "Decision retained"
         self.record(result.get("status", "unknown"), message, dict(signal, id=result.get("id") or signal.get("id")), fill)
@@ -814,6 +823,13 @@ class LiveAgent:
         candidate = auto_live_options.build_option_candidate(
             signal, auto_cfg, chain=norm, underlying_price=px, stock_shares=stock_shares,
         )
+        # Size cautions on the stock idea (WSB crowding) carry over to the contracts.
+        mult = signal.get("advisory_size_mult")
+        if isinstance(mult, (int, float)) and 0 <= mult < 1:
+            contracts = int(int(candidate.get("contracts") or 0) * mult)
+            if contracts < 1:
+                raise ValueError("Size caution (WSB crowding) leaves under one contract")
+            candidate = dict(candidate, contracts=contracts)
         # Quote the chosen structure for premium / con_id.
         if candidate["asset_type"] == "OPT":
             action = "BUY" if candidate["option_intent"] in ("BTO", "BTC") else "SELL"

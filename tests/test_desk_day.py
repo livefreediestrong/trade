@@ -217,3 +217,25 @@ def test_agent_holds_a_buy_on_earnings_day(live, monkeypatch):  # noqa: F811
     monkeypatch.setattr(desk, "generate_scan_signal", scan)
     live.service.tick()
     assert not live.sent and "earnings today" in live.service.message
+
+
+def test_option_fills_are_described_as_contracts():
+    line = desk_day._event_line({"status": "approved", "ticker": "AAPL", "side": "buy", "asset_type": "OPT",
+                                 "option_strategy": "long_call", "fill": {"shares": 2, "price": 3.45}})
+    assert line["text"] == "Bought 2 AAPL long_call contracts at $3.45 premium."
+
+
+def test_wsb_half_size_carries_over_to_option_contracts(live, monkeypatch):  # noqa: F811
+    import auto_live_options
+    signal = {"ticker": "TEST", "side": "buy", "signal_price": 100.0, "advisory_size_mult": 0.5}
+    monkeypatch.setitem(router.__dict__, "get_account", lambda: {"ok": True, "risk_ready": True, "account": {"day_pnl": 0}})
+    monkeypatch.setattr(auto_live_options, "risk_ready_error", lambda book: None)
+    monkeypatch.setitem(router.__dict__, "get_positions", lambda: {"ok": True, "positions": []})
+    monkeypatch.setitem(router.__dict__, "option_chain", lambda t: {"ok": True, "expirations": [], "strikes": []})
+    seen = {}
+    def build(sig, cfg, **kw):
+        return {"asset_type": "OPT", "contracts": 1, "option_intent": "BTO", "right": "C", "expiry": "20261016", "strike": 100}
+    monkeypatch.setattr(auto_live_options, "build_option_candidate", build)
+    monkeypatch.setitem(router.__dict__, "option_quotes", lambda legs: seen.setdefault("quoted", True) and pytest.fail("must stop before quoting"))
+    with pytest.raises(ValueError, match="under one contract"):
+        live.service._maybe_convert_to_option(signal, desk.load_config(), {}, {})

@@ -68,7 +68,12 @@ def _event_line(event: dict[str, Any]) -> dict[str, Any]:
     elif fill:
         kind = "trade"
         verb = "Bought" if event.get("side") != "sell" else "Sold"
-        text = f"{verb} {float(fill.get('shares') or 0):g} {ticker} at {_money(fill.get('price'))}."
+        qty = float(fill.get('shares') or 0)
+        if event.get("asset_type") in ("OPT", "BAG"):
+            text = (f"{verb} {qty:g} {ticker} {event.get('option_strategy') or 'option'} contract{'s' if qty != 1 else ''} "
+                    f"at {_money(fill.get('price'))} premium.")
+        else:
+            text = f"{verb} {qty:g} {ticker} at {_money(fill.get('price'))}."
     elif status in SKIP_STATUSES:
         kind, text = "skip", (f"Passed on {ticker}: {message}" if ticker else message)
     elif status == "broker_pending":

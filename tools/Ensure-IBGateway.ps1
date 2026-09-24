@@ -37,7 +37,7 @@ function Get-GatewayCheck {
     ($_.Name -in @('java.exe', 'javaw.exe') -and "$($_.CommandLine)" -match '(?i)ibgateway|ibcalpha|\\jts\\|/jts/|jclient|twslaunch')
   })
   # Login windows are titled "IBKR Gateway" (10.51+), "IB Gateway" or "Trader Workstation".
-  $running += @(Get-Process -ErrorAction SilentlyContinue | Where-Object { "$($_.MainWindowTitle)" -match '(?i)\bIB(KR)?\s*Gateway\b|Trader Workstation' })
+  $running += @(Get-Process -ErrorAction SilentlyContinue | Where-Object { "$($_.Name)" -notin @('chrome','msedge','firefox','brave','opera','explorer','Code','notepad','notepad++','powershell','pwsh','cmd','WindowsTerminal','OUTLOOK','WINWORD') -and "$($_.MainWindowTitle)" -match '(?i)^\s*(IBKR|IB)\s+Gateway\b|^\s*Trader Workstation\b' })
   return @{ ok = $true; running = $running }
 }
 function Stop-Here([string]$Message) { Write-Host $Message; exit 0 }

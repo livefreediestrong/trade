@@ -544,7 +544,7 @@ def test_window_title_image_and_pid_all_identify_gateway():
     renamed = '"ibkrgateway.exe","9","Console","1","1 K","Running","PC\\me","0:00:01","N/A"\n'
     assert broker._tasklist_gateway_matches(renamed) == ["ibkrgateway.exe"]
     child = '"launcher.exe","5150","Console","1","1 K","Running","PC\\me","0:00:01","N/A"\n'
-    assert broker._tasklist_gateway_matches(child) == [] and broker._tasklist_gateway_matches(child, 5150) == ["launcher.exe"]
+    assert broker._tasklist_gateway_matches(child) == [] and broker._tasklist_gateway_matches(child, 5150, "launcher.exe") == ["launcher.exe"]
     assert broker._tasklist_gateway_matches('"TWS.exe","1","Console","1","1 K","Running","u","0:0:1","Trader Workstation"\n')
     assert broker._tasklist_gateway_matches('"x.exe","2","Console","1","1 K","Running","u","0:0:1","IB Gateway 10.51"\n')
 
@@ -643,3 +643,18 @@ def test_launch_record_keeps_sign_in_history_and_counts_launches(monkeypatch, tm
     broker._mark_gateway_launch("C:/Jts/ibgateway/1051/ibgateway.exe", "desk", True, now=100.0)
     stamp = broker._read_gateway_stamp()
     assert stamp["api_seen_at"] == 20.0 and stamp["launches"] == [5.0, 100.0] and stamp["automatic_launches"] == [100.0]
+
+
+def test_title_check_ignores_folders_files_and_browsers():
+    row = lambda image, title, pid="9": f'"{image}","{pid}","Console","1","1 K","Running","u","0:0:1","{title}"\n'  # noqa: E731
+    assert broker._tasklist_gateway_matches(row("explorer.exe", "ibgateway")) == []
+    assert broker._tasklist_gateway_matches(row("Code.exe", "Ensure-IBGateway.ps1 - trade")) == []
+    assert broker._tasklist_gateway_matches(row("chrome.exe", "Trader Workstation - Google Chrome")) == []
+    assert broker._tasklist_gateway_matches(row("javaw.exe", "IBKR Gateway")) == ["javaw.exe"]
+
+
+def test_reused_pid_is_not_mistaken_for_gateway():
+    chrome = '"chrome.exe","5150","Console","1","1 K","Running","u","0:0:1","Inbox"\n'
+    assert broker._tasklist_gateway_matches(chrome, 5150, "ibgateway.exe") == []
+    ours = '"ibgwlauncher.exe","5150","Console","1","1 K","Running","u","0:0:1","N/A"\n'
+    assert broker._tasklist_gateway_matches(ours, 5150, "ibgwlauncher.exe") == ["ibgwlauncher.exe"]

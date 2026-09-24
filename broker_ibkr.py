@@ -1931,7 +1931,12 @@ GATEWAY_AUTOMATIC_CHECK_SEC = 30.0             # unattended callers re-check at 
 _GATEWAY_ABSENT_SINCE: list[float | None] = [None]
 _GATEWAY_LAST_AUTOMATIC: dict[str, Any] = {"at": 0.0, "result": None}
 # "IBKR Gateway" (10.51+), "IB Gateway", or TWS login and main windows.
-_GATEWAY_TITLE_RE = re.compile(r"\bIB(?:KR)?\s*Gateway\b|Trader Workstation", re.I)
+# Window titles start with the product name; a folder, file or web page that merely mentions
+# it is not Gateway. Browsers, shells and editors are never counted by title.
+_GATEWAY_TITLE_RE = re.compile(r"^\s*(?:IBKR|IB)\s+Gateway\b|^\s*Trader Workstation\b", re.I)
+_TITLE_IGNORED_IMAGES = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "iexplore.exe",
+                         "explorer.exe", "code.exe", "notepad.exe", "notepad++.exe", "powershell.exe", "pwsh.exe",
+                         "cmd.exe", "windowsterminal.exe", "conhost.exe", "outlook.exe", "winword.exe"}
 _GATEWAY_IMAGE_RE = re.compile(r"^(?:ib(?:kr)?gateway|tws)[\w.-]*\.exe$", re.I)
 GATEWAY_MUTEX_NAME = "Local\\TomahawkGatewayLaunch"  # shared with Start-Tomahawk.ps1 / Ensure-IBGateway.ps1
 
@@ -1946,7 +1951,7 @@ def _gateway_launch_stamp_path():
     return Path(root) / "gateway_launch.json"
 
 
-def _tasklist_gateway_matches(listing: str, pid: Any = None) -> list[str]:
+def _tasklist_gateway_matches(listing: str, pid: Any = None, pid_image: str | None = None) -> list[str]:
     """Gateway/TWS rows in `tasklist /V /FO CSV /NH` output: by image name, window title or launched PID."""
     import csv
     import io
@@ -1957,8 +1962,11 @@ def _tasklist_gateway_matches(listing: str, pid: Any = None) -> list[str]:
         image = row[0].strip()
         title = row[-1].strip() if len(row) >= 9 else ""
         by_image = image.lower() in _GATEWAY_IMAGES or bool(_GATEWAY_IMAGE_RE.match(image))
-        by_title = bool(title) and title.upper() != "N/A" and bool(_GATEWAY_TITLE_RE.search(title))
-        by_pid = pid is not None and len(row) > 1 and row[1].strip() == str(pid)
+        by_title = (bool(title) and title.upper() != "N/A" and image.lower() not in _TITLE_IGNORED_IMAGES
+                    and bool(_GATEWAY_TITLE_RE.search(title)))
+        # A recorded PID only counts while it still belongs to the program we started (PIDs get reused).
+        by_pid = (pid is not None and len(row) > 1 and row[1].strip() == str(pid)
+                  and bool(pid_image) and image.lower() == str(pid_image).lower())
         if by_image or by_title or by_pid:
             hits.append(image or "Gateway window")
     return hits
@@ -1984,7 +1992,8 @@ def _running_gateway_processes() -> list[str] | None:
         return None
     if proc.returncode != 0 or not (proc.stdout or "").strip():
         return None
-    found = _tasklist_gateway_matches(proc.stdout, _read_gateway_stamp().get("pid"))
+    stamp = _read_gateway_stamp()
+    found = _tasklist_gateway_matches(proc.stdout, stamp.get("pid"), stamp.get("pid_image"))
     if found:
         return found
     query = ("Get-CimInstance Win32_Process -Filter \"Name='java.exe' OR Name='javaw.exe'\" -ErrorAction Stop | "
@@ -2083,9 +2092,10 @@ def _mark_gateway_launch(exe: str, source: str, automatic: bool = False, now: fl
     _write_gateway_stamp(data)
 
 
-def _note_gateway_pid(pid: int) -> None:
+def _note_gateway_pid(pid: int, exe: str | None = None) -> None:
     data = _read_gateway_stamp()
     data["pid"] = int(pid)
+    data["pid_image"] = os.path.basename(exe or data.get("exe") or "").lower() or None
     _write_gateway_stamp(data)
 
 
@@ -2324,7 +2334,7 @@ def _launch_gateway(exe: str, host: str, port: int, result: dict[str, Any]) -> d
             stderr=subprocess.DEVNULL,
         )
         try:
-            _note_gateway_pid(proc.pid)
+            _note_gateway_pid(proc.pid, exe)
         except Exception:  # noqa: BLE001
             pass
         result["launched"] = True
