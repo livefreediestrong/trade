@@ -1,0 +1,43 @@
+<section class="desk-module panel workbench-wide" id="live-stock-ticket" aria-labelledby="live-stock-ticket-title">
+  <h3 id="live-stock-ticket-title" class="module-title" tabindex="-1">Stock order ticket</h3>
+  <p class="muted">Your order · IBKR account · whole shares</p>
+  <p id="live-ticket-status" role="status">Waiting for account status. Composing a ticket sends no order.</p>
+  <form id="live-ticket-form">
+    <fieldset class="guide-choices"><legend>1 · Choose the action</legend>
+      <label><input type="radio" name="live-ticket-intent" value="buy" checked> Buy shares</label>
+      <label><input type="radio" name="live-ticket-intent" value="sell"> Sell shares I own</label>
+      <label><input type="radio" name="live-ticket-intent" value="cover"> Buy to cover a short</label>
+    </fieldset>
+    <div class="compact-form">
+      <label>Stock or ETF<input id="live-ticket-symbol" maxlength="15" autocomplete="off" placeholder="AAPL" required></label>
+      <label>Whole shares<input id="live-ticket-shares" type="number" min="1" step="1" value="1" required></label>
+    </div>
+    <fieldset class="guide-choices"><legend>2 · Set the price rule</legend>
+      <label><input type="radio" name="live-ticket-type" value="limit" checked> Limit · my price or better</label>
+      <label><input type="radio" name="live-ticket-type" value="market"> Market · next available price</label>
+    </fieldset>
+    <div class="compact-form"><label>Limit price per share · $<input id="live-ticket-limit" type="number" min="0.0001" step="0.0001" required></label>
+      <button class="btn" id="live-ticket-preview" type="submit">3 · Review order &amp; fees</button></div>
+    <p id="live-ticket-price-help" class="muted">DAY limit: buy at this price or less; sell at this price or more. Unfilled orders can remain working until the session ends.</p>
+  </form>
+  <section id="live-ticket-review" hidden aria-labelledby="live-ticket-review-title">
+    <h4 id="live-ticket-review-title" tabindex="-1">4 · Check the exact order</h4>
+    <dl class="plain-glossary">
+      <dt>Account</dt><dd id="live-ticket-account"></dd>
+      <dt>Order</dt><dd id="live-ticket-terms"></dd>
+      <dt>Position</dt><dd id="live-ticket-position"></dd>
+      <dt>Market price</dt><dd id="live-ticket-quote"></dd>
+      <dt>Order value</dt><dd id="live-ticket-notional"></dd>
+      <dt>Estimated fees</dt><dd id="live-ticket-fees"></dd>
+      <dt>Estimated cash change</dt><dd id="live-ticket-cash"></dd>
+      <dt>Review expires</dt><dd id="live-ticket-expiry"></dd>
+    </dl>
+    <p id="live-ticket-warning" class="muted"></p>
+    <div class="compact-form"><label>Type the stock symbol to confirm<input id="live-ticket-ack" autocomplete="off" maxlength="15"></label>
+      <button id="live-ticket-send" class="btn primary" type="button" disabled>Submit reviewed order</button>
+      <button id="live-ticket-discard" class="btn ghost" type="button">Discard review</button></div>
+  </section>
+  <p id="live-ticket-result" role="status" aria-live="polite">Choose an action, shares and price rule. Review checks the account, holdings, current quote and risk limits.</p>
+  <p class="muted">Fees and market-order prices are estimates, not an all-in spending cap. Sell/cover checks run again before submission; broker activity can still race with an order. No attached stop or take-profit is created. Fractional shares and live options are unavailable here.</p>
+  <a href="#broker-orders-list">Track fills &amp; review cancellation ↓</a>
+</section>

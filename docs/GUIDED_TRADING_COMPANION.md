@@ -12,9 +12,9 @@ Speech bubbles name the destination and explain the section or focused field. Di
 
 `templates/desk/live_guide.html` and `static/desk_guidance.js` provide Buy shares / Sell shares I own paths. The status line reads actual existing desk state and treats stale data, an unverified market session/account, unavailable daily P&L and a non-manual mode as incomplete. It never labels a connection as permission to trade.
 
-Buying: account checks → whole-share cost/fee calculator → existing research ticket review → recorded broker orders. Navigation opens the relevant disclosure but never clicks a trade action. The calculator initially uses whole shares and a limit-price assumption; fractional paper estimates remain selectable. Ticket buttons now say Review trade to distinguish opening a review from final submission. Existing account-bound acknowledgement and submission gates remain unchanged.
+Buying: account checks → direct stock ticket or research idea → exact order/fee review → ticker acknowledgement → recorded broker orders. Navigation never clicks a trade action. The separate calculator initially uses whole shares and a limit-price assumption; fractional paper estimates remain selectable. Existing account-bound acknowledgement and submission gates remain in use.
 
-Selling an existing holding: check the exact position/quantity → use IBKR's own close/sell workflow → reconcile the fill. The desk has no direct position-close ticket; the guide says this explicitly instead of presenting a research sell signal as a close action. Selling beyond a long holding can create short exposure. No new live execution capability was added.
+Selling an existing holding: check the exact position → **Prepare sell ticket** → choose quantity and market/limit rule → review and submit yourself. **Prepare cover ticket** handles existing shorts. These September 24 additions reserve working quantities and recheck holdings before submission; they cannot intentionally open a new short or turn a cover into a new long. Broker activity can still race after the final cached check. See [direct stock tickets](LIVE_STOCK_TICKETS.md).
 
 ## Calls and puts
 

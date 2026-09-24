@@ -874,6 +874,42 @@ def get_open_orders() -> dict[str, Any]:
         return {"ok": False, "error": str(exc)[:200], "orders": []}
 
 
+def _listed_us_stock(contract):
+    return (getattr(contract, "secType", None) == "STK"
+            and getattr(contract, "currency", None) == "USD" and getattr(contract, "conId", 0) > 0
+            and getattr(contract, "primaryExchange", "").upper() in {
+                "NASDAQ", "NYSE", "ARCA", "AMEX", "BATS", "IEX", "ISLAND", "NYSEARCA", "NYSEAMERICAN"})
+
+
+def _position_intent_error(ib, contract, order, identity):
+    """Final cached position/order check; does not yield after qualification."""
+    intent = order.get("position_intent")
+    if intent is None:
+        return None
+    if intent not in ("buy", "sell", "cover") or not _listed_us_stock(contract):
+        return "Direct tickets require a verified US-listed stock contract and position intent"
+    expected = {"con_id": contract.conId, "symbol": contract.symbol,
+                "primary_exchange": contract.primaryExchange, "currency": contract.currency}
+    if order.get("contract_identity") != expected:
+        return "Stock contract differs from the reviewed instrument; request a fresh review"
+    if order.get("side") != ("sell" if intent == "sell" else "buy"):
+        return "Position intent does not match the order side"
+    from live_ticket import position_error
+    account = identity["account_id"]
+    held = sum(_number(p.position) for p in ib.positions(account)
+               if p.account == account and p.contract.conId == contract.conId)
+    reserved = {"buy_qty": 0.0, "sell_qty": 0.0}
+    for trade in ib.openTrades():
+        if trade.order.account != account or trade.contract.conId != contract.conId:
+            continue
+        side = trade.order.action.lower()
+        total, filled = _number(trade.order.totalQuantity), _number(trade.orderStatus.filled)
+        if side not in ("buy", "sell") or total < 0 or filled < 0 or filled > total:
+            return "Working order quantities changed; request a fresh review"
+        reserved[side + "_qty"] += total-filled
+    return position_error(intent, held, int(order["shares"]), reserved)
+
+
 @_on_api_thread
 def place_from_desk_order(order: dict[str, Any]) -> dict[str, Any]:
     trade = None
@@ -918,6 +954,8 @@ def place_from_desk_order(order: dict[str, Any]) -> dict[str, Any]:
                 else:
                     native = MarketOrder(side.upper(), int(qty), account=identity["account_id"], orderRef=ref)
                 risk_error = _submission_risk_error(ib, order, identity)
+                if not risk_error:
+                    risk_error = _position_intent_error(ib, contract, order, identity)
                 if risk_error:
                     raise ValueError(risk_error)
                 attempted = True
@@ -1024,6 +1062,7 @@ def estimate_order(order):
             contract = Stock(order["ticker"], "SMART", "USD")
             if not ib.qualifyContracts(contract):
                 raise ValueError("Contract unavailable")
+            contract_verified = _listed_us_stock(contract)
             args = {"account": identity["account_id"], "tif": "DAY", "outsideRth": False}
             native = (LimitOrder(order["side"].upper(), order["shares"], order["limit"], **args)
                       if order["type"] == "limit" else MarketOrder(order["side"].upper(), order["shares"], **args))
@@ -1032,7 +1071,10 @@ def estimate_order(order):
             commission = _number(state.commission)
             return {"commission_estimate": commission if 0 <= commission < 1e8 else None,
                     "currency": state.commissionCurrency or None, "source": "IBKR what-if",
-                    "guaranteed": False, "warning": state.warningText or None}
+                    "guaranteed": False, "warning": state.warningText or None,
+                    "contract_verified": contract_verified,
+                    "contract": {"con_id": contract.conId, "symbol": contract.symbol,
+                                 "primary_exchange": contract.primaryExchange, "currency": contract.currency}}
     except Exception as exc:
         return {"commission_estimate": None, "guaranteed": False, "error": str(exc)[:200]}
 

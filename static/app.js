@@ -184,10 +184,22 @@
     const ledger = data?.ledger || {};
     const pending = ledger.pending_broker_orders || [];
     const fills = (ledger.broker_fills || []).slice().sort((a,b) => Date.parse(b.ts || b.filled_at || 0) - Date.parse(a.ts || a.filled_at || 0)).slice(0, 20);
-    const rows = pending.map(order => ({...order.signal, ...order, label: "Working / awaiting reconciliation", cancelId: order.signal?.id}))
-      .concat(fills.map(fill => ({...fill, label: "Filled"})));
-    el.innerHTML = rows.length ? `<table><thead><tr><th>Time</th><th>Stock</th><th>Side</th><th>Quantity</th><th>Price</th><th>Status</th></tr></thead><tbody>${rows.map(row =>
-      `<tr><td>${escapeHtml(shortTs(row.ts || row.filled_at || row.created_at))}</td><td>${escapeHtml(row.ticker || row.symbol || "—")}</td><td>${escapeHtml(row.side || "—")}</td><td>${escapeHtml(String(row.shares ?? row.qty ?? row.suggested_shares ?? "—"))}</td><td>${fmtMoney(row.price ?? row.broker?.order?.limit)}</td><td>${escapeHtml(row.label)}${row.cancelId && !String(row.order_id).startsWith("intent:") ? ` <button type="button" class="btn ghost" data-cancel-review="${escapeHtml(row.cancelId)}">Review cancellation</button>` : ""}</td></tr>`).join("")}</tbody></table>`
+    const pendingIds = new Set(pending.map(order => String(order.order_id)));
+    const rows = pending.map(order => {
+      const fill = (ledger.broker_fills || []).find(f => String(f.order_id) === String(order.order_id));
+      const requested = order.broker?.order?.shares ?? order.signal?.suggested_shares;
+      const confirmed = fill?.confirmed === true;
+      return {...order.signal, ...order, requested, filled: confirmed ? fill.shares : "Unconfirmed",
+        remaining: confirmed && Number.isFinite(Number(requested)) ? Math.max(0, Number(requested)-Number(fill.shares)) : "Unconfirmed",
+        price: confirmed ? fill.price : null, label: confirmed ? (Number(fill.shares) >= Number(requested) ? "Filled · awaiting terminal confirmation" : "Partial fill · remainder tracked") : "Working / awaiting broker evidence", cancelId: order.signal?.id};
+    }).concat(fills.filter(fill => !pendingIds.has(String(fill.order_id))).map(fill => ({...fill,
+      requested: "—", filled: fill.confirmed === true ? fill.shares : "Unconfirmed",
+      price: fill.confirmed === true ? fill.price : null,
+      remaining: fill.broker_reconciled === true ? 0 : "Unconfirmed",
+      label: fill.broker_fill_state === "voided" ? "Execution reversed" : fill.confirmed !== true ? "Fill unverified" :
+        fill.broker_reconciled !== true ? "Fill · awaiting reconciliation" : fill.broker_fill_state === "partially_filled" ? "Partial fill · remainder closed" : "Filled"})));
+    el.innerHTML = rows.length ? `<table><thead><tr><th>Time</th><th>Stock</th><th>Side</th><th>Requested</th><th>Filled</th><th>Remaining</th><th>Fill price</th><th>Status</th></tr></thead><tbody>${rows.map(row =>
+      `<tr><td>${escapeHtml(shortTs(row.ts || row.filled_at || row.created_at))}</td><td>${escapeHtml(row.ticker || row.symbol || "—")}</td><td>${escapeHtml(row.side || "—")}</td><td>${escapeHtml(String(row.requested ?? "—"))}</td><td>${escapeHtml(String(row.filled))}</td><td>${escapeHtml(String(row.remaining))}</td><td>${row.price == null ? "Unconfirmed" : fmtMoney(row.price)}</td><td>${escapeHtml(row.label)}${row.cancelId && !String(row.order_id).startsWith("intent:") ? ` <button type="button" class="btn ghost" data-cancel-review="${escapeHtml(row.cancelId)}">Review cancellation</button>` : ""}</td></tr>`).join("")}</tbody></table>`
       : '<div class="empty">No broker orders recorded by this desk.</div>';
   }
 
@@ -959,6 +971,7 @@
             <strong>${escapeHtml(p.ticker)}</strong>
             <span>${escapeHtml(String(p.shares))} shares${p.side === "short" ? " (short)" : ""} @ ${fmtMoney(p.avg_price)}</span>
             <span>${p.last != null ? `last ${fmtMoney(p.last)} · ` : ""}<span class="money ${Number(p.open_pnl_usd) >= 0 ? "pos" : "neg"}">${p.open_pnl_usd != null ? fmtSigned(p.open_pnl_usd) : "P&L unavailable"}</span></span>
+            ${data.config?.mode === "live_manual" && provider === "IBKR" && Number(p.shares) >= 1 ? `<button type="button" class="btn ghost" data-live-position="${escapeHtml(p.ticker)}" data-side="${escapeHtml(p.side)}" data-shares="${escapeHtml(String(p.shares))}">Prepare ${p.side === "short" ? "cover" : "sell"} ticket</button>` : ""}
           </div>`).join("")
       : `<div class="empty">No positions at the broker.</div>`;
   }

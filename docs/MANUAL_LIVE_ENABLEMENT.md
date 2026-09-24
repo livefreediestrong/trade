@@ -2,6 +2,8 @@
 
 This file documents the actual code as of 2026-09-23. It is not an arming script. The agent did not change `.env`, select `auto_live`, start a live session, submit an order or cancel a broker order.
 
+September 24 addition: the [direct stock ticket](LIVE_STOCK_TICKETS.md) uses the same verified `live_manual` configuration below. It adds no environment or arming flag. Buy, sell-owned and cover tickets require their own exact order review and explicit user submission.
+
 There are two separate features:
 
 1. **Existing desk execution**: `live_manual` requires a fresh account-bound review and ticker confirmation for each order. The existing `auto_live` path can submit eligible whole-share market orders when the live session is active. It does not use Moss's saved rehearsal plan.

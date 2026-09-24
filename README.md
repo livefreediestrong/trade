@@ -21,6 +21,7 @@ Useful feature references:
 - [Changing Woman news and source feeds](docs/CHANGING_WOMAN_NEWS.md)
 - [UI structure](docs/UI_STRUCTURE.md)
 - [Manual live enablement reference](docs/MANUAL_LIVE_ENABLEMENT.md)
+- [Direct stock tickets and position closing](docs/LIVE_STOCK_TICKETS.md)
 
 The detailed implementation notes below use the legacy Tomahawk name.
 
@@ -62,7 +63,9 @@ The desk shows **Live trading**, **Paper research**, **Market research**, and **
 
 **Live trading** is the first, primary section. It shows the verified broker account, holdings, broker orders and live ideas. The existing selected account and execution mode are retained. In `live_manual`, an idea needs an explicit order review and matching ticker acknowledgement before submission. A broker market order has **no attached stop-loss, take-profit or trailing stop**; paper exit controls are hidden and rejected on broker submissions.
 
-The **$10 live test readiness** panel is read-only. It reports account, P&L, market-session, freshness and unresolved-order blockers. The current whole-share market-order path cannot guarantee a $10 total cash cap, and paper fee settings are not a live broker fee estimate. A connected account or passing unit tests do not establish readiness for that real-money test.
+The **Stock order ticket** supports user-directed whole-share buys, selling owned shares and covering existing shorts through the verified IBKR `live_manual` account. Choose market or DAY limit, review the exact account/quantity/price/estimated fees, then type the stock symbol before submitting. Holding buttons prepare a ticket without sending it. See [direct stock tickets](docs/LIVE_STOCK_TICKETS.md) for supported scope and validation.
+
+The **$10 live test readiness** panel is read-only. It reports account, P&L, market-session, freshness and unresolved-order blockers. Neither market nor limit tickets guarantee a $10 total including fees, and paper fee settings are not a live broker fee estimate. A connected account or passing unit tests do not establish readiness for that real-money test.
 
 Opening a broker review obtains a single-use server token tied to the verified account, endpoint, mode and displayed signal terms. The review expires after at most 90 seconds, or sooner when the signal expires. Changes to those terms require a new review. The server and broker adapter also enforce an absolute submission deadline after slow prechecks, so a quote or signal that expires while waiting cannot be submitted. Current account limits can reduce the suggested quantity or block the order.
 

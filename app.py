@@ -796,7 +796,7 @@ def _signal_ui_projection(signal: dict[str, Any], cfg: dict | None = None) -> di
         "research_flag", "llm_side", "llm_error", "llm_thesis", "citations",
         "screener_citations", "gap_pct", "reject_reason", "size_mult_suggested",
         "llm_model", "llm_confidence", "llm_risks", "brain_mode", "routed", "router_reason", "quote",
-        "workspace", "source_signal_id", "mode_at_create", "decision_record_id", "execution_block",
+        "workspace", "source_signal_id", "mode_at_create", "decision_record_id", "execution_block", "manual_order", "origin",
     )
     out = {key: signal[key] for key in fields if key in signal}
     cfg = cfg or load_config()
@@ -1081,7 +1081,7 @@ _BROKER_REVIEWS: dict[str, dict] = {}
 
 def _review_terms(sig, cfg):
     return {"signal": {key: sig.get(key) for key in
-                       ("id", "ticker", "side", "suggested_shares", "workspace", "expires_at", "quote", "signal_price")},
+                       ("id", "ticker", "side", "suggested_shares", "workspace", "expires_at", "quote", "signal_price", "manual_order")},
             "mode": cfg.get("mode"), "identity": cfg.get("broker_identity")}
 
 
@@ -1814,6 +1814,10 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
     def blocked(error):
         return {"ok": False, "error": error, "abstain": True, "book": None, "broker": None, "gated": True}
 
+    manual = sig.get("manual_order")
+    if manual and (cfg.get("mode") != "live_manual" or not sig.get("review_identity")
+                   or sig.get("review_order") != manual.get("order")):
+        return blocked("Direct tickets require their exact manual order review")
     with _BROKER_SUBMIT_LOCK:
         identity = None
         provider = broker.public_status().get("broker")
@@ -1855,6 +1859,11 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
         reserved, open_error = _broker_working_reservations(str(sig.get("ticker") or ""), px)
         if open_error:
             return blocked(open_error)
+        if manual:
+            from live_ticket import position_error
+            intent_error = position_error(manual["intent"], held, reviewed_order["shares"], reserved)
+            if intent_error:
+                return blocked(intent_error)
         with _lock:
             ledger = load_ledger()
             if reducing:
@@ -1882,6 +1891,9 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                  "signal_id": sig.get("id"), "via": via, "type": "market", "broker_identity": identity}
         if reviewed_order:
             order.update(reviewed_order)
+        if manual:
+            order["position_intent"] = manual["intent"]
+            order["contract_identity"] = copy.deepcopy(sig.get("review_contract"))
         with _BROKER_EXEC_LOCK:
             with _lock:
                 current = load_config()
@@ -7097,8 +7109,12 @@ def api_generate():
 @app.route("/api/signals/<sig_id>/review", methods=["POST"])
 def api_order_review(sig_id: str):
     """Read-only broker verification; a short-lived ticket never submits an order."""
+    return _create_broker_review(sig_id, request.get_json(silent=True) or {})
+
+
+def _create_broker_review(sig_id: str, body: dict):
+    """Shared review path for research ideas and explicit user stock tickets."""
     import broker_router as broker
-    body = request.get_json(silent=True) or {}
     if not isinstance(body, dict):
         return jsonify(ok=False, error="JSON object required"), 400
     with _lock:
@@ -7113,6 +7129,8 @@ def api_order_review(sig_id: str):
             ticket = order_terms.canonical_order(sig, body.get("order"))
         except ValueError as exc:
             return jsonify(ok=False, error=str(exc)), 400
+        if sig.get("manual_order") and (cfg.get("mode") != "live_manual" or ticket != sig["manual_order"]["order"]):
+            return jsonify(ok=False, error="Create a new direct ticket to change its terms; manual mode is required"), 409
     context = broker.verify_execution_context()
     if not context.get("ok"):
         return jsonify(ok=False, error=context.get("error") or "Broker identity unavailable"), 400
@@ -7120,6 +7138,9 @@ def api_order_review(sig_id: str):
     estimate = {"commission_estimate": None, "guaranteed": False}
     if body.get("order") and identity.get("broker") == "ibkr":
         estimate = broker.estimate_order(dict(ticket, ticker=sig["ticker"], side=sig["side"], broker_identity=identity))
+        if sig.get("manual_order") and (estimate.get("contract_verified") is not True
+                or not isinstance(estimate.get("contract"), dict) or not estimate["contract"].get("con_id")):
+            return jsonify(ok=False, error=estimate.get("error") or "IBKR could not verify this US-listed stock contract"), 409
     with _lock:
         current_cfg = load_config()
         current = next((s for s in load_signals() if s.get("id") == sig_id), None)
@@ -7144,7 +7165,8 @@ def api_order_review(sig_id: str):
         if len(_BROKER_REVIEWS) >= 100:
             return jsonify(ok=False, error="Too many open order reviews; wait for old reviews to expire"), 429
         token = uuid.uuid4().hex + uuid.uuid4().hex
-        _BROKER_REVIEWS[token] = {"terms": terms, "identity": identity, "expires": expires, "order": ticket}
+        _BROKER_REVIEWS[token] = {"terms": terms, "identity": identity, "expires": expires, "order": ticket,
+                                  "contract": copy.deepcopy(estimate.get("contract"))}
     return jsonify(ok=True, review_token=token, identity=identity,
                    expires_at=datetime.fromtimestamp(expires, timezone.utc).isoformat(),
                    broker=broker.public_status(), order=ticket,
@@ -7199,6 +7221,7 @@ def api_approve(sig_id: str):
             sig["review_expires_at"] = datetime.fromtimestamp(review["expires"], timezone.utc).isoformat()
             sig["review_identity"] = review["identity"]
             sig["review_order"] = copy.deepcopy(review["order"])
+            sig["review_contract"] = copy.deepcopy(review.get("contract"))
         # Atomic claim under lock — prevents double-approve races
         sig["status"] = "approving"
         for i, s in enumerate(signals):
@@ -7284,6 +7307,7 @@ def api_approve(sig_id: str):
                 "error": result.get("error"),
                 "broker": result.get("broker"),
                 "book": result.get("book"),
+                "pending": bool(result.get("pending")),
                 "banner": BANNER,
             }
         ), 400
@@ -7318,6 +7342,7 @@ def api_approve(sig_id: str):
             "broker": result.get("broker"),
             "book": result.get("book"),
             "paper_fallback": bool(result.get("paper_fallback")),
+            "pending": bool(result.get("pending")),
             "banner": BANNER,
         }
     )
@@ -8261,6 +8286,8 @@ import desk_workbench
 desk_workbench.register(app, __import__("sys").modules[__name__])
 import broker_controls
 broker_controls.register(app, __import__("sys").modules[__name__])
+import live_ticket
+live_ticket.register(app, __import__("sys").modules[__name__])
 import research_companion
 _research_companion = research_companion.register(app, __import__("sys").modules[__name__])
 import options_desk
