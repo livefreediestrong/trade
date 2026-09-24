@@ -163,7 +163,7 @@ class Companion:
                     "notebook_count": len(saved.get("briefs", [])), "memory": memory_summary(self.events()),
                     "paper_workday": self.paper.status(), "actual_trades": self.trades.status(),
                     "agent_review": self.review.status(),
-                    "execution_settings": {k: cfg.get(k) for k in ("mode", "session_active", "kill_switch", "rth_only", "risk_preset")},
+                    "execution_settings": {k: cfg.get(k) for k in ("mode", "session_active", "kill_switch", "rth_only", "risk_preset", "live_agent")},
                     "live_automation": "not_armed", "desk_execution_mode": cfg.get("mode"),
                     "schedule": "Once per market session while the app is running; weekends and exchange holidays skipped. Missed days are not fabricated.",
                     "learned_model": saved.get("learned_model"),

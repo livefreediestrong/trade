@@ -890,7 +890,7 @@ def _position_intent_error(ib, contract, order, identity):
         return "Direct tickets require a verified US-listed stock contract and position intent"
     expected = {"con_id": contract.conId, "symbol": contract.symbol,
                 "primary_exchange": contract.primaryExchange, "currency": contract.currency}
-    if order.get("contract_identity") != expected:
+    if not order.get("agent_policy") and order.get("contract_identity") != expected:
         return "Stock contract differs from the reviewed instrument; request a fresh review"
     if order.get("side") != ("sell" if intent == "sell" else "buy"):
         return "Position intent does not match the order side"

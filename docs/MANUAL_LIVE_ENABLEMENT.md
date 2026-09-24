@@ -4,7 +4,9 @@ This file documents the actual code as of 2026-09-23. It is not an arming script
 
 September 24 addition: the [direct stock ticket](LIVE_STOCK_TICKETS.md) uses the same verified `live_manual` configuration below. It adds no environment or arming flag. Buy, sell-owned and cover tickets require their own exact order review and explicit user submission.
 
-There are two separate features:
+September 24 addition: [Moss broker agent](LIVE_AGENT.md) now connects a separate saved policy to broker execution. Its visible Save / Start / Pause controls are the preferred agent workflow. Saving leaves it paused; starting requires the exact account, current revision and REAL/PAPER confirmation. An installed agent policy replaces legacy scheduled broker scans, including while paused. The legacy `auto_live` JSON below alone does not enable that agent. No new environment flag is required.
+
+The older features remain separate from that agent:
 
 1. **Existing desk execution**: `live_manual` requires a fresh account-bound review and ticker confirmation for each order. The existing `auto_live` path can submit eligible whole-share market orders when the live session is active. It does not use Moss's saved rehearsal plan.
 2. **Moss rehearsal**: `data/research_companion.json` stores a test plan. Saving it or using Rehearse sends no broker order. Its fractional, short, limit-order and dollar-budget preferences do not configure the existing auto-live path. There is no Moss arming flag in this implementation.
@@ -70,7 +72,7 @@ To stop new automatic entries, use `POST /api/session/stop` with `{}`, then sele
 
 Unit tests and local paper fills do not qualify broker execution. Exercise order acceptance/rejection, partial fills, fees, cancellation races, disconnect/restart recovery, unknown submissions, account switches, market close, missing P&L and stale quotes on the broker paper account. Verify both the desk records and broker records. No such execution was performed in this implementation pass.
 
-Moss's plan cannot be promoted just by setting an environment variable. Connecting its declared limit/dollar/fractional/short preferences to autonomous execution would require a separate policy-to-order implementation, authenticated arming lifecycle, durable daily reservations/counters, and broker-paper qualification. The current Gateway stock adapter does not implement fractional or borrowed-share entries. Its default automatic path is market orders; manual review supports DAY limits. Do not copy Moss plan fields into `config.json` and assume they take effect.
+Moss's notebook rehearsal cannot be promoted by setting an environment variable. Use the separate broker-agent policy for supported whole-share Market/DAY limit orders; its quantities and limits are enforced independently. Fractional and borrowed-share entries remain unsupported. Broker-paper qualification remains required. Do not copy rehearsal fields into `config.json` and assume they take effect.
 
 ## Source pointers
 

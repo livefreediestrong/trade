@@ -1815,6 +1815,7 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
         return {"ok": False, "error": error, "abstain": True, "book": None, "broker": None, "gated": True}
 
     manual = sig.get("manual_order")
+    agent_order = sig.get("source") == "live_agent" or (cfg.get("mode") == "auto_live" and cfg.get("live_agent") is not None)
     if manual and (cfg.get("mode") != "live_manual" or not sig.get("review_identity")
                    or sig.get("review_order") != manual.get("order")):
         return blocked("Direct tickets require their exact manual order review")
@@ -1837,13 +1838,22 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
         px = fetch_last_price(str(sig.get("ticker") or ""))
         if not px or not _finite_float(px) or px <= 0:
             return blocked("no_real_quote")
+        with _MARKS_LOCK:
+            execution_quote = dict(_QUOTE_SNAPSHOTS.get(str(sig.get("ticker") or "").upper()) or {})
+        if agent_order:
+            if provider != "ibkr":
+                return blocked("Live agent requires the IBKR Gateway adapter")
+            try:
+                sig["review_order"] = live_agent.execution_terms(sig, cfg, px, execution_quote)
+                sig["suggested_shares"] = sig["review_order"]["shares"]
+            except ValueError as exc:
+                return blocked(str(exc))
         reviewed_order = sig.get("review_order")
         # Risk checks use the worst of the fresh mark and the reviewed entry
         # limit. A limit below market must not understate existing holdings.
         risk_px = max(float(px), float(reviewed_order.get("limit") or px)) if reviewed_order else float(px)
         sig["signal_price"] = risk_px
-        with _MARKS_LOCK:
-            sig["execution_quote"] = dict(_QUOTE_SNAPSHOTS.get(str(sig.get("ticker") or "").upper()) or {})
+        sig["execution_quote"] = execution_quote
         day_pnl, equity, acct_error = _broker_day_pnl()
         held, pos_error = _broker_position_qty(str(sig.get("ticker") or ""))
         if pos_error or _finite_float(held) is None:
@@ -1856,6 +1866,10 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
         reducing = (side == "sell" and held > 0) or (side == "buy" and held < 0)
         if acct_error and not (reducing and day_pnl is None and equity is not None and equity > 0):
             return blocked(acct_error)
+        if agent_order:
+            error = _live_agent.trade_error(sig, cfg, day_pnl, reducing)
+            if error:
+                return blocked(error)
         reserved, open_error = _broker_working_reservations(str(sig.get("ticker") or ""), px)
         if open_error:
             return blocked(open_error)
@@ -1879,6 +1893,10 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                     existing_notional=max(0, held) * px + reserved["buy_exposure"])
             if cap_error:
                 return blocked(cap_error)
+            if agent_order:
+                reviewed_order["shares"] = shares
+                if reviewed_order.get("type") == "limit":
+                    reviewed_order["notional_bound"] = shares * reviewed_order["limit"]
             if reviewed_order and shares != reviewed_order["shares"]:
                 return blocked("Risk limits changed the reviewed quantity; open a fresh review")
             sig["suggested_shares"] = shares
@@ -1894,12 +1912,19 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
         if manual:
             order["position_intent"] = manual["intent"]
             order["contract_identity"] = copy.deepcopy(sig.get("review_contract"))
+        elif agent_order:
+            order["position_intent"] = "sell" if side == "sell" else "cover" if held < 0 else "buy"
+            order["agent_policy"] = {"revision": sig["agent_revision"], "run_id": sig["agent_run_id"]}
         with _BROKER_EXEC_LOCK:
             with _lock:
                 current = load_config()
                 authorization_error = _broker_authorization_error(cfg, identity, current)
                 if authorization_error:
                     return blocked(authorization_error)
+                if agent_order:
+                    error = _live_agent.trade_error(sig, current, day_pnl, reducing)
+                    if error:
+                        return blocked(error)
                 if not reducing:
                     shares, notional, cap_error = _cap_shares_for_broker(
                         sig, current, ledger, equity_override=equity, allow_fetch=False,
@@ -1922,6 +1947,8 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                 except (ValueError, TypeError, KeyError) as exc:
                     return blocked(str(exc))
                 order["risk_authorization"] = {"day_pnl": day_pnl, "equity": equity, "reducing": reducing}
+                if agent_order:
+                    _live_agent.reserve(sig, current)
                 intent = _persist_broker_intent(sig, order, provider)
             try:
                 response = live_broker_place_order(order)
@@ -4879,6 +4906,8 @@ def _scheduled_scan_config(cfg: dict[str, Any]) -> dict[str, Any] | None:
     """Choose one authorized research owner without borrowing the live session."""
     moss_owns_paper = bool((cfg.get("moss_paper") or {}).get("enabled"))
     if cfg.get("session_active") and cfg.get("mode") in ("live_manual", "auto_live"):
+        if cfg.get("live_agent") is not None:
+            return None  # The live agent is the sole scheduled broker owner, even when paused.
         selected = cfg
     elif cfg.get("session_active") and cfg.get("mode") in ("manual", "auto_paper"):
         if moss_owns_paper or cfg.get("loop_enabled"):
@@ -4902,6 +4931,7 @@ def _bg_loop() -> None:
     while not _bg_stop.wait(timeout=5):
         try:
             _reconcile_pending_broker_orders()
+            _live_agent.tick()
             cfg = None
             should = False
             with _lock:
@@ -6142,6 +6172,8 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
                 cfg.pop("broker_identity", None)
             prev_mode = cfg.get("mode")
             cfg["mode"] = new_mode
+            if cfg.get("live_agent"):
+                cfg["live_agent"]["enabled"] = False
             append_journal(
                 "mode_change",
                 {
@@ -7580,6 +7612,8 @@ def api_session_stop():
         cfg = load_config()
         cfg["session_active"] = False
         cfg["loop_enabled"] = False
+        if cfg.get("live_agent"):
+            cfg["live_agent"]["enabled"] = False
         # keep session_started_at / target / equity / mode for reference
         save_config(cfg)
         append_journal("session_stop", {"mode": cfg.get("mode"), "loop_enabled": False})
@@ -8308,6 +8342,8 @@ import broker_controls
 broker_controls.register(app, __import__("sys").modules[__name__])
 import live_ticket
 live_ticket.register(app, __import__("sys").modules[__name__])
+import live_agent
+_live_agent = live_agent.register(app, __import__("sys").modules[__name__])
 import research_companion
 _research_companion = research_companion.register(app, __import__("sys").modules[__name__])
 import options_desk

@@ -23,6 +23,7 @@ Useful feature references:
 - [Manual live enablement reference](docs/MANUAL_LIVE_ENABLEMENT.md)
 - [Direct stock tickets and position closing](docs/LIVE_STOCK_TICKETS.md)
 - [Automation debugging and scheduler boundaries](docs/AUTOMATION_DEBUG.md)
+- [Moss broker agent: policy, activation, execution and limits](docs/LIVE_AGENT.md)
 
 The detailed implementation notes below use the legacy Tomahawk name.
 
