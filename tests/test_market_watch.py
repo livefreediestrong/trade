@@ -210,9 +210,11 @@ def test_x_access_denied_is_explained(xw):
     assert "403" in x_watcher.status()["error"] and "client-not-enrolled" in x_watcher.status()["error"]
 
 
-def test_x_falls_back_to_keywords_when_cashtags_are_not_allowed(xw):
+@pytest.mark.parametrize("status", [400, 403])
+def test_x_falls_back_to_keywords_when_cashtags_are_not_allowed(xw, status):
     calls, responses = xw
-    responses.append(Resp(status=400, payload={"errors": [{"message": "Reference to invalid operator 'cashtag'"}]}))
+    responses.append(Resp(status=status, payload={"errors": [{"message": (
+        "Reference to invalid operator 'cashtag'. Operator is not available in current product or product packaging.")}]}))
     x_watcher.poll(["AAPL"], now=T0)
     assert x_watcher.status()["query_mode"] == "keyword"
     x_watcher.poll(["AAPL"], now=T0 + 16 * 60)

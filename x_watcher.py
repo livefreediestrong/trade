@@ -292,7 +292,10 @@ def _poll(symbols: list[str], now: float) -> None:
             with _lock:
                 _state["since"].pop(key, None)
             response = _request(query, None, min(_max_results(), budget))
-        if response.status_code == 400 and key.startswith("cashtag:") and "operator" in _error_text(response).lower():
+        # X reports a plan without the $ operator as "Reference to invalid operator ... not
+        # available in current product"; accept either status it has used for that.
+        if (response.status_code in (400, 403) and key.startswith("cashtag:")
+                and "invalid operator" in _error_text(response).lower()):
             with _lock:
                 _state["cashtag_operator"] = False
             error = "This X API plan does not allow the $cashtag operator; using ticker keywords from the next poll"
