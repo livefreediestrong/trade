@@ -120,7 +120,7 @@
     $('trade-sky-detail').textContent=`${etClock.format(new Date(row.ts))} ET · ${instrument} · ${row.side||'side unknown'} ${row.shares} ${row.asset_type==='OPT'?'contracts':'units'} @ ${row.price} ${row.currency||'currency unknown'} · fee ${fee} · account …${String(row.account_id).slice(-4)} · execution ${row.execution_id}`;
   }
   function renderJournal(now){
-    if(!journal)return;
+    if(!journal||!$('trade-sky-stars'))return; // the trade sky is not on every page
     const all=qualifiedFills(journal,now), rows=all.slice(-24), key=JSON.stringify([rows,journal.last_sync,journal.error,etDay.format(now)]);
     if(key===journalKey)return;journalKey=key;
     // Rebuild only when records change; preserve keyboard selection when possible.

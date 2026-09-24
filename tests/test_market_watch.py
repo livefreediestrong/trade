@@ -312,7 +312,9 @@ def test_snapshot_combines_sources_and_isolates_failures(monkeypatch, tmp_path):
     assert payload["headlines"][0]["publisher"] == "Reuters"
     top = payload["trends"]["tickers"][0]
     assert top["symbol"] == "NVDA" and set(top["sources"]) == {"reddit", "stocktwits", "yahoo", "google_news"}
-    assert payload["trends"]["sources"]["google_trends"]["ok"] is False
+    assert payload["trends"]["sources"]["google_trends"] == {**payload["trends"]["sources"]["google_trends"],
+                                                           "ok": False, "error": "HTTP 503"}
+    assert payload["trends"]["sources"]["google_news"]["ok"] is True
     assert payload["watchlist"][0]["google_finance_url"].endswith("HD:NYSE")
     assert "Social research is off" in payload["social"]["error"]
 
@@ -322,3 +324,19 @@ def test_market_watch_endpoint(monkeypatch):
     monkeypatch.setattr(market_watch, "snapshot", lambda d, cfg, force=False: {"ok": True, "force": force})
     client = desk.app.test_client()
     assert client.get("/api/market-watch?force=1", base_url="http://127.0.0.1:5056").get_json() == {"ok": True, "force": True}
+
+
+def test_source_errors_are_short_and_url_free():
+    assert news_stream.short_error("HTTP 403 for https://api.stocktwits.com/api/2/trending/symbols.json") == "HTTP 403"
+    assert news_stream.short_error("ProxyError: HTTPSConnectionPool(host='news.google.com', port=443): Max retries") == "could not connect"
+    assert news_stream.short_error("timeout for https://x.example") == "timed out"
+    assert news_stream.short_error(None) is None
+
+
+def test_headline_trend_is_unavailable_without_headlines(monkeypatch):
+    monkeypatch.setattr(market_watch, "listing_index", lambda desk: market_watch.ListingIndex(LISTINGS))
+    for name in ("_reddit_trend", "_stocktwits_trend", "_yahoo_trend"):
+        monkeypatch.setattr(market_watch, name, (lambda *a: ([], market_watch._status(True))))
+    monkeypatch.setattr(market_watch, "_google_trends", lambda index: ([], [], market_watch._status(True)))
+    result = market_watch.trend_scan(None, [], [])
+    assert result["sources"]["google_news"]["ok"] is False

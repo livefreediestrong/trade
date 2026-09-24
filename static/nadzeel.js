@@ -4,6 +4,7 @@
   const $=id=>document.getElementById(id);
   const money=v=>typeof v==='number'&&Number.isFinite(v)?v.toLocaleString('en-US',{style:'currency',currency:'USD'}):'Unavailable';
   window.addEventListener('desk:state',e=>{const d=e.detail||{},b=d.broker_book||{},cfg=d.config||{};
+    if(!$('overview-account-label'))return; // the overview card is only on the Overview page
     $('overview-account-label').textContent=b.paper_mode===true?'Broker paper account value':'Live account value';
     $('overview-equity').textContent=b.ok?money(b.equity):'Unavailable';
     {

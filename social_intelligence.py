@@ -19,7 +19,7 @@ from typing import Any
 
 import requests
 
-from news_stream import AMBIGUOUS_TICKERS, FUTURE_TOLERANCE_SEC, MAX_FEED_BYTES, _ts_seconds
+from news_stream import AMBIGUOUS_TICKERS, FUTURE_TOLERANCE_SEC, MAX_FEED_BYTES, _ts_seconds, short_error
 
 _lock = threading.RLock()
 _cache: dict[str, Any] = {"at": 0.0, "payload": None}
@@ -80,7 +80,7 @@ def _sentiment(text: str) -> str:
 
 def _note_source(name: str, error: str | None, rows: int = 0) -> None:
     with _lock:
-        _source_status[name] = {"ok": error is None, "error": (str(error)[:200] if error else None),
+        _source_status[name] = {"ok": error is None, "error": short_error(error),
                                 "rows": rows, "checked_at": datetime.now(timezone.utc).isoformat()}
 
 
@@ -350,7 +350,7 @@ def snapshot(watchlist: list[str] | None = None, *, force: bool = False) -> dict
             try:
                 rows.extend(future.result() or [])
             except Exception as exc:  # one source never sinks the snapshot
-                _note_source("unexpected", f"{type(exc).__name__}: {exc}")
+                _note_source("unexpected", type(exc).__name__)
     for row in rows:
         row["created_ts"] = _created_ts(row.get("created_at"), now)
     # Sort on parsed time: raw strings mix ISO and RFC 2822 ("Tue, ..." sorts above

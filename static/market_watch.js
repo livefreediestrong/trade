@@ -68,7 +68,8 @@
   $('mw-health').textContent=`${(d.headlines||[]).length} headlines · ${trends.length} trending${d.x&&d.x.status&&d.x.status.configured?' · X on':' · X off'}`;
   $('mw-status').textContent=`Updated ${when(d.as_of)}${d.from_cache?' (cached)':''}${d.refreshing?' · refreshing in the background':''}. Refreshes every five minutes while this page is open.`;
   renderTrends(d.trends);
-  $('mw-headlines').replaceChildren(...(d.headlines||[]).slice(0,16).map(headline));
+  const heads=d.headlines||[];
+  $('mw-headlines').replaceChildren(...(heads.length?heads.slice(0,16).map(headline):[el('p','No market headlines available right now. See Source status below; missing headlines do not mean no news.','hint-line')]));
   const custom=d.custom_headlines||[];$('mw-custom').hidden=!custom.length;$('mw-custom').replaceChildren(...custom.slice(0,12).map(headline));
   renderX(d.x||{});renderSocial(d.social||{});
   $('mw-watchlist').replaceChildren(...(d.watchlist||[]).map(w=>link(w.symbol,w.google_finance_url)));

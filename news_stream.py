@@ -76,6 +76,21 @@ def _load_env() -> None:
 _load_env()
 
 
+def short_error(text: Any) -> str | None:
+    """Readable one-line source error: no URLs, pool dumps or stack text."""
+    if not text:
+        return None
+    raw = str(text)
+    low = raw.lower()
+    if "timeout" in low or "timed out" in low:
+        return "timed out"
+    if any(k in low for k in ("connectionerror", "proxyerror", "max retries", "name resolution", "connection refused")):
+        return "could not connect"
+    raw = re.sub(r"\s+for\s+https?://\S+", "", raw)
+    raw = re.sub(r"https?://\S+", "", raw)
+    return " ".join(raw.split())[:160] or None
+
+
 def benzinga_key() -> str:
     return (os.environ.get("BENZINGA_API_KEY") or "").strip()
 

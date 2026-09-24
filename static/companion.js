@@ -99,27 +99,27 @@
     try { render(await api('/api/companion'),startedAt); } catch(e) { txt('moss-status','Notebook unavailable'); txt('moss-insight',e.message); window.dispatchEvent(new CustomEvent('moss:state',{detail:{error:true}}));window.dispatchEvent(new CustomEvent('moss:workday',{detail:{error:true,startedAt}})); }
     finally { fetching=false; clearTimeout(pollTimer); if(pageActive&&!document.hidden) pollTimer=setTimeout(refresh,busyBefore?5000:15000); }
   }
-  $('moss-research').addEventListener('click',e=>task(e.currentTarget,'moss-insight',async()=>{await api('/api/companion/research',{}); await refresh();}));
-  $('moss-history').addEventListener('change',showEntry);
-  $('moss-paper-form').addEventListener('submit',e=>{e.preventDefault();task(e.submitter,'moss-paper-save',async()=>{
+  $('moss-research')?.addEventListener('click',e=>task(e.currentTarget,'moss-insight',async()=>{await api('/api/companion/research',{}); await refresh();}));
+  $('moss-history')?.addEventListener('change',showEntry);
+  $('moss-paper-form')?.addEventListener('submit',e=>{e.preventDefault();task(e.submitter,'moss-paper-save',async()=>{
     const p={...snapshot.paper_workday.settings,enabled:checked('moss-paper-enabled'),personality:val('moss-personality'),symbols:val('moss-paper-symbols').toUpperCase().split(/[\s,]+/).filter(Boolean),interval_sec:val('moss-paper-interval'),horizon_min:val('moss-paper-horizon'),base_order_usd:val('moss-paper-base'),max_order_usd:val('moss-paper-max'),max_model_calls:val('moss-paper-calls'),model_budget_usd:val('moss-paper-cost'),flatten_before_close:checked('moss-paper-close')};
     if($('moss-universe'))p.universe=val('moss-universe');
     if($('moss-paper-batch'))p.candidates_per_cycle=val('moss-paper-batch');
     for(const [id,key] of Object.entries({'moss-paper-positions':'max_positions','moss-paper-exposure':'max_total_exposure_pct','moss-paper-trades':'max_trades_per_day','moss-paper-loss':'max_daily_loss_pct'}))p[key]=val(id);
     await api('/api/companion/paper',p);txt('moss-paper-save','Paper workday saved. Live execution mode was not changed.');await refresh();window.dispatchEvent(new Event('desk:refresh'));
   });});
-  $('moss-sync-trades').addEventListener('click',e=>task(e.currentTarget,'moss-trades-status',async()=>{await api('/api/companion/trades/sync',{});await refresh();}));
+  $('moss-sync-trades')?.addEventListener('click',e=>task(e.currentTarget,'moss-trades-status',async()=>{await api('/api/companion/trades/sync',{});await refresh();}));
   $('moss-universe-refresh')?.addEventListener('click',e=>task(e.currentTarget,'moss-universe-status',async()=>{await api('/api/companion/universe/refresh',{});await refresh();}));
-  $('moss-settings-form').addEventListener('submit',e=>{e.preventDefault();task(e.submitter,'moss-settings-status',async()=>{await api('/api/companion/settings',{name:val('moss-name').trim(),daily_target:val('moss-goal'),enabled:checked('moss-enabled'),use_model:checked('moss-model'),research_short_selling:checked('moss-shorts')});txt('moss-settings-status','Routine saved. Live trading settings did not change.');await refresh();});});
-  $('automation-form').addEventListener('submit',e=>{e.preventDefault();task(e.submitter,'auto-result',async()=>{const result=await api('/api/companion/plan',{budget:val('auto-budget'),daily_loss_limit:val('auto-loss'),max_orders:val('auto-count'),symbols:val('auto-symbols').toUpperCase().split(/[\s,]+/).filter(Boolean),order_type:val('auto-type'),fractional:checked('auto-fractional'),short_selling:checked('auto-shorts')});txt('auto-result',result.note);});});
-  $('auto-rehearse').addEventListener('click',e=>task(e.currentTarget,'auto-result',async()=>{const r=await api('/api/companion/rehearse',{});$('auto-result').innerHTML=`<p><strong>No orders submitted.</strong> ${r.candidates.length} pending ideas matched the saved symbol list.</p><ul>${r.blockers.map(t=>`<li>${esc(t)}</li>`).join('')}</ul>${r.candidates.map(c=>`<p>${esc(c.ticker)}: ${esc(c.reason)}</p>`).join('')}`;}));
-  $('cost-form').addEventListener('submit',e=>{e.preventDefault();task(e.submitter,'cost-result',async()=>{
+  $('moss-settings-form')?.addEventListener('submit',e=>{e.preventDefault();task(e.submitter,'moss-settings-status',async()=>{await api('/api/companion/settings',{name:val('moss-name').trim(),daily_target:val('moss-goal'),enabled:checked('moss-enabled'),use_model:checked('moss-model'),research_short_selling:checked('moss-shorts')});txt('moss-settings-status','Routine saved. Live trading settings did not change.');await refresh();});});
+  $('automation-form')?.addEventListener('submit',e=>{e.preventDefault();task(e.submitter,'auto-result',async()=>{const result=await api('/api/companion/plan',{budget:val('auto-budget'),daily_loss_limit:val('auto-loss'),max_orders:val('auto-count'),symbols:val('auto-symbols').toUpperCase().split(/[\s,]+/).filter(Boolean),order_type:val('auto-type'),fractional:checked('auto-fractional'),short_selling:checked('auto-shorts')});txt('auto-result',result.note);});});
+  $('auto-rehearse')?.addEventListener('click',e=>task(e.currentTarget,'auto-result',async()=>{const r=await api('/api/companion/rehearse',{});$('auto-result').innerHTML=`<p><strong>No orders submitted.</strong> ${r.candidates.length} pending ideas matched the saved symbol list.</p><ul>${r.blockers.map(t=>`<li>${esc(t)}</li>`).join('')}</ul>${r.candidates.map(c=>`<p>${esc(c.ticker)}: ${esc(c.reason)}</p>`).join('')}`;}));
+  $('cost-form')?.addEventListener('submit',e=>{e.preventDefault();task(e.submitter,'cost-result',async()=>{
     const revision=costRevision;
     const r=await api('/api/cost-estimate',{budget:val('cost-budget'),price:val('cost-price'),exit_price:val('cost-exit'),fractional:val('cost-fractional')==='true',direction:val('cost-direction'),order_type:val('cost-type'),fee_mode:val('cost-fee-mode'),entry_fee:val('cost-entry-fee'),exit_fee:val('cost-exit-fee'),borrow_fee:val('cost-borrow-fee'),slippage_bps:Number(val('cost-slippage'))*100});
     if(revision!==costRevision) return;
     $('cost-result').innerHTML=`<div class="estimate-grid"><div><span>Shares in this scenario</span><strong>${esc(r.shares)}</strong></div><div><span>Entry value · before fees</span><strong>${money(r.entry_value)}</strong></div><div><span>Estimated entry cash</span><strong>${r.direction==='short'?'Margin unverified':money(r.cash_needed_estimate)}</strong></div><div><span>Fees assumed · both sides</span><strong>${money(r.fees_assumed)}</strong></div><div><span>Estimated net result</span><strong>${money(r.net_pnl_estimate)}</strong></div><div><span>Break-even exit price</span><strong>${r.break_even_possible===false?'Not attainable':money(r.break_even_price)}</strong></div></div><p>${esc(r.note)}</p>${r.short_note?`<p>${esc(r.short_note)}</p>`:''}<p class="hint-line">${r.order_type==='limit'?'The calculation assumes the limit fills; it may never fill.':'The modeled price movement is an assumption, not a maximum.'}</p>`;
   });});
-  $('cost-quote').addEventListener('click',e=>task(e.currentTarget,'cost-quote-status',async()=>{
+  $('cost-quote')?.addEventListener('click',e=>task(e.currentTarget,'cost-quote-status',async()=>{
     const revision=costRevision, symbol=val('cost-symbol').trim().toUpperCase(), result=await api(`/api/cost-estimate/quote/${encodeURIComponent(symbol)}`), q=result.quote;
     if(revision!==costRevision){txt('cost-quote-status','Inputs changed while the price loaded. Get the price again.');return;}
     const price=Number(q.price);
@@ -133,15 +133,15 @@
     txt('cost-result','Price updated. Calculate again for the current inputs.');
     txt('cost-quote-status',`${symbol}: ${money(q.price)} · ${q.source} · ${q.market_time?new Date(q.market_time).toLocaleString():'time unknown'} · ${q.fresh?'recent observation':'old/unverified; scenario only'}`);
   }));
-  $('cost-price').addEventListener('input',()=>txt('cost-quote-status','Price edited manually · hypothetical assumption, not a verified quote.'));
-  $('cost-form').addEventListener('input',()=>{costRevision++;txt('cost-result','Inputs changed. Calculate again for the current scenario.');});
-  $('cost-symbol').addEventListener('input',()=>{txt('cost-quote-status','Symbol changed. Get a new price or enter a hypothetical price.');$('cost-price').value='';$('cost-exit').value='';});
-  $('cost-fee-mode').addEventListener('change',()=>{for(const id of ['cost-entry-fee','cost-exit-fee','cost-borrow-fee'])$(id).disabled=val('cost-fee-mode')!=='custom';});
-  for(const id of ['cost-entry-fee','cost-exit-fee','cost-borrow-fee']) $(id).disabled=true;
-  $('paper-sizing-form').addEventListener('submit',e=>{e.preventDefault();task(e.submitter,'paper-sizing-status',async()=>{await api('/api/paper-research',{fractional_enabled:checked('paper-fractional'),order_budget:val('paper-order-budget')});txt('paper-sizing-status','Saved for paper only. Existing holdings remain intact.');window.dispatchEvent(new Event('desk:refresh'));});});
+  $('cost-price')?.addEventListener('input',()=>txt('cost-quote-status','Price edited manually · hypothetical assumption, not a verified quote.'));
+  $('cost-form')?.addEventListener('input',()=>{costRevision++;txt('cost-result','Inputs changed. Calculate again for the current scenario.');});
+  $('cost-symbol')?.addEventListener('input',()=>{txt('cost-quote-status','Symbol changed. Get a new price or enter a hypothetical price.');$('cost-price').value='';$('cost-exit').value='';});
+  $('cost-fee-mode')?.addEventListener('change',()=>{for(const id of ['cost-entry-fee','cost-exit-fee','cost-borrow-fee'])$(id).disabled=val('cost-fee-mode')!=='custom';});
+  for(const id of ['cost-entry-fee','cost-exit-fee','cost-borrow-fee']) if($(id)) $(id).disabled=true;
+  $('paper-sizing-form')?.addEventListener('submit',e=>{e.preventDefault();task(e.submitter,'paper-sizing-status',async()=>{await api('/api/paper-research',{fractional_enabled:checked('paper-fractional'),order_budget:val('paper-order-budget')});txt('paper-sizing-status','Saved for paper only. Existing holdings remain intact.');window.dispatchEvent(new Event('desk:refresh'));});});
   window.addEventListener('desk:state',e=>{
     const c=e.detail?.config;
-    if(c && !paperInitialized && 'paper_equity' in c){$('paper-fractional').checked=!!c.paper_fractional_enabled;$('paper-order-budget').value=c.paper_order_budget||0;paperInitialized=true;}
+    if(c && !paperInitialized && 'paper_equity' in c && $('paper-fractional')){$('paper-fractional').checked=!!c.paper_fractional_enabled;$('paper-order-budget').value=c.paper_order_budget||0;paperInitialized=true;}
   });
   document.addEventListener('click',e=>{const link=e.target.closest('a[href^="#"]');if(!link)return;const target=document.getElementById(link.getAttribute('href').slice(1));if(target?.tagName==='DETAILS')target.open=true;});
   document.addEventListener('visibilitychange',()=>{clearTimeout(pollTimer);if(!document.hidden)refresh();});

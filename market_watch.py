@@ -79,8 +79,23 @@ def _get(url: str, *, params: dict | None = None, accept: str = "application/rss
     return content
 
 
+def describe_error(exc: BaseException) -> str:
+    """Short, readable reason for the status table (no raw URLs or stack text)."""
+    if isinstance(exc, requests.Timeout):
+        return "timed out"
+    if isinstance(exc, requests.ConnectionError):
+        return "could not connect"
+    if isinstance(exc, ET.ParseError):
+        return "unreadable feed"
+    if isinstance(exc, ValueError) and str(exc).startswith(("HTTP ", "Feed too large")):
+        return str(exc)
+    if isinstance(exc, requests.RequestException):
+        return "request failed"
+    return type(exc).__name__
+
+
 def _status(ok: bool, error: str | None = None, **extra: Any) -> dict[str, Any]:
-    return {"ok": ok, "error": (str(error)[:200] if error else None),
+    return {"ok": ok, "error": news_stream.short_error(error),
             "checked_at": datetime.now(timezone.utc).isoformat(), **extra}
 
 
@@ -196,7 +211,7 @@ def google_headlines(now: float) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             parsed = news_stream.parse_google_news_rss(_get(url), limit=40)
             status[label] = _status(True, rows=len(parsed))
         except (ValueError, ET.ParseError, requests.RequestException) as exc:
-            status[label] = _status(False, str(exc) or type(exc).__name__)
+            status[label] = _status(False, describe_error(exc))
             continue
         for row in parsed:
             row["feed"] = label
@@ -225,7 +240,7 @@ def custom_headlines(now: float) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             entries = social_intelligence._feed_entries(ET.fromstring(_get(url, accept="application/rss+xml, application/atom+xml, application/xml")))
             status[host] = _status(True, rows=len(entries))
         except (ValueError, ET.ParseError, requests.RequestException) as exc:
-            status[host] = _status(False, str(exc) or type(exc).__name__)
+            status[host] = _status(False, describe_error(exc))
             continue
         for entry in entries[:30]:
             link = entry["link"].strip()
@@ -407,7 +422,7 @@ def trend_scan(desk, watchlist: list[str], headlines: list[dict[str, Any]]) -> d
         try:
             return fn()
         except Exception as exc:  # noqa: BLE001 - one source never sinks the scan
-            status[name] = _status(False, f"{type(exc).__name__}: {exc}"[:200])
+            status[name] = _status(False, describe_error(exc))
             return None
 
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix="trend-scan") as pool:
@@ -427,7 +442,8 @@ def trend_scan(desk, watchlist: list[str], headlines: list[dict[str, Any]]) -> d
                 rows, status[name] = result
             by_source[name] = rows
     by_source["google_news"] = _headline_trend(headlines, index)
-    status["google_news"] = _status(True, rows=len(by_source["google_news"]))
+    status["google_news"] = _status(bool(headlines), None if headlines else "no market headlines available",
+                                    rows=len(by_source["google_news"]))
     x_rows = run("x", _x_trend) or []
     if x_rows:
         by_source["x"] = x_rows
@@ -456,6 +472,10 @@ def snapshot(desk, cfg: dict[str, Any], *, force: bool = False) -> dict[str, Any
     if not _refresh_lock.acquire(blocking=cached is None):
         return dict(cached, from_cache=True, refreshing=True)  # another request is refreshing
     try:
+        with _lock:  # a request that waited for the lock can reuse what the other one built
+            cached = _cache["payload"]
+            if not force and cached and _cache["key"] == key and time.time() - _cache["at"] < TTL:
+                return dict(cached, from_cache=True)
         payload = _build(desk, cfg, watchlist, now)
         with _lock:
             _cache.update(at=now, key=key, payload=payload)
