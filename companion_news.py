@@ -160,7 +160,7 @@ class HeadlineDesk:
         with self.lock:
             cache = copy.deepcopy(self.cache)
             busy, error = self.busy, self.error
-        providers, rows, seen = [], [], set()
+        providers, selected = [], {}
         for source in SOURCES:
             result = cache.get(source["id"],{})
             checked = result.get("checked_at")
@@ -181,8 +181,10 @@ class HeadlineDesk:
                 "rejected":result.get("rejected",0)})
             for row in eligible:
                 key = re.sub(r"\W+","",row["title"].lower())
-                if key not in seen:
-                    rows.append(row);seen.add(key)
+                prior = selected.get(key)
+                if prior is None or (row["fresh"], row["published_ts"]) > (prior["fresh"], prior["published_ts"]):
+                    selected[key] = row
+        rows = list(selected.values())
         rows.sort(key=lambda r:r["published_ts"],reverse=True)
         return {"ok":True,"busy":busy,"error":error,"sources":providers,"items":rows[:80],"as_of":now,
                 "refresh_seconds":TTL,"headline_max_age_hours":36,

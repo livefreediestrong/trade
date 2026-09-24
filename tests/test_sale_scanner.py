@@ -157,6 +157,21 @@ def test_refresh_failure_preserves_last_pass(tmp_path):
     assert d["valid"] == 1 and d["total"] == 1 and "Directory unavailable" in d["message"]
 
 
+def test_lagging_history_remains_retryable_on_resume(tmp_path):
+    from research_studio import RetryableHistoryError
+    calls = []
+    def fetch(symbol, now):
+        calls.append(symbol)
+        if len(calls) == 1:
+            raise RetryableHistoryError('History is behind the latest completed session; no sale ranking calculated')
+        return history(symbol, now)
+    scan = scanner(tmp_path, fetch=fetch)
+    scan.start(); first = finish(scan)
+    assert first['state'] == 'partial' and first['failed'] == 1 and first['excluded'] == 0
+    scan.start(resume=True); second = finish(scan)
+    assert second['state'] == 'complete' and second['valid'] == 1 and calls == ['A', 'A']
+
+
 @pytest.mark.parametrize("filters", [{"minimum": float("nan")}, {"minimum": -1}, {"kind": "otc"}, {"page": 0}])
 def test_invalid_filters_rejected(tmp_path, filters):
     with pytest.raises(ValueError): scanner(tmp_path).snapshot(**filters)

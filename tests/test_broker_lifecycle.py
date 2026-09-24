@@ -178,6 +178,7 @@ def gateway(monkeypatch):
     monkeypatch.setattr(ibkr, "_PNL", {})
     monkeypatch.setattr(ibkr, "_PNL_UPDATED", {})
     monkeypatch.setattr(ibkr, "_ACCOUNT_READY", {})
+    monkeypatch.setattr(ibkr, "_ACCOUNT_EQUITY", {})
     monkeypatch.setattr(ibkr, "_API_PULSE", {})
     monkeypatch.setattr(ibkr, "_SERVER_UNAVAILABLE", False)
     monkeypatch.setattr(ibkr, "_RESYNC_REQUIRED", False)
@@ -254,8 +255,9 @@ def test_live_mode_requires_real_confirmation(execution, gateway, monkeypatch):
 
 
 def test_ibkr_order_identity_and_retry_deduplication(gateway):
-    identity = ibkr.verify_execution_context()["identity"]
-    order = {"ticker": "AAPL", "side": "buy", "shares": 5, "signal_id": "s1", "broker_identity": identity, "valid_until": deadline()}
+    identity = ibkr.get_account()["identity"]
+    order = {"ticker": "AAPL", "side": "buy", "shares": 5, "signal_id": "s1", "broker_identity": identity, "valid_until": deadline(),
+             "risk_authorization": {"equity": 100000., "day_pnl": -250., "reducing": False}}
     result = ibkr.place_from_desk_order(order)
     assert result["ok"] and result["order_id"] == "DU123:37:42"
     assert ibkr.place_from_desk_order(order)["order_id"] == result["order_id"]

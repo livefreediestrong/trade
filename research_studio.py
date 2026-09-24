@@ -22,6 +22,10 @@ import research_metrics as metrics
 VERSION = "research-studio-v1"
 
 
+class RetryableHistoryError(ValueError):
+    """A provider has not supplied the required completed-session history yet."""
+
+
 def completed_day(now):
     local = now.astimezone(paper_loop.NY_TZ)
     for n in range(15):
@@ -54,14 +58,17 @@ def sale_history(symbol, payload, now):
     if len(points) < 60:
         raise ValueError("At least 60 completed, adjusted sessions are needed")
     if points[-1]["session"] != expected.isoformat():
-        raise ValueError("History is behind the latest completed session; no sale ranking calculated")
+        raise RetryableHistoryError("History is behind the latest completed session; no sale ranking calculated")
     # Adjusted-close ratios include splits/dividends. Normalize to latest raw close for display.
     factor = points[-1]["close"]/points[-1]["adjusted_close"]
     closes = [p["adjusted_close"]*factor for p in points]
     typical = statistics.median(closes[-60:])
-    prior20 = closes[-21:-1]
     volumes = [p["volume"] for p in points[-21:-1] if finite(p.get("volume")) is not None]
     avg_volume = statistics.mean(volumes) if len(volumes) == 20 else None
+    # Match each provider close with that session's share volume. Adjusted-price
+    # ratios are useful for returns, but must not be mixed with raw share volume.
+    turnover = [p["close"]*p["volume"] for p in points[-21:-1] if finite(p.get("volume")) is not None]
+    avg_turnover = statistics.mean(turnover) if len(turnover) == 20 else None
     rvol = points[-1]["volume"]/avg_volume if avg_volume and points[-1].get("volume") is not None else None
     stabilized = closes[-1] > closes[-2] and closes[-1] > statistics.mean(closes[-5:])
     return {"symbol": symbol, "name": parsed["instrument"]["name"], "asset_type": parsed["instrument"]["asset_type"],
@@ -72,18 +79,24 @@ def sale_history(symbol, payload, now):
             "return_1_session_pct": (closes[-1]/closes[-2]-1)*100,
             "realized_volatility_20_sessions_pct": statistics.stdev([math.log(b/a) for a,b in zip(closes[-21:-1],closes[-20:])])*math.sqrt(252)*100,
             "return_window_start": points[-21]["session"],
-            "avg_daily_dollar_volume": avg_volume*statistics.mean(prior20) if avg_volume else None,
+            "avg_daily_dollar_volume": avg_turnover,
             "completed_session_relative_volume": rvol,
             "buyers_returning": "Daily price stabilization observed; buyer identity and intraday entry unconfirmed" if stabilized else "No daily price stabilization confirmation",
             "invalidation_reference": min(closes[-20:]),
             "horizon": "Multi-session pullback research. Intraday timing requires a fresh quote and completed intraday bars.",
-            "status": "research_candidate" if closes[-1] < typical and avg_volume and avg_volume*closes[-1] >= 10_000_000 else "watch_only",
+            "status": "research_candidate" if closes[-1] < typical and avg_turnover and avg_turnover >= 10_000_000 else "watch_only",
             "adjustment_note": "Provider adjusted closes include splits and cash dividends; normalized to latest raw close. Typical price is not fair value. No morning-to-full-day volume comparison."}
 
 
 def fetch_sale(symbol, now):
-    payload = markets.cached(("sale-v1", symbol), 300, lambda: markets.fetch("v8/finance/chart/"+quote(symbol, safe=""),
-                                       {"interval": "1d", "range": "1y", "events": "splits,div", "includeAdjustedClose": "true"}))
+    def validated_payload():
+        payload = markets.fetch("v8/finance/chart/"+quote(symbol, safe=""),
+                                {"interval": "1d", "range": "1y", "events": "splits,div", "includeAdjustedClose": "true"})
+        # A lagging response must not occupy the cache and defeat Resume when
+        # the provider's completed-session bar subsequently becomes available.
+        sale_history(symbol, payload, now)
+        return payload
+    payload = markets.cached(("sale-v2", symbol, completed_day(now).isoformat()), 300, validated_payload)
     return sale_history(symbol, payload, now)
 
 

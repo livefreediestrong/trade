@@ -268,6 +268,12 @@ _GEMINI_BUDGET = _GeminiBudget(
     rpm=int(__import__("os").environ.get("GEMINI_RPM", "30") or 30),
     daily=int(__import__("os").environ.get("GEMINI_DAILY", "500") or 500),
 )
+# Thesis and advisory share this persisted attempt cap, including failed HTTP.
+# Optional JEV_RPM/JEV_DAILY overrides follow the Gemini/Claude budget settings.
+_JEV_BUDGET = _GeminiBudget(
+    rpm=int(os.environ.get("JEV_RPM", "30") or 30),
+    daily=int(os.environ.get("JEV_DAILY", "500") or 500), provider="jev",
+)
 
 
 def gemini_budget_status() -> dict:
@@ -963,6 +969,10 @@ def jev_trade_thesis(
         },
     }
     try:
+        _JEV_BUDGET.acquire()
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError) as exc:
+        return _empty_thesis("jev-latest", str(exc) if isinstance(exc, RuntimeError) else "model_usage_unavailable")
+    try:
         r = requests.post(
             TYPESAFE_API_URL,
             headers={
@@ -986,19 +996,20 @@ def jev_trade_thesis(
     except Exception as exc:
         return _empty_thesis("jev-latest", f"jev_bad_json: {exc}"[:200])
 
-    answers = data.get("answers") or {}
-    side_ans = answers.get("side") or {}
-    conf_ans = answers.get("confidence") or {}
-    side = str(side_ans.get("choice") or "flat").lower().strip()
-    if side not in ("buy", "sell", "flat"):
-        side = "flat"
-    try:
-        conf = float(conf_ans.get("noul") if conf_ans.get("noul") is not None else side_ans.get("confidence") or 0.5)
-    except (TypeError, ValueError):
-        conf = 0.5
-    conf = max(0.0, min(1.0, conf))
+    import math
+    answers = data.get("answers") if isinstance(data, dict) else None
+    side_ans = answers.get("side") if isinstance(answers, dict) else None
+    conf_ans = answers.get("confidence") if isinstance(answers, dict) else None
+    if not isinstance(side_ans, dict) or not isinstance(conf_ans, dict):
+        return _empty_thesis("jev-latest", "invalid_jev_schema")
+    side = side_ans.get("choice")
+    conf = conf_ans.get("noul")
+    if (not isinstance(side, str) or side not in ("buy", "sell", "flat")
+            or isinstance(conf, bool) or not isinstance(conf, (int, float))
+            or not math.isfinite(conf) or not 0 <= conf <= 1):
+        return _empty_thesis("jev-latest", "invalid_jev_schema")
     probs = side_ans.get("probabilities") if isinstance(side_ans.get("probabilities"), dict) else None
-    usage = data.get("usage") or {}
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
     cost = estimate_jev_cost(
         input_tokens=usage.get("input_tokens"),
         output_tokens=usage.get("output_tokens"),
@@ -1434,6 +1445,10 @@ def jev_advisory_panel(
         },
     }
     try:
+        _JEV_BUDGET.acquire()
+    except (RuntimeError, OSError, ValueError, KeyError, TypeError) as exc:
+        return unavailable_advisory("jev", str(exc) if isinstance(exc, RuntimeError) else "model_usage_unavailable")
+    try:
         r = requests.post(
             TYPESAFE_API_URL,
             headers={
@@ -1451,9 +1466,11 @@ def jev_advisory_panel(
         data = r.json()
     except Exception as exc:  # noqa: BLE001
         return unavailable_advisory("jev", type(exc).__name__)
-    answers = data.get("answers") or {}
+    if not isinstance(data, dict) or not isinstance(data.get("answers"), dict):
+        return unavailable_advisory("jev", "invalid_jev_schema")
+    answers = data["answers"]
     scores = _parse_advisory_scores(answers)
-    usage = data.get("usage") or {}
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
     cost = estimate_jev_cost(
         input_tokens=usage.get("input_tokens"),
         output_tokens=usage.get("output_tokens"),
@@ -1641,6 +1658,7 @@ def status_public_extended(cfg: Optional[dict] = None) -> dict[str, Any]:
     mode = resolve_brain_mode(cfg)
     base["brain_mode"] = mode
     base["jev_key_present"] = bool(typesafe_api_key())
+    base["jev_budget"] = _JEV_BUDGET.status()
     base["shadow_auditor"] = shadow_auditor_enabled()
     base["shadow_gate"] = shadow_gate_enabled()
     base["horizon_min"] = decision_horizon_min(cfg)

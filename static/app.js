@@ -6,6 +6,8 @@
   let state = null;
   let activeWorkspace = "live";
   let approvalContext = null;
+  let approveReturnFocus = null, approveReturnSignalId = null;
+  const liveSettingsFields = ["#mode-select", "#ks-loss", "#ks-trades", "#ks-pos"];
   let activeTab = "pending";
   let toastTimer = null;
   let pendingApproveId = null;
@@ -1487,7 +1489,7 @@
 
     const modeSelect = $("#mode-select");
     const liveBox = $("#live-box");
-    if (modeSelect) modeSelect.value = cfg.mode || "manual";
+    if (modeSelect && modeSelect.dataset.dirty !== "1") modeSelect.value = cfg.mode || "manual";
     syncFillModeToggle(cfg);
     if (liveBox) {
       liveBox.classList.toggle(
@@ -1515,7 +1517,7 @@
     const wlEl = $("#watchlist");
     if (Array.isArray(cfg.watchlist)) {
       const wl = cfg.watchlist;
-      if (wlEl && document.activeElement !== wlEl) {
+      if (wlEl && wlEl.dataset.dirty !== "1" && document.activeElement !== wlEl) {
         wlEl.value = wl.join("\n");
       }
       renderWatchlistCount(wl);
@@ -1541,13 +1543,13 @@
       const ksLoss = $("#ks-loss");
       const ksTrades = $("#ks-trades");
       const ksPos = $("#ks-pos");
-      if (ksLoss && document.activeElement !== ksLoss && ks.max_daily_loss_usd != null) {
+      if (ksLoss && ksLoss.dataset.dirty !== "1" && document.activeElement !== ksLoss && ks.max_daily_loss_usd != null) {
         ksLoss.value = ks.max_daily_loss_usd;
       }
-      if (ksTrades && document.activeElement !== ksTrades && ks.max_trades_per_day != null) {
+      if (ksTrades && ksTrades.dataset.dirty !== "1" && document.activeElement !== ksTrades && ks.max_trades_per_day != null) {
         ksTrades.value = ks.max_trades_per_day;
       }
-      if (ksPos && document.activeElement !== ksPos && ks.max_position_size_usd != null) {
+      if (ksPos && ksPos.dataset.dirty !== "1" && document.activeElement !== ksPos && ks.max_position_size_usd != null) {
         ksPos.value = ks.max_position_size_usd;
       }
     }
@@ -2039,15 +2041,19 @@
   }
 
   let refreshSeq = 0;
+  let stateLiteGeneration = 0;
   let refreshInFlight = null;
   async function refresh() {
     // Coalesce: overlapping polls used to let an older /api/state land after a newer one.
     if (refreshInFlight) return refreshInFlight;
     const mySeq = ++refreshSeq;
+    const startedAtGeneration = stateLiteGeneration;
     refreshInFlight = (async () => {
       try {
         const data = await api("/api/state", { timeoutMs: fullStateSeen ? 12000 : 30000 });
-        if (mySeq !== refreshSeq) return;
+        // A stream update received during this request may be newer than its
+        // snapshot, including history omitted by the next compact delta.
+        if (mySeq !== refreshSeq || startedAtGeneration !== stateLiteGeneration) return;
         pollErrToasts = 0;
         noteFresh();
         render(data);
@@ -2094,7 +2100,11 @@
   }
 
   // Events
+  liveSettingsFields.forEach(selector => $(selector)?.addEventListener("input", () => {
+    liveSettingsFields.forEach(id => { const field = $(id); if (field) field.dataset.dirty = "1"; });
+  }));
   $("#mode-select")?.addEventListener("change", () => {
+    liveSettingsFields.forEach(id => { const field = $(id); if (field) field.dataset.dirty = "1"; });
     const _lb = $("#live-box"); const _ms = $("#mode-select"); if (_lb && _ms) _lb.classList.toggle("hidden", !["auto_live", "live_manual"].includes(_ms.value));
   });
 
@@ -2148,7 +2158,11 @@
       };
     }
     try {
+      const submittedFields = liveSettingsFields.map(id => $(id)?.value);
       const data = await api("/api/config", { method: "POST", body: JSON.stringify(body) });
+      if (liveSettingsFields.every((id, index) => $(id)?.value === submittedFields[index])) {
+        liveSettingsFields.forEach(id => { const field = $(id); if (field) delete field.dataset.dirty; });
+      }
       const b = data.broker || window.__brokerStatus || {};
       let msg = `Mode set to ${data.config?.mode || mode}`;
       if (mode === "auto_live" || mode === "live_manual") {
@@ -2355,11 +2369,13 @@
   });
 
   $("#btn-save-watchlist")?.addEventListener("click", async () => {
+    const field = $("#watchlist"), submitted = field.value;
     try {
       await api("/api/config", {
         method: "POST",
-        body: JSON.stringify({ watchlist: $("#watchlist").value }),
+        body: JSON.stringify({ watchlist: submitted }),
       });
+      if (field.value === submitted) delete field.dataset.dirty;
       toast("Watchlist saved");
       await refresh();
     } catch (e) {
@@ -2386,6 +2402,7 @@
       try {
         const data = await api("/api/watchlist/use-liquid", { method: "POST", body: "{}" });
         $("#watchlist").value = (data.watchlist || []).join("\n");
+        delete $("#watchlist").dataset.dirty;
         renderWatchlistCount(data.watchlist || []);
         toast(`Liquid US list loaded (${data.total || 0})`);
         await refresh();
@@ -2405,6 +2422,7 @@
       try {
         const data = await api("/api/watchlist/restore-google-finance", { method: "POST", body: "{}" });
         $("#watchlist").value = (data.watchlist || []).join("\n");
+        delete $("#watchlist").dataset.dirty;
         renderWatchlistCount(data.watchlist || []);
         toast(`Restored Google Finance list (${data.total || 0})`);
         await refresh();
@@ -2422,6 +2440,7 @@
         body: JSON.stringify({ text: $("#watchlist").value, mode, source: "paste" }),
       });
       $("#watchlist").value = (data.watchlist || []).join("\n");
+      delete $("#watchlist").dataset.dirty;
       renderWatchlistCount(data.watchlist || []);
       toast(`${mode === "merge" ? "Merged" : "Replaced"} ${data.added} ticker${data.added === 1 ? "" : "s"}`);
       await refresh();
@@ -2495,7 +2514,10 @@
   $("#btn-merge-watchlist")?.addEventListener("click", () => importWatchlist("merge"));
   $("#btn-replace-watchlist")?.addEventListener("click", () => importWatchlist("replace"));
 
-  $("#btn-evaluate-watchlist")?.addEventListener("click", async () => {
+  $("#btn-evaluate-watchlist")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    button.disabled = true;
     const text = $("#watchlist").value.trim();
     try {
       const body = text ? { tickers: text } : {};
@@ -2516,10 +2538,12 @@
       toast(msg);
     } catch (e) {
       toast(e.message, true);
+    } finally {
+      button.disabled = false;
     }
   });
 
-  $("#watchlist")?.addEventListener("input", (ev) => renderWatchlistCount(ev.target.value));
+  $("#watchlist")?.addEventListener("input", (ev) => { ev.target.dataset.dirty = "1"; renderWatchlistCount(ev.target.value); });
 
   async function generateWorkspaceIdea(workspace) {
     try {
@@ -2579,6 +2603,9 @@
   }
 
   async function openApprovePreview(id, orderOptions = null) {
+    // Capture the opener before awaiting the broker review; list buttons have
+    // no IDs and may be replaced by a stream render while the request runs.
+    const opener = document.activeElement;
     const candidate = findSignalById(id);
     if (!candidate || candidate.actionable !== true) {
       toast(candidate?.execution_block || "This is research only; request a fresh actionable idea", true);
@@ -2732,10 +2759,11 @@
     }
     const modal = $("#approve-modal");
     if (modal) {
+      if (modal.classList.contains("hidden")) {
+        approveReturnFocus = opener;
+        approveReturnSignalId = id;
+      }
       modal.classList.remove("hidden");
-      modal.dataset.returnFocus = document.activeElement && document.activeElement.id
-        ? document.activeElement.id
-        : "";
       const first = live ? $("#live-ack-input") : $("#btn-approve-confirm");
       if (first) first.focus();
       updateApproveEligibility();
@@ -2746,13 +2774,14 @@
     const modal = $("#approve-modal");
     if (!modal) return;
     modal.classList.add("hidden");
-    const rid = modal.dataset.returnFocus;
-    if (rid) {
-      const prev = document.getElementById(rid);
-      if (prev && typeof prev.focus === "function") prev.focus();
+    const previous = approveReturnFocus?.isConnected ? approveReturnFocus :
+      $$("[data-approve]").find(button => button.dataset.approve === approveReturnSignalId);
+    if (previous && typeof previous.focus === "function") previous.focus();
+    else {
+      const queue = $("#signal-list") || $("#signal-queue-hint");
+      if (queue) { queue.setAttribute("tabindex", "-1"); queue.focus(); }
     }
-
-    modal.dataset.returnFocus = "";
+    approveReturnFocus = null; approveReturnSignalId = null;
   }
 
   function invalidateBrokerOrderReview() {
@@ -5010,6 +5039,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
 
   function applyStateLite(lite) {
     if (!lite || lite.ok === false) return;
+    stateLiteGeneration++;
     // Alerts: always attempt (id Set dedupes); do not depend on lite signature
     if (lite.alerts) consumeDeskAlerts(lite.alerts);
     const sig = liteSignature(lite);
@@ -5316,7 +5346,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
       }
       return;
     }
-    const sig = movers.map((m) => `${m.ticker}|${m.pct_change}|${m.score}`).join(";");
+    const sig = movers.map((m) => `${m.ticker}|${m.pct_change}|${m.score}|${m.market_time}|${m.fresh}|${m.observation_status}|${(m.research_flags || []).join(",")}`).join(";");
     if (sig === lastRadarSig) return;
     lastRadarSig = sig;
     lane.innerHTML = movers.slice(0, 24).map((m) => {
@@ -5325,8 +5355,11 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
       const up = Number.isFinite(pct) && pct >= 0;
       const pctStr = Number.isFinite(pct) ? ((pct >= 0 ? "+" : "") + pct.toFixed(1) + "%") : "";
       const score = m.score != null ? Number(m.score).toFixed(0) : "";
-      const tip = [t, pctStr, m.rel_volume != null ? "relative volume " + m.rel_volume : "", "paper research — not a signal"].filter(Boolean).join(" · ");
-      return `<span class="radar-chip ${up ? "up" : "down"}" title="${escapeHtml(tip)}"><strong>${escapeHtml(t)}</strong><span class="radar-pct">${escapeHtml(pctStr)}</span>${score ? `<span class="radar-score">${escapeHtml(score)}</span>` : ""}</span>`;
+      const priorSession = m.observation_status === "prior_session" || (m.research_flags || []).includes("prior_session_quote");
+      const marketTime = Date.parse(m.market_time);
+      const observation = priorSession ? `Prior session · ${Number.isFinite(marketTime) ? new Date(marketTime).toLocaleString() : "market time unknown"}` : "";
+      const tip = [t, pctStr, observation, m.rel_volume != null ? "relative volume " + m.rel_volume : "", "paper research — not a signal"].filter(Boolean).join(" · ");
+      return `<span class="radar-chip ${up ? "up" : "down"}" title="${escapeHtml(tip)}"><strong>${escapeHtml(t)}</strong><span class="radar-pct">${escapeHtml(pctStr)}</span>${score ? `<span class="radar-score">${escapeHtml(score)}</span>` : ""}${observation ? `<span class="muted">${escapeHtml(observation)}</span>` : ""}</span>`;
     }).join("");
   }
 

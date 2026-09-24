@@ -38,7 +38,7 @@ Run from the application directory with the existing virtual environment:
 .\.venv\Scripts\python.exe release_tools.py restore --archive releases\known-good.zip
 ```
 
-Restore defaults to a dry run. After the desk is stopped, add `--apply` to replace archived source files. The tool refuses a reachable application port, saves the current source first, and never stops Gateway or a process. Additional unarchived source files remain. No database schema rollback is attempted. Restart with `Start-Tomahawk.ps1`; verify health and reconcile actual broker state before further trading. Keep archives on trusted local storage: hashes detect changes, not the identity of an archive's author.
+Restore defaults to a dry run. After the desk is stopped, add `--apply` to replace archived source files. The stopped-instance check reads `TOMAHAWK_HOST`, `TOMAHAWK_PORT`, `TOMAHAWK_DATA_DIR`, and `TOMAHAWK_INSTANCE_LOCK` from the target checkout's `.env`; process environment values take precedence. Relative paths resolve against that checkout. `--host` and `--port` explicitly override the endpoint check. Recovery refuses a running or unverifiable instance PID, a reachable port, or an inconclusive endpoint check. It saves the current source first and never stops Gateway or a process. Additional unarchived source files remain. No database schema rollback is attempted. Restart with `Start-Tomahawk.ps1`; verify health and reconcile actual broker state before further trading. Keep archives on trusted local storage: hashes detect changes, not the identity of an archive's author.
 
 ## Files and boundaries
 

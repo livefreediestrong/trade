@@ -226,6 +226,7 @@ assert.equal(signalWorkspace({}),'live');
 
 DOM = r"""
 let activeWorkspace='live', pendingApproveId=null, approvalContext=null;
+let approveReturnFocus=null, approveReturnSignalId=null;
 const nodes = new Map();
 const $ = selector => {
  if (!nodes.has(selector)) {
@@ -405,7 +406,7 @@ assert.equal($('#risk-trade-allowed').textContent,'Order checks required');
 
 def test_compact_stream_preserves_history_clears_removed_rows_and_updates_risk():
     run_js(['liteSignature','applyStateLite'], r'''
-let _liteSig='',fullStateSeen=false;
+let _liteSig='',fullStateSeen=false,stateLiteGeneration=0;
 let state={config:{mode:'live_manual'},signals:{expired:[{id:'old'}],approved:[{id:'filled'}],pending:[{id:'pending'}]},ledger:{}};
 const emitted=[];
 const window={dispatchEvent:e=>emitted.push(JSON.parse(JSON.stringify(e.detail)))};

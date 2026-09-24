@@ -85,7 +85,7 @@ class PaperGateway:
         for order, state, filled in self.store.active():
             if state not in ('working', 'partial') or order.symbol != tick.symbol:
                 continue
-            if not order.quote_at < tick.market_at < order.expires_at:
+            if not order.created_at < tick.market_at < order.expires_at:
                 continue
             price = tick.ask if order.side == 'buy' else tick.bid
             if (order.side == 'buy' and price > order.limit_price) or (order.side == 'sell' and price < order.limit_price):
@@ -214,6 +214,9 @@ class PaperEngine:
 
     async def _consume(self, ticks: AsyncIterable[Tick]) -> None:
         async for tick in ticks:
+            # Recorded time can jump ahead without waking the wall-clock task.
+            # Detect the old feed gap before observe refreshes its heartbeat.
+            await self._cancel_due()
             if not self.risk.observe(tick, self.now()):
                 with self.risk.store.db:
                     self.risk.store.audit('tick_rejected', tick.symbol, self.now())

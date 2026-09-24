@@ -82,6 +82,18 @@ def test_radar_directory_batch_is_bounded_rotating_and_normalizes_classes(isolat
     assert 'BRK-B' in first+second
 
 
+@pytest.mark.parametrize('batch', [2, 3, 4, 8])
+def test_persistent_shared_discovery_does_not_starve_directory_positions(isolated, monkeypatch, batch):
+    import market_discovery
+    directory = ['A', 'B', 'C', 'D']
+    desk._save_json(isolated, {'symbols':[{'symbol':s} for s in directory], 'updated_at':NOW.isoformat()})
+    monkeypatch.setattr(market_discovery, 'symbols', lambda *a, **k:['RANKED'])
+    p = {'universe':'broad_us', 'symbols':['F'], 'candidates_per_cycle':batch}
+    batches = [universe.candidates(desk, p, cycle*batch, NOW) for cycle in range(8)]
+    assert set(directory) <= {s for group in batches for s in group}
+    assert all(group[0] == 'F' and len(group) <= batch and len(set(group)) == len(group) for group in batches)
+
+
 def test_radar_uses_discovery_only_as_symbols_for_new_quotes(monkeypatch):
     import market_radar
     for name in ('fetch_alpaca_snapshot_movers','fetch_polygon_snapshot_movers','fetch_yahoo_screener_movers'):

@@ -3,10 +3,16 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const source=fs.readFileSync('static/options.js','utf8');
 const ids=[...source.matchAll(/\$\('([^']+)'\)/g)].map(m=>m[1]);
 const nodes=Object.fromEntries(ids.map(id=>[id,{id,value:'',disabled:false,hidden:false,innerHTML:'',textContent:'',listeners:{},addEventListener(k,f){(this.listeners[k]??=[]).push(f);},insertAdjacentHTML(_,s){this.innerHTML+=s;},scrollIntoView(){this.scrolled=true;},replaceChildren(){this.innerHTML='';}}]));
+// Match the DOM's mutually replacing textContent/innerHTML behavior.
+let reviewHtml='',reviewText='';Object.defineProperties(nodes['option-review'],{
+ innerHTML:{get:()=>reviewHtml,set:value=>{reviewHtml=value;reviewText='';}},
+ textContent:{get:()=>reviewText,set:value=>{reviewText=value;reviewHtml='';}}
+});
 const defaults={'option-symbol':'SPY','option-expiry':'2026-09-25','option-strategy':'long_put','option-long':'100','option-short':'','option-count':'1','option-budget':'200','option-fee':'0.65'};
 for(const [id,value] of Object.entries(defaults))nodes[id].value=value;nodes['option-short'].disabled=true;
 const listeners={};
 const calls=[],events=[],timers=new Map();let serial=0,nextPreview=null,releasePreview=null;
+let deferFill=false,releaseFill,rejectFill;
 const plan={symbol:'SPY',expiry:'2026-09-25',strategy:'long_put',right:'P',long_strike:100,short_strike:null,contracts:1};
 function response(action='open',review_id='review-1') {return {review_id,action,plan,expires_in_seconds:30,blockers:[],estimate:{entry_net_usd:120,maximum_loss_usd:121.3,maximum_gain_usd:9878.7,break_even_at_expiry:98.787,fee_per_side_usd:.65,close_value_usd:110},close_pnl_estimate:-11.3,quote:{legs:[{action:'BUY',strike:100,right:'P',bid:1.1,ask:1.2,market_data_type:1}]}};}
 const context={document:{getElementById:id=>nodes[id]},window:{dispatchEvent:e=>events.push(e),addEventListener:(name,fn)=>listeners[name]=fn},CustomEvent:class{constructor(type,options){this.type=type;this.detail=options.detail;}},matchMedia:()=>({matches:true}),AbortController,Date,Intl,
@@ -15,7 +21,7 @@ const context={document:{getElementById:id=>nodes[id]},window:{dispatchEvent:e=>
   if(url==='/api/options')result={book:{free_cash:1000,positions:[],fills:[],realized_pnl:0},paper_enabled:true};
   else if(url==='/api/options/preview')result=await new Promise(resolve=>{releasePreview=resolve;});
   else if(url==='/api/options/close-preview')result=nextPreview;
-  else if(url==='/api/options/paper-fill')result={fill:{action:'close'},duplicate:false};
+  else if(url==='/api/options/paper-fill')result=deferFill?await new Promise((resolve,reject)=>{releaseFill=resolve;rejectFill=reject;}):{fill:{action:'close'},duplicate:false};
   else throw Error('Unexpected request '+url);
   return {ok:true,json:async()=>result};}
 };
@@ -40,6 +46,21 @@ const preview=()=>fire('options-form','submit',{preventDefault(){},submitter:sub
  assert.equal(nodes['option-confirm'].disabled,true);assert.equal(calls.length,beforeDiscovery,'Choosing discovery never requests a fill or chain');
  releasePreview(response());await settle();assert.equal(nodes['option-confirm'].disabled,true,'Old-symbol review must stay invalid');
  assert.match(nodes['option-chain-status'].textContent,/availability and prices are unverified/);
+ for(const newerAction of ['open','close']){
+  nextPreview=response('close','A');fire('option-positions','click',{target:{closest:()=>close}});await settle();
+  deferFill=true;fire('option-confirm','click',{currentTarget:nodes['option-confirm']});await settle();
+  if(newerAction==='open'){preview();await settle();releasePreview(response('open','B'));}
+  else{nextPreview=response('close','B');fire('option-positions','click',{target:{closest:()=>close}});}
+  await settle();const visible=nodes['option-review'].innerHTML;assert.ok(visible);assert.equal(nodes['option-confirm'].disabled,false);
+  releaseFill({fill:{action:'close'},duplicate:false});await settle();
+  assert.equal(nodes['option-review'].innerHTML,visible,'late A fill must preserve exact B review');assert.equal(nodes['option-confirm'].disabled,false);
+  deferFill=false;fire('option-confirm','click',{currentTarget:nodes['option-confirm']});await settle();assert.equal(calls.filter(c=>c.url==='/api/options/paper-fill').at(-1).body.review_id,'B');
+ }
+ nextPreview=response('close','A-error');fire('option-positions','click',{target:{closest:()=>close}});await settle();deferFill=true;
+ fire('option-confirm','click',{currentTarget:nodes['option-confirm']});await settle();nextPreview=response('close','B-error');fire('option-positions','click',{target:{closest:()=>close}});await settle();
+ const visible=nodes['option-review'].innerHTML;rejectFill(Error('Old fill unavailable'));await settle();assert.equal(nodes['option-review'].innerHTML,visible);assert.equal(nodes['option-confirm'].disabled,false);
+ nextPreview=response('open','all-loss');Object.assign(nextPreview.estimate,{break_even_at_expiry:null,break_even_possible:false,break_even_note:'No attainable break-even after the assumed round-trip fees.'});
+ fire('option-positions','click',{target:{closest:()=>close}});await settle();assert.match(nodes['option-review'].innerHTML,/Not attainable/);assert.match(nodes['option-review'].innerHTML,/No attainable break-even/);
  assert.ok(events.some(e=>e.type==='options:guide'&&/expired/.test(e.detail.text)));
- console.log('Options UI: stale-response rejection, changed-input invalidation, correct opening/closing labels and costs, expiry, missing quotes, paper-only confirmation and duplicate-click prevention passed.');
+ console.log('Options UI: stale response/error rejection, delayed fill versus newer open/close review, exact token, impossible break-even, input invalidation, labels/costs, expiry and duplicate-click prevention passed.');
 })().catch(e=>{console.error(e);process.exitCode=1;});

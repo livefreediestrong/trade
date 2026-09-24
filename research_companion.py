@@ -235,14 +235,40 @@ class Companion:
             import market_catalog
             global_observations = market_catalog.notebook_observations(self.desk)
             trace_inputs = observations + global_observations
+            valid = [o for o in observations if o.get("available") and not o.get("stale")]
+            if not any(o.get("available") for o in observations):
+                raise ValueError("Market history unavailable. No successful daily notebook entry was recorded.")
+            if scheduled and not valid:
+                raise ValueError("Market history is behind the latest completed session. Daily research will retry when data is current.")
             model = None
             # At most one configured research call per notebook run. It writes
             # a research decision, never ingests a signal or approves an order.
-            if settings["use_model"] and symbols and paper_loop.is_rth(now) and not moss_policy.settings(cfg)["enabled"]:
+            if settings["use_model"] and valid and paper_loop.is_rth(now) and not moss_policy.settings(cfg)["enabled"]:
                 from screener_logic import analyze_ticker
-                analysis = analyze_ticker(symbols[0])
+                analysis = analyze_ticker(valid[0]["symbol"])
                 quote = analysis.get("quote") or {}
-                if not analysis.get("error") and quote.get("fresh"):
+                # Collection can outlive the operator's permission. Read both
+                # controls again immediately before reserving any model work.
+                with self.lock:
+                    current = self.load()
+                    settings = copy.deepcopy(current["settings"])
+                    if scheduled and not settings["enabled"]:
+                        return
+                    with self.desk._lock:
+                        cfg = copy.deepcopy(self.desk.load_config())
+                    permitted = (settings["use_model"] and cfg.get("llm_enabled", True)
+                                 and cfg.get("llm_on_scan", True) and paper_loop.is_rth(now_utc())
+                                 and not moss_policy.settings(cfg)["enabled"])
+                    attempt_day = now.astimezone(paper_loop.NY_TZ).date().isoformat()
+                    attempt = (current.get("model_attempts") or {}).get(attempt_day) if scheduled else None
+                    if permitted and not analysis.get("error") and quote.get("fresh") and not attempt and scheduled:
+                        attempts = dict(current.get("model_attempts") or {})
+                        attempts[attempt_day] = {"status": "started", "started_at": now_utc().isoformat()}
+                        current["model_attempts"] = dict(sorted(attempts.items())[-90:])
+                        self.save(current)
+                if permitted and attempt:
+                    model = copy.deepcopy(attempt.get("result")) or {"error": "A model request was already attempted this session; no duplicate request was started."}
+                elif permitted and not analysis.get("error") and quote.get("fresh"):
                     analysis["companion_context"] = {"style": "Stoic-inspired: patient, plainspoken, evidence before action. Distinguish observations from forecasts. Never guarantee profit or chase a daily target.",
                         "training": training, "short_research": settings["research_short_selling"],
                         "instruction": "Discuss bearish scenarios as research only. No borrowed-share execution is available."}
@@ -250,9 +276,14 @@ class Companion:
                                         companion_short_research=settings["research_short_selling"])
                     thesis = self.desk._research_thesis(analysis, research_cfg, source="moss_notebook")
                     model = {k: thesis.get(k) for k in ("thesis", "side", "llm_model", "brain_mode", "risks", "error", "mock", "routed", "prompt_version")}
+                    if scheduled:
+                        with self.lock:
+                            current = self.load()
+                            current.setdefault("model_attempts", {})[attempt_day] = {
+                                "status": "completed", "completed_at": now_utc().isoformat(), "result": copy.deepcopy(model)}
+                            self.save(current)
                 else:
-                    model = {"error": "Fresh intraday data unavailable; model entry advice skipped."}
-            valid = [o for o in observations if o.get("available") and not o.get("stale")]
+                    model = {"error": "Fresh intraday data unavailable; model entry advice skipped."} if permitted else None
             brief = {"id": uuid.uuid4().hex, "created_at": now.isoformat(),
                      "session_day": now.astimezone(paper_loop.NY_TZ).date().isoformat(), "scheduled": scheduled,
                      "observations": observations, "headlines": headlines, "memory": memory, "model": model,
@@ -264,10 +295,6 @@ class Companion:
                      "summary": "Attend to what is in our control: evidence, patience and position size. " + (f"I reviewed {len(valid)} symbols with current completed-session data." if valid else "Current completed-session data is missing; wait before drawing conclusions."),
                      "next_step": "Compare a fresh quote, costs and risk before considering an entry. Holding cash is a valid choice.",
                      "short_note": "Downward moves can be studied, but borrowed-share execution is unavailable here. Locate, borrow rate, margin and buy-in risks are unverified." if settings["research_short_selling"] else None}
-            if not any(o.get("available") for o in observations):
-                raise ValueError("Market history unavailable. No successful daily notebook entry was recorded.")
-            if scheduled and not valid:
-                raise ValueError("Market history is behind the latest completed session. Daily research will retry when data is current.")
             with self.lock:
                 current = self.load()
                 if scheduled and not current["settings"]["enabled"]:

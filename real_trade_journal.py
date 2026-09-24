@@ -12,7 +12,7 @@ import paper_loop
 
 
 def review(rows):
-    active = [r for r in rows if not r.get("superseded_by") and r.get("verified")]
+    active = [r for r in rows if not r.get("superseded_by") and not r.get("voided") and r.get("verified")]
     currencies = defaultdict(lambda: {"executions":0,"fees_reported":0.,"fees_missing":0,
                                      "broker_realized_pnl":0.,"pnl_missing":0,"positive_pnl_executions":0,"negative_pnl_executions":0})
     orders = defaultdict(list)
@@ -69,11 +69,20 @@ class TradeJournal:
     def status(self):
         with self.lock:
             raw=self.load()
-        # Real account and broker-paper samples never share evaluation totals.
-        real=[r for r in raw["executions"] if r.get("paper_mode") is False]
-        paper=[r for r in raw["executions"] if r.get("paper_mode") is True]
+        # The displayed account label and its totals must describe the same book.
+        identity=raw.get("identity") or {}
+        selected=[r for r in raw["executions"] if r.get("account_id") == identity.get("account_id")
+                  and r.get("paper_mode") is identity.get("paper_mode")]
+        real=[r for r in selected if r.get("paper_mode") is False]
+        paper=[r for r in selected if r.get("paper_mode") is True]
+        accounts=defaultdict(list)
+        for row in raw["executions"]:
+            accounts[(row.get("account_id"),row.get("paper_mode"))].append(row)
         return {"last_sync":raw.get("last_sync"),"error":self.last_error or raw.get("error"),"coverage":raw.get("coverage"),
-                "account_suffix":str((raw.get("identity") or {}).get("account_id") or "")[-4:],
+                "account_suffix":str(identity.get("account_id") or "")[-4:],
+                "scope":"Most recently verified synchronized account; historical accounts remain separate",
+                "accounts":[{"account_suffix":str(account or "")[-4:],"paper_mode":mode,"review":review(rows)}
+                            for (account,mode),rows in accounts.items()],
                 "real":review(real),"broker_paper":review(paper),"executions":sorted(real,key=lambda r:r["ts"],reverse=True)[:100],
                 "excluded":raw.get("excluded",0),"read_only":True}
 
@@ -111,16 +120,20 @@ class TradeJournal:
             signals={s.get("id"):s for s in self.desk.load_signals()}
             rejected=0
             for item in response.get("executions",[]):
+                revision=re.fullmatch(r"(.+)\.(\d+)",str(item.get("execution_id") or ""))
+                voided=(item.get("voided") is True and finite(item.get("shares")) == 0
+                        and revision is not None and int(revision[2]) > 1)
                 if (item.get("account_id") != identity.get("account_id") or item.get("paper_mode") is not identity.get("paper_mode") or
                     not item.get("verified") or not item.get("execution_id") or timestamp(item.get("ts")) is None or
-                    timestamp(item["ts"]) > now.timestamp() or (finite(item.get("shares")) or 0) <= 0 or (finite(item.get("price")) or 0) <= 0):
+                    timestamp(item["ts"]) > now.timestamp() or (not voided and ((finite(item.get("shares")) or 0) <= 0 or (finite(item.get("price")) or 0) <= 0))):
                     rejected+=1;continue
                 key=(item["account_id"],item["paper_mode"],item["execution_id"])
                 prior=rows.get(key,{})
                 merged=dict(prior,**copy.deepcopy(item),first_seen=prior.get("first_seen",now.isoformat()),last_seen=now.isoformat())
                 # A reconnect may temporarily lack a commission previously observed.
                 for field in ("commission","commission_currency","broker_realized_pnl"):
-                    if merged.get(field) is None and prior.get(field) is not None:
+                    if (merged.get(field) is None and prior.get(field) is not None
+                            and not (field == "broker_realized_pnl" and item.get("broker_realized_pnl_reported") is False)):
                         merged[field]=prior[field]
                 signal=signals.get(item.get("order_ref"))
                 if (signal and item.get("asset_type")=="STK" and (signal.get("review_identity") or {}).get("account_id")==item["account_id"]

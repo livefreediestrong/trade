@@ -57,14 +57,12 @@ def _env_search_paths():
 
 
 def _load_env():
+    from dotenv import dotenv_values
     for env_path in _env_search_paths():
         if env_path.exists():
-            for line in env_path.read_text().splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
-                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            for key, value in dotenv_values(env_path, encoding="utf-8-sig", interpolate=False).items():
+                if value is not None:
+                    os.environ.setdefault(key, value)
             return  # first file wins
 
 

@@ -43,6 +43,8 @@ If daily P&L stays unavailable, check **Configure → Settings → API → Setti
 
 Gateway is discovered under `C:\Jts\ibgateway` or your user `Jts\ibgateway` directory. For another location, set `IB_GATEWAY_EXE` in `.env`. `Launch.bat` and the older start/restart scripts delegate to the same launcher; none blindly terminates a port owner. For diagnostics, run `Launch.bat -NoBrowser -NoDialogs`.
 
+The launcher reuses a running desk only when its health response identifies this checkout and the configured data directory. Another checkout on the same port is reported as a conflict. Process environment settings override `.env`; inline comments are supported, and quote values that contain a literal `#` after whitespace. Jev request budgets use `JEV_RPM=30` and `JEV_DAILY=500` by default and are reserved before provider requests.
+
 ## Market-hours data and decision handling
 
 - Flat/hold and failed-brain decisions stay research-only; confidence in staying flat is not blended into buy confidence.

@@ -81,6 +81,18 @@ def test_old_publications_and_expired_checks_do_not_become_quips(tmp_path):
     assert not state['items'] and state['sources'][0]['status']=='connected'
 
 
+def test_fresh_syndicated_headline_wins_over_earlier_failed_source(tmp_path):
+    worker, _ = service(tmp_path)
+    rows, _ = news.parse_feed(rss(), SOURCE, NOW)
+    yahoo = next(s for s in news.SOURCES if s['id'] == 'yahoo')
+    fresh = dict(rows[0], source=yahoo['name'], source_id=yahoo['id'], url='https://finance.yahoo.com/news/story')
+    worker.cache = {'cnbc':{'items':rows,'status':'unavailable','checked_at':NOW},
+                    yahoo['id']:{'items':[fresh],'status':'connected','checked_at':NOW}}
+    result = worker.snapshot(NOW)['items']
+    assert len(result) == 1 and result[0]['fresh']
+    assert result[0]['source'] == yahoo['name'] and result[0]['url'] == fresh['url']
+
+
 def test_refresh_is_single_flight_and_rate_limited(tmp_path,monkeypatch):
     worker,_=service(tmp_path);entered=threading.Event();release=threading.Event();done=threading.Event()
     def work():

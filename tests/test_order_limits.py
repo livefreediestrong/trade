@@ -7,7 +7,7 @@ import app as desk
 import broker_alpaca as alpaca
 import broker_ibkr as ibkr
 from broker_fixtures import IDENTITY, deadline
-from test_execution_repairs import execution
+from test_execution_repairs import execution, gateway
 
 BASE = "http://127.0.0.1:5056"
 
@@ -79,23 +79,20 @@ def test_alpaca_cancel_cannot_cross_account(monkeypatch):
     assert not result["terminal"] and "account" in result["error"]
 
 
-def test_ibkr_sends_actual_day_limit_with_account_and_reference(monkeypatch):
-    identity={"account_id":"TEST_ACCOUNT","endpoint":"isolated","paper_mode":True,"client_id":37}
+def test_ibkr_sends_actual_day_limit_with_account_and_reference(monkeypatch, gateway):
+    identity=ibkr.get_account()["identity"]
     placed=[]
     def place(contract,order):
         placed.append(order);order.orderId=42;order.clientId=37
         return NS(order=order)
-    fake=NS(reqAllOpenOrders=lambda:[],reqCompletedOrders=lambda **k:[],qualifyContracts=lambda c:[c],placeOrder=place,sleep=lambda t:None)
-    @contextmanager
-    def session(): yield fake
-    monkeypatch.setattr(ibkr,"_session",session)
-    monkeypatch.setattr(ibkr,"_identity",lambda ib:identity)
-    result=ibkr.place_from_desk_order.__wrapped__({"ticker":"TEST","side":"buy","shares":2,"type":"limit","limit":4.25,
-             "signal_id":"limit-ref","broker_identity":identity,"valid_until":deadline()})
+    monkeypatch.setattr(gateway,"placeOrder",place)
+    result=ibkr.place_from_desk_order({"ticker":"TEST","side":"buy","shares":2,"type":"limit","limit":4.25,
+             "signal_id":"limit-ref","broker_identity":identity,"valid_until":deadline(),
+             "risk_authorization":{"equity":100000.,"day_pnl":-250.,"reducing":False}})
     assert result["ok"],result
     native=placed[0]
     assert native.orderType=="LMT" and native.lmtPrice==4.25 and native.tif=="DAY"
-    assert native.account=="TEST_ACCOUNT" and native.orderRef=="limit-ref" and native.outsideRth is False
+    assert native.account=="DU123" and native.orderRef=="limit-ref" and native.outsideRth is False
 
 
 @pytest.mark.parametrize("kind,limit",[("typo",5),("limit",float('nan')),("limit",-1)])

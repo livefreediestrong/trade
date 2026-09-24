@@ -12,6 +12,7 @@ import broker_alpaca as alpaca
 import broker_ibkr as ibkr
 import broker_router as router
 from broker_fixtures import configure, approval, deadline, IDENTITY
+from test_broker_lifecycle import gateway
 
 BASE = "http://127.0.0.1:5056"
 
@@ -277,25 +278,20 @@ def test_known_order_identity_survives_error_response(execution, monkeypatch):
     assert len(pending) == 1 and pending[0]["order_id"] == "known"
 
 
-def test_ibkr_preserves_identity_after_submit_failure(monkeypatch):
-    identity = {"account_id": "TEST_ACCOUNT", "endpoint": "isolated", "paper_mode": True, "client_id": 37}
+def test_ibkr_preserves_identity_after_submit_failure(monkeypatch, gateway):
+    identity = ibkr.get_account()["identity"]
     placed = []
     def place(contract, order):
         placed.append(order)
         order.orderId, order.clientId = 42, 37
         return NS(order=order)
-    fake = NS(reqAllOpenOrders=lambda: [], reqCompletedOrders=lambda **k: [],
-              qualifyContracts=lambda c: [c], placeOrder=place,
-              sleep=lambda t: (_ for _ in ()).throw(ConnectionError("post-submit disconnect")))
-    @contextmanager
-    def session():
-        yield fake
-    monkeypatch.setattr(ibkr, "_session", session)
-    monkeypatch.setattr(ibkr, "_identity", lambda ib: identity)
-    response = ibkr.place_from_desk_order.__wrapped__({
-        "ticker": "TEST", "side": "buy", "shares": 1, "signal_id": "s", "broker_identity": identity, "valid_until": deadline()})
+    monkeypatch.setattr(gateway, "placeOrder", place)
+    monkeypatch.setattr(gateway, "sleep", lambda t: (_ for _ in ()).throw(ConnectionError("post-submit disconnect")))
+    response = ibkr.place_from_desk_order({
+        "ticker": "TEST", "side": "buy", "shares": 1, "signal_id": "s", "broker_identity": identity, "valid_until": deadline(),
+        "risk_authorization": {"equity": 100000., "day_pnl": -250., "reducing": False}})
     assert placed and not response["ok"] and response["submission_attempted"]
-    assert response["order_id"] == "TEST_ACCOUNT:37:42"
+    assert response["order_id"] == "DU123:37:42"
 
 
 def test_ibkr_recovery_is_bound_to_account_and_never_resubmits(monkeypatch):

@@ -471,7 +471,7 @@ def _load_json(path: Path, default: Any) -> Any:
         # utf-8-sig: tolerate a BOM (PowerShell 5 Set-Content/Out-File adds one)
         with path.open("r", encoding="utf-8-sig") as f:
             return json.load(f)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         _mark_corrupt(path, str(exc))
         return default
     except OSError:
@@ -624,7 +624,9 @@ def _clean_kill_switch_in(ks_in: Any) -> dict[str, Any]:
             if k == "max_trades_per_day":
                 out[k] = int(out[k])
     if "armed" in ks_in:
-        out["armed"] = bool(ks_in["armed"])
+        if not isinstance(ks_in["armed"], bool):
+            raise BadNumber("armed must be true or false")
+        out["armed"] = ks_in["armed"]
     return out
 
 
@@ -1152,6 +1154,9 @@ def _broker_fill_record(
         "confirmed": confirmed,
         "price_estimated": not confirmed,
         "order_id": broker_resp.get("order_id"),
+        "broker_identity": copy.deepcopy((broker_resp.get("order") or {}).get("broker_identity") or sig.get("review_identity")),
+        "execution_versions": copy.deepcopy(confirm.get("execution_versions") or {}),
+        "execution_correction": confirm.get("execution_correction") is True,
         "paper_mode": broker_resp.get("paper_mode"),
         "endpoint": broker_resp.get("endpoint"),
         "price_source": price_source,
@@ -1474,8 +1479,30 @@ def _apply_broker_update(sig, broker, confirm, source):
         fills = ledger.setdefault("broker_fills", [])
         prior = next((f for f in fills if str(f.get("order_id")) == order_id), None)
         fill = prior
-        if quantity > 0 and price > 0 and (prior is None or quantity >= float(prior.get("shares") or 0)):
+        versions = confirm.get("execution_versions") or {}
+        old_versions = (prior or {}).get("execution_versions") or {}
+        pending_versions = (prior or {}).get("pending_execution_versions") or {}
+        versioned = isinstance(versions, dict) and bool(versions) and all(
+            isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool) and v > 0
+            for k, v in versions.items())
+        if pending_versions and (terminal or quantity > 0 or confirm.get("execution_correction")) and (
+                not versioned or any(versions.get(k, 0) < v for k, v in pending_versions.items())):
+            # An incomplete newer correction remains unresolved even if an older
+            # terminal snapshot arrives later (including cancellation/no fill).
+            return prior, False
+        if prior and old_versions and (quantity > 0 or confirm.get("state") == "filled") and (
+                not versioned or any(versions.get(k, 0) < v for k, v in old_versions.items())):
+            # A late report cannot resurrect a superseded execution revision.
+            return prior, bool(prior.get("broker_reconciled"))
+        corrected = (versioned and confirm.get("execution_correction") is True
+                     and confirm.get("execution_details_verified") is True
+                     and any(v > old_versions.get(k, 0) for k, v in versions.items()))
+        if ((quantity > 0 and price > 0 and (prior is None or quantity >= float(prior.get("shares") or 0) or corrected))
+                or (prior is not None and corrected and quantity == 0)):
             fill = _broker_fill_record(sig, broker, source, confirm)
+            if corrected and quantity == 0:
+                fill.update(shares=0, price=0, notional=0, confirmed=True, price_estimated=False,
+                            price_source="broker_execution_bust", broker_fill_state="voided", fee_usd=0)
             if prior:
                 fill["id"], fill["ts"] = prior["id"], prior["ts"]
                 fills[fills.index(prior)] = fill
@@ -1488,11 +1515,21 @@ def _apply_broker_update(sig, broker, confirm, source):
                 stats = ledger.setdefault("broker_daily", {}).setdefault(day, {"trades": 0})
                 stats["trades"] = int(stats.get("trades") or 0) + 1
         # Missing execution details cannot resolve an order known to have filled.
-        if (confirm.get("state") == "filled" and quantity <= 0) or (quantity > 0 and (fill is None or float(fill.get("shares") or 0) < quantity)):
+        if (confirm.get("state") == "filled" and quantity <= 0 and not corrected) or (quantity > 0 and (fill is None or float(fill.get("shares") or 0) != quantity)):
             terminal = False
         if fill:
             fill["broker_reconciled"] = terminal
             fill["alpaca_status"] = confirm.get("alpaca_status") or fill.get("alpaca_status")
+            if confirm.get("execution_correction") and not confirm.get("execution_details_verified"):
+                terminal = False
+                fill["broker_reconciled"] = False
+                fill["confirmed"] = False
+                fill["reconciliation_error"] = confirm.get("error") or "Execution correction is awaiting complete broker evidence"
+                if versioned:
+                    fill["pending_execution_versions"] = {
+                        k: max(old_versions.get(k, 0), pending_versions.get(k, 0), versions.get(k, 0))
+                        for k in old_versions.keys() | pending_versions.keys() | versions.keys()
+                    }
         pending = ledger.setdefault("pending_broker_orders", [])
         intent_id = broker.get("intent_id")
         item = next((x for x in pending if str(x.get("order_id")) == order_id
@@ -1510,6 +1547,7 @@ def _apply_broker_update(sig, broker, confirm, source):
         active = {str(x.get("order_id")) for x in ledger["pending_broker_orders"]}
         ledger["broker_fills"] = [f for i, f in enumerate(fills) if i < 200 or str(f.get("order_id")) in active]
         save_ledger(ledger)
+        sig["live_response"] = copy.deepcopy(broker)
         sig["status"] = "approved" if fill else ("rejected" if terminal else "broker_pending")
         if fill:
             sig["fill"] = fill
@@ -1523,6 +1561,55 @@ def _apply_broker_update(sig, broker, confirm, source):
                 break
         save_signals(signals)
     return fill, terminal
+
+
+_LAST_EXECUTION_CORRECTIONS_AT = 0.0
+
+
+def _reconcile_execution_corrections() -> None:
+    """Retained terminal executions can still receive broker corrections."""
+    global _LAST_EXECUTION_CORRECTIONS_AT
+    import broker_router as broker
+    if broker.public_status().get("broker") != "ibkr":
+        return
+    with _BROKER_SUBMIT_LOCK:
+        if time.monotonic() - _LAST_EXECUTION_CORRECTIONS_AT < 60:
+            return
+        _LAST_EXECUTION_CORRECTIONS_AT = time.monotonic()
+        with _lock:
+            identity = load_config().get("broker_identity")
+            if not identity or identity.get("broker") != "ibkr":
+                return
+            signals = {s.get("id"): s for s in load_signals()}
+            retained = {}
+            for fill in load_ledger().get("broker_fills") or []:
+                sig = signals.get(fill.get("signal_id"))
+                response = (sig or {}).get("live_response") or {}
+                if (not sig or (response.get("order") or {}).get("broker_identity") != identity
+                        or str(response.get("order_id")) != str(fill.get("order_id"))):
+                    continue
+                poll_id = str(response.get("permanent_order_id") or fill["order_id"])
+                retained[poll_id] = (sig, response, fill)
+                if len(retained) >= 50:
+                    break
+        if not retained:
+            return
+        import broker_ibkr
+        refreshed = broker_ibkr.refresh_execution_corrections(list(retained), identity)
+        if not refreshed.get("ok") or refreshed.get("identity") != identity:
+            return
+        with _lock:
+            if load_config().get("broker_identity") != identity:
+                return
+            for update in refreshed.get("orders") or []:
+                item = retained.get(str(update.get("order_id")))
+                versions = update.get("execution_versions") or {}
+                prior_versions = (item[2].get("execution_versions") or {}) if item else {}
+                if (not item or update.get("identity") != identity or not update.get("execution_correction")
+                        or not any(isinstance(v, int) and not isinstance(v, bool) and v > prior_versions.get(k, 0)
+                                   for k, v in versions.items())):
+                    continue
+                _apply_broker_update(dict(item[0]), dict(item[1]), update, "broker_execution_correction")
 
 
 def _reconcile_pending_broker_orders() -> None:
@@ -1574,6 +1661,7 @@ def _reconcile_pending_broker_orders() -> None:
                                                 response, result, "reconciled_broker")
             if terminal:
                 append_journal("broker_order_reconciled", {"order_id": item["order_id"], "fill": fill})
+    _reconcile_execution_corrections()
 
 
 def _broker_day_pnl() -> tuple[float | None, float | None, str | None]:
@@ -1821,6 +1909,7 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                     order["valid_until"] = _execution_deadline(sig)
                 except (ValueError, TypeError, KeyError) as exc:
                     return blocked(str(exc))
+                order["risk_authorization"] = {"day_pnl": day_pnl, "equity": equity, "reducing": reducing}
                 intent = _persist_broker_intent(sig, order, provider)
             try:
                 response = live_broker_place_order(order)
@@ -3243,6 +3332,15 @@ def paper_fill(
 
     with _lock:
         ledger = load_ledger()
+        if source == "auto_paper" and not cfg.get("_paper_research") and not bypass_gates:
+            current_paper = load_config()
+            if current_paper.get("mode") != "auto_paper":
+                return {"ok": False, "error": "Paper automation was turned off; review manually", "requires_review": True}
+            if any(current_paper.get(key) != cfg.get(key) for key in
+                   ("risk_preset", "risk_per_trade_pct", "atr_stop_multiple", "slip_bps", "fee_bps",
+                    "paper_fractional_enabled", "paper_order_budget", "moss_paper", "paper_equity")):
+                return {"ok": False, "error": "Paper risk settings changed; request fresh research", "requires_review": True}
+            cfg = current_paper
         if cfg.get("_paper_research") and not bypass_gates:
             current_paper = paper_research_config(load_config())
             if source == "auto_paper" and not current_paper.get("paper_auto_approve"):
@@ -4061,6 +4159,7 @@ def execute_loop_decision(
     # Also when macro_force_ask_first on Fed/CPI/earnings day
     if mode == "manual" or macro_force:
         sig["status"] = "pending"
+        sig["workspace"] = "paper" if cfg.get("_paper_research") or mode in ("manual", "auto_paper") else "live"
         sig["mode_at_create"] = "manual" if mode == "manual" else "macro_ask_first"
         sig["fill"] = None
         if macro_force and mode != "manual":
@@ -6185,10 +6284,10 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
             cfg["fee_bps"] = _num(body.get("fee_bps"), "fee_bps", lo=0, hi=500)
 
         if "kill_switch" in body and cfg.get("mode") != "auto_live":
-            # allow updating kill-switch fields without arming unless auto_live
+            # The enable flag controls these risk limits, not broker mode.
             clean = _clean_kill_switch_in(body["kill_switch"] or {})
             ks = cfg.setdefault("kill_switch", dict(DEFAULT_CONFIG["kill_switch"]))
-            for k in ("max_daily_loss_usd", "max_trades_per_day", "max_position_size_usd"):
+            for k in ("armed", "max_daily_loss_usd", "max_trades_per_day", "max_position_size_usd"):
                 if k in clean:
                     ks[k] = clean[k]
 
@@ -6735,11 +6834,19 @@ def api_watchlist_curated():
     )
 
 
-def _evaluate_watchlist_ticker(ticker: str, cfg: dict[str, Any], *, llm: bool = True) -> dict[str, Any]:
+_EVALUATION_SLOTS = threading.BoundedSemaphore(5)
+
+
+def _evaluate_watchlist_ticker(ticker: str, cfg: dict[str, Any], *, llm: bool = True,
+                             deadline_mono: float | None = None) -> dict[str, Any]:
     """Analyze one ticker; optional LLM thesis (honors llm_on_scan)."""
     from screener_logic import analyze_ticker
 
+    if deadline_mono is not None and time.monotonic() >= deadline_mono:
+        raise TimeoutError("Evaluation deadline expired before analysis")
     analysis = analyze_ticker(ticker)
+    if deadline_mono is not None and time.monotonic() >= deadline_mono:
+        raise TimeoutError("Evaluation deadline expired; model request skipped")
     if not isinstance(analysis, dict) or analysis.get("error"):
         raise RuntimeError(str((analysis or {}).get("error") or "analysis failed"))
     out: dict[str, Any] = {
@@ -6778,34 +6885,43 @@ def _evaluate_one_with_timeout(
     *,
     llm: bool = True,
     deadline_mono: float | None = None,
+    request_slots: threading.BoundedSemaphore | None = None,
 ) -> dict[str, Any]:
-    """Run evaluation in a daemon thread; honor hard deadline if provided."""
+    """A timed-out waiter never releases an actual evaluation's concurrency slot."""
     import time as _time
-    if deadline_mono is not None:
-        remain = deadline_mono - _time.monotonic()
-        if remain <= 0.5:
-            return {
-                "ticker": ticker,
-                "verdict": None,
-                "llm_side": None,
-                "llm_confidence": None,
-                "llm_thesis": None,
-                "error": "hard_deadline",
-            }
-        timeout_sec = min(timeout_sec, max(1.0, remain))
+    expires = min(_time.monotonic() + timeout_sec, deadline_mono or float("inf"))
+    failed = {"ticker": ticker, "verdict": None, "llm_side": None,
+              "llm_confidence": None, "llm_thesis": None}
+    held = []
+    for slots in (request_slots, _EVALUATION_SLOTS):
+        if slots is None:
+            continue
+        if not slots.acquire(timeout=max(0, expires - _time.monotonic())):
+            for acquired in reversed(held):
+                acquired.release()
+            return dict(failed, error="timeout waiting for available evaluation capacity")
+        held.append(slots)
 
     result: list[dict[str, Any]] = []
     error: list[str] = []
 
     def worker() -> None:
         try:
-            result.append(_evaluate_watchlist_ticker(ticker, cfg, llm=llm))
+            result.append(_evaluate_watchlist_ticker(ticker, cfg, llm=llm, deadline_mono=expires))
         except Exception as exc:  # noqa: BLE001
             error.append(str(exc)[:300] or "evaluation failed")
+        finally:
+            for acquired in reversed(held):
+                acquired.release()
 
     thread = threading.Thread(target=worker, name=f"watchlist-eval-{ticker}", daemon=True)
-    thread.start()
-    thread.join(timeout_sec)
+    try:
+        thread.start()
+    except BaseException:
+        for acquired in reversed(held):
+            acquired.release()
+        raise
+    thread.join(max(0, expires - _time.monotonic()))
     if thread.is_alive():
         return {
             "ticker": ticker,
@@ -6865,9 +6981,16 @@ def api_watchlist_evaluate():
         per_timeout = _num(body.get("timeout_sec") or 18, "timeout_sec", lo=1, hi=60)
     except BadNumber as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
-    hard_deadline_sec = float(body.get("deadline_sec") or 90)
-    pool = max(1, min(5, int(body.get("pool") or 4)))
+    try:
+        hard_deadline_sec = _num(body.get("deadline_sec", 90), "deadline_sec", lo=1, hi=120)
+        pool_number = _num(body.get("pool", 4), "pool", lo=1, hi=5)
+        if int(pool_number) != pool_number:
+            raise BadNumber("pool must be a whole number")
+        pool = int(pool_number)
+    except BadNumber as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
     deadline_mono = _time.monotonic() + hard_deadline_sec
+    request_slots = threading.BoundedSemaphore(pool)
 
     results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=pool) as ex:
@@ -6879,6 +7002,7 @@ def api_watchlist_evaluate():
                 per_timeout,
                 llm=llm,
                 deadline_mono=deadline_mono,
+                request_slots=request_slots,
             ): t
             for t in tickers
         }
@@ -7168,7 +7292,13 @@ def api_approve(sig_id: str):
         signals = load_signals()
         for i, s in enumerate(signals):
             if s["id"] == sig_id:
-                signals[i] = sig
+                if broker_approval:
+                    # Broker execution/reconciliation already persisted under its
+                    # submit lock. A local response may be older than that record.
+                    sig = dict(s)
+                    result["fill"] = sig.get("fill")
+                else:
+                    signals[i] = sig
                 break
         save_signals(signals)
         append_journal(
@@ -8086,6 +8216,7 @@ def api_health():
         {
             "ok": not _CORRUPT_PATHS,
             "app_id": "tomahawk-desk",
+            "instance": {"source_root": str(APP_DIR.resolve()), "data_root": str(DATA_DIR.resolve())},
             "startup": _startup_status(),
             "banner": BANNER,
             "port": DESK_PORT,
@@ -8106,12 +8237,14 @@ def recover_interrupted_approvals():
     with _lock:
         ledger = load_ledger()
         pending = {p.get("signal", {}).get("id") for p in ledger.get("pending_broker_orders", [])}
-        fills = {f.get("signal_id"): f for f in ledger.get("broker_fills", [])}
+        broker_fills = {f.get("signal_id"): f for f in ledger.get("broker_fills", [])}
+        paper_fills = {f.get("signal_id"): f for f in reversed(ledger.get("fills", []))}
         signals = load_signals()
         changed = []
         for sig in signals:
             if sig.get("status") != "approving":
                 continue
+            fills = paper_fills if signal_workspace(sig) == "paper" else broker_fills
             if sig.get("id") in pending:
                 sig["status"] = "broker_pending"
             elif sig.get("id") in fills:

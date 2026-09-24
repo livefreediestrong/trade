@@ -373,7 +373,9 @@ def register(app, desk, companion):
             row = db.execute("SELECT stage FROM suites WHERE id=?", (ident,)).fetchone()
             if not row or {"offline_evaluated": "paper_observation", "paper_observation": "reviewed"}.get(row[0]) != body["stage"]:
                 raise ValueError("Stages must progress from offline evaluation to paper observation to reviewed")
-            db.execute("UPDATE suites SET stage=? WHERE id=?", (body["stage"], ident))
+            changed = db.execute("UPDATE suites SET stage=? WHERE id=? AND stage=?", (body["stage"], ident, row[0]))
+            if changed.rowcount != 1:
+                raise ValueError("Review stage changed during this request; refresh before continuing")
             db.execute("INSERT INTO transitions(suite_id,at,stage,note) VALUES(?,?,?,?)", (ident, utc(), body["stage"], body["note"]))
         return jsonify(ok=True, note="Research review stage recorded. No runtime policy or live setting was changed.")
 

@@ -90,6 +90,35 @@ def test_sale_high_volume_selloff_does_not_mean_buyers(monkeypatch):
     assert result["fair_value_discount"] is None and result["business_health"].startswith("Unknown")
 
 
+def test_liquidity_averages_matched_daily_turnover():
+    raw = history()
+    indicators = raw['chart']['result'][0]['indicators']
+    quote = indicators['quote'][0]
+    prices = [20.]*10 + [10.]*10
+    for key in ('open', 'high', 'low', 'close'):
+        quote[key][-21:-1] = prices
+    quote['volume'][-21:-1] = [200_000]*10 + [1_200_000]*10
+    indicators['adjclose'][0]['adjclose'][-21:-1] = prices
+    result = studio.sale_history('AAPL', raw, NOW)
+    assert result['avg_daily_dollar_volume'] == 8_000_000
+    assert result['status'] == 'watch_only'
+
+
+def test_lagging_history_is_not_cached_across_retry(monkeypatch):
+    stale = history()
+    stale['chart']['result'][0]['timestamp'].pop()
+    responses = [stale, history()]
+    calls = []
+    monkeypatch.setattr(markets, '_CACHE', {})
+    monkeypatch.setattr(markets, 'fetch', lambda *a, **k: calls.append(1) or responses.pop(0))
+    with pytest.raises(studio.RetryableHistoryError):
+        studio.fetch_sale('AAPL', NOW)
+    assert studio.fetch_sale('AAPL', NOW)['as_of'] == '2026-09-23'
+    assert len(calls) == 2
+    studio.fetch_sale('AAPL', NOW)
+    assert len(calls) == 2
+
+
 def simple_rows(n=120):
     rows = []
     for i in range(n):

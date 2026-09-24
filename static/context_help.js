@@ -4,7 +4,7 @@
   const groups = new Map();
   let active, timer, serial = 0;
   function hide(){ if(active){active.tip.hidden=true;active.button.setAttribute('aria-expanded','false');active=null;} }
-  function scheduleHide(){clearTimeout(timer);timer=setTimeout(hide,140);}
+  function scheduleHide(){clearTimeout(timer);timer=setTimeout(()=>{if(active&&(active.button.contains(document.activeElement)||active.tip.contains(document.activeElement)))return;hide();},140);}
   function show(group){
     clearTimeout(timer);if(active!==group)hide();active=group;group.tip.hidden=false;
     group.button.setAttribute('aria-expanded','true');
@@ -27,17 +27,19 @@
       const caption=heading.cloneNode(true);caption.querySelectorAll('.title-ctx,.simple-only,.panel-ico').forEach(n=>n.remove());
       const label=caption.textContent.replace(/\s+/g,' ').trim().slice(0,85);
       const button=document.createElement('button');button.type='button';button.className='context-help-button';button.textContent='?';
-      const tip=document.createElement('div');tip.id=`context-help-${++serial}`;tip.className='context-help-popup';tip.hidden=true;tip.setAttribute('role','tooltip');
+      const tip=document.createElement('div');tip.id=`context-help-${++serial}`;tip.className='context-help-popup';tip.hidden=true;tip.tabIndex=0;tip.setAttribute('role','region');tip.setAttribute('aria-label',`About ${label}`);
       button.setAttribute('aria-label',`About ${label}`);button.setAttribute('aria-describedby',tip.id);button.setAttribute('aria-expanded','false');
+      button.setAttribute('aria-controls',tip.id);
       heading.append(button);document.body.append(tip);group={button,tip};groups.set(heading,group);
       button.addEventListener('pointerenter',()=>show(group));button.addEventListener('pointerleave',scheduleHide);
       tip.addEventListener('pointerenter',()=>clearTimeout(timer));tip.addEventListener('pointerleave',scheduleHide);
-      button.addEventListener('focus',()=>show(group));button.addEventListener('blur',scheduleHide);
-      button.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();show(group);});
+      button.addEventListener('focus',()=>show(group));button.addEventListener('blur',e=>{if(!tip.contains(e.relatedTarget))scheduleHide();});
+      tip.addEventListener('focus',()=>clearTimeout(timer));tip.addEventListener('blur',e=>{if(e.relatedTarget!==button&&!tip.contains(e.relatedTarget))scheduleHide();});
+      button.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();show(group);tip.focus();});
     }
     node.classList.add('context-help-copy');group.tip.append(node);
   }
-  document.addEventListener('keydown',e=>{if(e.key==='Escape')hide();});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&active){const button=active.button;if(active.tip.contains(document.activeElement))button.focus();hide();}});
   document.addEventListener('pointerdown',e=>{if(active&&!active.button.contains(e.target)&&!active.tip.contains(e.target))hide();});
-  window.addEventListener('resize',hide);window.addEventListener('scroll',hide,{passive:true,capture:true});
+  window.addEventListener('resize',hide);window.addEventListener('scroll',e=>{if(active&&!active.tip.contains(e.target))hide();},{passive:true,capture:true});
 })();

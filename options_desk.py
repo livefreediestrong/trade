@@ -133,10 +133,14 @@ def economics(p, quote, closing=False):
     # Credit call/put break-even is measured from the short strike.
     if p["kind"] == "credit":
         break_even = base+(-debit-2*fees/units)*(1 if p["right"] == "C" else -1)
+    break_even_possible = break_even >= 0 and (max_gain is None or max_gain-2*fees >= 0)
     return {"entry_debit_per_share": round(debit, 6), "entry_net_usd": round(debit*units, 4),
             "fee_per_side_usd": round(fees, 4), "maximum_loss_usd": round(max_loss+2*fees, 4),
             "maximum_gain_usd": round(max_gain-2*fees, 4) if max_gain is not None else None,
-            "break_even_at_expiry": round(break_even, 4), "close_value_usd": round(closing_value*units, 4),
+            "break_even_at_expiry": round(break_even, 4) if break_even_possible else None,
+            "break_even_possible": break_even_possible,
+            "break_even_note": None if break_even_possible else "No attainable break-even after the assumed round-trip fees.",
+            "close_value_usd": round(closing_value*units, 4),
             "basis": "Executable-side paper assumptions: buy at ask, sell at bid; simultaneous spread fill is hypothetical. Payoff limits assume both legs are retained through expiry; assignment/stock delivery are not simulated."}
 
 

@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import argparse
 import ast
+import errno
 import hashlib
 import json
+import os
 from pathlib import Path
 import socket
 import tempfile
@@ -86,7 +88,79 @@ def verify(archive_path):
     return info
 
 
-def restore(archive_path, root, *, apply=False, port=5056):
+def _recovery_settings(root, port=None, host=None):
+    from dotenv import dotenv_values
+    values = dict(dotenv_values(root/".env", encoding="utf-8-sig", interpolate=False)) if (root/".env").exists() else {}
+    values.update(os.environ)  # Match application startup: process values win.
+    server = str(host if host is not None else values.get("TOMAHAWK_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+    try:
+        number = int(port if port is not None else values.get("TOMAHAWK_PORT", "5056"))
+    except (ValueError, TypeError) as exc:
+        raise ValueError("Configured TOMAHAWK_PORT is invalid; recovery cannot verify the desk is stopped") from exc
+    if not 1 <= number <= 65535:
+        raise ValueError("Configured TOMAHAWK_PORT is outside 1-65535")
+    data = Path(values.get("TOMAHAWK_DATA_DIR") or root/"data")
+    if not data.is_absolute():
+        data = root/data
+    lock = Path(values.get("TOMAHAWK_INSTANCE_LOCK") or data/"tomahawk.pid")
+    if not lock.is_absolute():
+        lock = root/lock
+    return server, number, lock.resolve()
+
+
+def _pid_is_running(pid):
+    if pid <= 0:
+        raise ValueError("Invalid instance PID; recovery cannot verify the desk is stopped")
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel.OpenProcess(0x00100000, False, pid)
+        if not handle:
+            return ctypes.get_last_error() != 87  # Unknown/access denied stays blocked.
+        try:
+            return kernel.WaitForSingleObject(handle, 0) != 0
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as exc:
+        raise ValueError("Unable to verify the instance PID; stop the desk before recovery") from exc
+    return True
+
+
+def _require_stopped(root, port=None, host=None):
+    server, number, lock = _recovery_settings(root, port, host)
+    if lock.exists():
+        try:
+            pid = int(lock.read_text(encoding="ascii").strip())
+        except (OSError, ValueError) as exc:
+            raise ValueError("Instance lock is unreadable; recovery cannot verify the desk is stopped") from exc
+        if _pid_is_running(pid):
+            raise ValueError("Stop the desk before recovery. Its configured instance PID is still running or unverifiable.")
+    server = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(server, server)
+    try:
+        with socket.socket(socket.AF_INET6 if ":" in server else socket.AF_INET) as client:
+            client.settimeout(1)
+            result = client.connect_ex((server, number))
+    except OSError as exc:
+        raise ValueError("Unable to check the configured endpoint; recovery cannot verify the desk is stopped") from exc
+    if result == 0:
+        raise ValueError("Stop the desk before recovery. The tool never stops a running broker or application.")
+    if result not in (errno.ECONNREFUSED, 10061):
+        raise ValueError("Configured endpoint did not confirm a closed port; recovery cannot verify the desk is stopped")
+
+
+def restore(archive_path, root, *, apply=False, port=None, host=None):
     info = verify(archive_path)
     root = Path(root).resolve()
     for name in info["files"]:
@@ -95,10 +169,7 @@ def restore(archive_path, root, *, apply=False, port=5056):
             raise ValueError("Recovery target escapes application directory")
     if apply:
         # Never stop processes or replay orders as a side effect of recovery.
-        with socket.socket() as client:
-            client.settimeout(1)
-            if client.connect_ex(("127.0.0.1", port)) == 0:
-                raise ValueError("Stop the desk before recovery. The tool never stops a running broker or application.")
+        _require_stopped(root, port, host)
         backup = root/"releases"/("before-recovery-"+manifest(root)["sha256"][:16]+".zip")
         if not backup.exists():
             pack(root, backup)
@@ -121,7 +192,8 @@ def main():
     parser.add_argument("--root", type=Path, default=Path(__file__).parent)
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--apply", action="store_true", help="Restore source only; default is a reviewable dry run")
-    parser.add_argument("--port", type=int, default=5056)
+    parser.add_argument("--port", type=int, help="Override the configured desk port for the stopped-instance check")
+    parser.add_argument("--host", help="Override the configured desk host for the stopped-instance check")
     args = parser.parse_args()
     if args.action != "manifest" and not args.archive:
         parser.error("--archive is required")
@@ -132,7 +204,7 @@ def main():
     elif args.action == "verify":
         result = verify(args.archive)
     else:
-        result = restore(args.archive, args.root, apply=args.apply, port=args.port)
+        result = restore(args.archive, args.root, apply=args.apply, port=args.port, host=args.host)
     print(json.dumps(result, indent=2))
 
 

@@ -185,15 +185,18 @@ def replay(capture, params):
     to raw directional moves, never subtracted twice from pre-netted outcomes.
     Each decision is an independent fixed-capital scenario, not a portfolio.
     """
-    trades, skipped = [], 0
+    trades, skipped, exclusion_reasons = [], 0, {}
     for event in sorted(capture, key=lambda e: (str(e.get("ts") or ""), str(e.get("id") or e.get("seq") or ""))):
         if event.get("event") not in (None, "decision"):
             continue
         model = model_label(event)
         if params["model"] != "all" and model != params["model"]:
             continue
-        side = str(event.get("decision") or event.get("side") or "").lower()
+        side = str(event.get("intended_side") or event.get("decision") or event.get("side") or "").lower()
         if side not in ("buy", "sell"):
+            if side not in ("hold", "flat", "abstain"):
+                skipped += 1
+                exclusion_reasons["unsupported_direction"] = exclusion_reasons.get("unsupported_direction", 0)+1
             continue
         horizon = horizon_seconds(event)
         move = finite(event.get("outcome_move_bps"))
@@ -202,6 +205,7 @@ def replay(capture, params):
                 or event.get("outcome_status") != "scored" or event.get("mock") or event.get("routed")
                 or event.get("error") or event.get("execution_block")):
             skipped += 1
+            exclusion_reasons["ineligible_evidence"] = exclusion_reasons.get("ineligible_evidence", 0)+1
             continue
         desired = math.floor(params["capital"] * params["position_pct"] / 100 / price)
         quantity = math.floor(desired * params["fill_pct"] / 100)
@@ -213,6 +217,7 @@ def replay(capture, params):
                        "filled_shares": quantity, "net_bps": round(directional - cost, 4),
                        "pnl_usd": round(quantity * price * (directional - cost) / 10000, 6)})
     return {"engine_version": VERSION, "trades": trades, "eligible": len(trades), "excluded": skipped,
+            "exclusion_reasons": exclusion_reasons,
             "filled_scenarios": sum(t["filled_shares"] > 0 for t in trades),
             "scenario_pnl_sum": round(sum(t["pnl_usd"] for t in trades), 6),
             "scope": "Independent fixed-capital scenarios using recorded policy decisions; not portfolio returns or a model rerun.",

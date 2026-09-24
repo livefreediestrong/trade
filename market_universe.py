@@ -87,19 +87,22 @@ def candidates(desk, p, cursor, now):
     universe=[r["symbol"] for r in raw.get("symbols",[]) if r.get("symbol") not in focus]
     cycle=cursor//batch
     selected=[focus[cycle%len(focus)]]
+    # Reserve discovery before choosing directory positions: replacing an emitted
+    # directory slot while advancing its cursor permanently skipped some symbols.
+    import market_discovery
+    ranked = [s for s in market_discovery.symbols(desk, now) if s not in focus]
+    shared_cycle = cycle if batch >= 3 else cycle//2
+    shared = ranked[shared_cycle % len(ranked)] if ranked and (batch >= 3 or cycle % 2) else None
+    directory_count = batch-1-bool(shared)
+    directory_cursor = cycle*(batch-2) if ranked and batch >= 3 else cycle//2 if ranked else cycle*(batch-1)
     if universe:
-        selected.extend(universe[(cycle*(batch-1)+i)%len(universe)] for i in range(min(batch-1,len(universe))))
+        selected.extend(universe[(directory_cursor+i)%len(universe)] for i in range(min(directory_count,len(universe))))
     elif len(focus)>1:
-        selected.extend(focus[(cycle+i)%len(focus)] for i in range(1,min(batch,len(focus))))
+        selected.extend(focus[(cycle+i)%len(focus)] for i in range(1,min(directory_count+1,len(focus))))
     # A bounded slot uses shared daily discovery, then Moss independently rechecks
     # current intraday data, liquidity, cost and risk. Preserve directory exploration.
-    import market_discovery
-    ranked = [s for s in market_discovery.symbols(desk, now) if s not in selected]
-    if ranked and (batch >= 3 or cycle % 2):
-        if len(selected) >= batch:
-            selected[-1] = ranked[cycle % len(ranked)]
-        else:
-            selected.append(ranked[cycle % len(ranked)])
+    if shared and shared not in selected:
+        selected.append(shared)
     return selected
 
 

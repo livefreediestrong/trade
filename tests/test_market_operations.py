@@ -203,7 +203,7 @@ def test_release_roundtrip_does_not_rollback_durable_state(tmp_path, monkeypatch
     (checks/"graphics.cjs").write_text("changed")
     (root/"app.py").write_text("value = 2\n")
     assert not release_tools.restore(archive, root)["applied"]
-    monkeypatch.setattr(socket.socket, "connect_ex", lambda *a: 1)
+    monkeypatch.setattr(socket.socket, "connect_ex", lambda *a: __import__('errno').ECONNREFUSED)
     release_tools.restore(archive, root, apply=True)
     assert (root/"app.py").read_text() == "value = 1\n"
     assert (checks/"graphics.cjs").read_text() == "require('node:assert').ok(true);\n"

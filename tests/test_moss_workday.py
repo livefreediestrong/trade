@@ -224,10 +224,11 @@ def test_actual_trade_journal_dedup_late_fees_corrections_and_account_isolation(
     assert status['real']['executions']==1 and status['real']['by_currency']['USD']['broker_realized_pnl']==3
     assert len(journal.load()['executions'])==2 and status['excluded']==1
     journal.merge({'ok':True,'identity':{'account_id':'DU1234','paper_mode':True},'executions':[execution('paper.01',account_id='DU1234',paper_mode=True,broker_realized_pnl=500)]})
-    assert journal.status()['real']['by_currency']['USD']['broker_realized_pnl']==3
+    assert journal.status()['real']['executions']==0
+    assert next(a for a in journal.status()['accounts'] if a['paper_mode'] is False)['review']['by_currency']['USD']['broker_realized_pnl']==3
     assert journal.status()['broker_paper']['by_currency']['USD']['broker_realized_pnl']==500
     journal.merge({'ok':False,'error':'Gateway offline'})
-    assert journal.status()['real']['executions']==1 and journal.status()['error']=='Gateway offline'
+    assert journal.status()['real']['executions']==0 and journal.status()['error']=='Gateway offline'
 
 
 def test_ibkr_history_reads_actual_execution_and_preserves_unknown_commission(monkeypatch):

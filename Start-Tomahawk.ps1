@@ -7,17 +7,53 @@ function Get-LaunchSetting([string]$Name, [string]$Default = '') {
     $value = [Environment]::GetEnvironmentVariable($Name, 'Process')
     if ($null -ne $value) { return $value }
     $path = Join-Path $Root '.env'
+    $value = $Default
     if (Test-Path -LiteralPath $path) {
         foreach ($line in [IO.File]::ReadAllLines($path)) {
-            if ($line -match '^\s*([^#=\s]+)\s*=(.*)$' -and $Matches[1] -eq $Name) {
-                return $Matches[2].Trim().Trim('"').Trim("'")
+            if ($line -match '^\s*(?:export\s+)?([^#=\s]+)\s*=(.*)$' -and $Matches[1] -eq $Name) {
+                $raw = $Matches[2].Trim()
+                $quoted = [regex]::Match($raw, '^"((?:\\.|[^"\\])*)"\s*(?:#.*)?$')
+                $doubleQuoted = $quoted.Success
+                if (-not $quoted.Success) { $quoted = [regex]::Match($raw, '^''((?:\\.|[^''\\])*)''\s*(?:#.*)?$') }
+                if ($quoted.Success) {
+                    $value = $quoted.Groups[1].Value
+                    $pattern = if ($doubleQuoted) { '\\([\\"''abfnrtv])' } else { '\\([\\''])' }
+                    $value = [regex]::Replace($value, $pattern, {
+                        param($match)
+                        $escapes = @{a=[string][char]7;b=[string][char]8;f=[string][char]12;n="`n";r="`r";t="`t";v=[string][char]11}
+                        $key = $match.Groups[1].Value
+                        if ($escapes.ContainsKey($key)) { $escapes[$key] } else { $key }
+                    })
+                } else {
+                    $value = ($raw -replace '\s+#.*$', '').Trim()
+                }
             }
         }
     }
-    return $Default
+    return $value
+}
+function Resolve-LaunchPath([string]$Path) {
+    if (-not [IO.Path]::IsPathRooted($Path)) { $Path = Join-Path $Root $Path }
+    return [IO.Path]::GetFullPath($Path)
+}
+function Get-LaunchDataRoot {
+    $data = Get-LaunchSetting 'TOMAHAWK_DATA_DIR' (Join-Path $Root 'data')
+    if (-not $data) { $data = Join-Path $Root 'data' }
+    return Resolve-LaunchPath $data
 }
 function Test-DeskResponse($Response, [int]$Port) {
-    return ($Response.port -eq $Port -and ($Response.app_id -eq 'tomahawk-desk' -or $Response.banner -like 'Tomahawk*'))
+    if ($Response.port -ne $Port -or $Response.app_id -ne 'tomahawk-desk' -or
+        -not $Response.instance.source_root -or -not $Response.instance.data_root) { return $false }
+    try {
+        $expectedRoot = (Resolve-LaunchPath $Root).TrimEnd('\', '/')
+        $expectedData = (Get-LaunchDataRoot).TrimEnd('\', '/')
+        if (-not [IO.Path]::IsPathRooted($Response.instance.source_root) -or
+            -not [IO.Path]::IsPathRooted($Response.instance.data_root)) { return $false }
+        $source = [IO.Path]::GetFullPath($Response.instance.source_root).TrimEnd('\', '/')
+        $data = [IO.Path]::GetFullPath($Response.instance.data_root).TrimEnd('\', '/')
+        return ([string]::Equals($source, $expectedRoot, [StringComparison]::OrdinalIgnoreCase) -and
+                [string]::Equals($data, $expectedData, [StringComparison]::OrdinalIgnoreCase))
+    } catch { return $false }
 }
 function Test-Desk([string]$Url, [int]$Port) {
     try { return Test-DeskResponse (Invoke-RestMethod "${Url}api/health" -TimeoutSec 3) $Port }
@@ -103,7 +139,7 @@ function Invoke-DeskLauncher {
     $port = [int](Get-LaunchSetting 'TOMAHAWK_PORT' '5056')
     if ($port -lt 1 -or $port -gt 65535) { throw 'TOMAHAWK_PORT is invalid.' }
     $url = "http://127.0.0.1:$port/"
-    $data = Get-LaunchSetting 'TOMAHAWK_DATA_DIR' (Join-Path $Root 'data')
+    $data = Get-LaunchDataRoot
     New-Item -ItemType Directory -Force -Path $data | Out-Null
     $mutex = New-Object Threading.Mutex($false, "Local\TomahawkLauncher-$port")
     $owned = $false
@@ -112,7 +148,7 @@ function Invoke-DeskLauncher {
         if (-not $owned) { throw 'Another launch is still starting the desk. Wait a moment and reopen the shortcut.' }
         if (-not (Test-Desk $url $port)) {
             if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) {
-                throw "Port $port belongs to another application. It was left running. Set a different TOMAHAWK_PORT or close that application."
+                throw "Port $port belongs to another application or a different Tomahawk installation. It was left running. Set a different TOMAHAWK_PORT or close that application."
             }
             $python = Ensure-DeskPython $data
             foreach ($name in @('server.stdout.log', 'server.stderr.log')) {

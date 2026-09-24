@@ -30,6 +30,7 @@ _CLIENT_SETTINGS = None
 _PNL = {}
 _PNL_UPDATED = {}
 _ACCOUNT_READY = {}
+_ACCOUNT_EQUITY = {}
 _API_PULSE = {}
 _RESYNC_REQUIRED = False
 _SERVER_UNAVAILABLE = False
@@ -43,6 +44,7 @@ def _disconnected():
     _PNL.clear()
     _PNL_UPDATED.clear()
     _ACCOUNT_READY.clear()
+    _ACCOUNT_EQUITY.clear()
     _API_PULSE.clear()
     _CONNECTION["connected"] = False
 
@@ -53,6 +55,14 @@ def _pnl_day():
 
 
 def _account_value_update(row):
+    if row.tag == "NetLiquidation" and getattr(row, "currency", "") == "USD" and not getattr(row, "modelCode", ""):
+        # Invalidate a risk snapshot if callbacks change equity during preflight.
+        for key in list(_ACCOUNT_EQUITY):
+            if key[1] == row.account:
+                try:
+                    _ACCOUNT_EQUITY[key] = _number(row.value)
+                except (TypeError, ValueError):
+                    _ACCOUNT_EQUITY[key] = None
     if row.tag != "AccountReady" or getattr(row, "modelCode", ""):
         return
     ready = str(row.value).lower() == "true"
@@ -188,12 +198,15 @@ def _ib():
         asyncio.set_event_loop(asyncio.new_event_loop())
     from ib_insync import IB
     client = IB()
+    _preserve_commission_pnl(client)
     client.RequestTimeout = 5
     client.disconnectedEvent += _disconnected
     if hasattr(client, "pnlEvent"):
         client.pnlEvent += _pnl_update
         client.errorEvent += _server_error
         client.accountValueEvent += _account_value_update
+        if hasattr(client, "accountSummaryEvent"):
+            client.accountSummaryEvent += _account_value_update
     try:
         client.connect(os.environ.get("IB_GATEWAY_HOST", "127.0.0.1"),
                        int(os.environ.get("IB_GATEWAY_PORT", "4002")),
@@ -301,6 +314,25 @@ def _number(value) -> float:
     return number
 
 
+def _preserve_commission_pnl(client):
+    """Capture availability before this client's ib_insync wrapper replaces UNSET with zero."""
+    wrapper = getattr(client, "wrapper", None)
+    if wrapper is None or hasattr(wrapper, "_tomahawk_realized_pnl"):
+        return
+    raw_values = wrapper._tomahawk_realized_pnl = {}
+    original = wrapper.commissionReport
+
+    def commission_report(report):
+        try:
+            raw_values[report.execId] = _number(report.realizedPNL)
+        except (TypeError, ValueError):
+            raw_values[report.execId] = None
+        return original(report)
+
+    # Instance-only adaptation: no global library/class patch or installed-file change.
+    wrapper.commissionReport = commission_report
+
+
 @_on_api_thread
 def execution_history() -> dict[str, Any]:
     """Read execution/commission reports; never submit, modify or cancel orders."""
@@ -322,11 +354,18 @@ def execution_history() -> dict[str, Any]:
                     continue
                 stamp = getattr(ex, "time", None)
                 qty, price = optional(ex.shares), optional(ex.price)
-                if not ex.execId or not stamp or stamp.tzinfo is None or not qty or qty <= 0 or not price or price <= 0 or ex.side not in ("BOT", "SLD"):
+                revision = re.fullmatch(r"(.+)\.(\d+)", str(ex.execId))
+                voided = qty == 0 and revision is not None and int(revision[2]) > 1
+                if not ex.execId or not stamp or stamp.tzinfo is None or qty is None or qty < 0 or (not voided and (qty == 0 or not price or price <= 0)) or ex.side not in ("BOT", "SLD"):
                     excluded += 1
                     continue
                 commission = getattr(fill, "commissionReport", None)
                 matched = commission and commission.execId == ex.execId
+                raw_pnl = getattr(getattr(ib, "wrapper", None), "_tomahawk_realized_pnl", {})
+                realized = (raw_pnl[ex.execId] if ex.execId in raw_pnl else optional(commission.realizedPNL)) if matched else None
+                # A pre-adaptation cached numeric zero has ambiguous provenance.
+                if matched and hasattr(ib, "wrapper") and ex.execId not in raw_pnl and realized == 0:
+                    realized = None
                 result.append({"execution_id": ex.execId,"account_id": identity["account_id"],
                     "paper_mode": identity["paper_mode"], "ts": stamp.astimezone(timezone.utc).isoformat(),
                     "ticker": contract.symbol,"con_id":contract.conId,"asset_type":contract.secType,
@@ -334,11 +373,12 @@ def execution_history() -> dict[str, Any]:
                     "expiry":getattr(contract,"lastTradeDateOrContractMonth",None),
                     "strike":optional(getattr(contract,"strike",None)), "right":getattr(contract,"right",None),
                     "multiplier":getattr(contract,"multiplier",None), "local_symbol":getattr(contract,"localSymbol",None),
-                    "shares":qty,"price":price,"exchange":ex.exchange,
+                    "shares":qty,"price":price or 0.0,"exchange":ex.exchange,"voided":voided,
                     "order_id":ex.orderId,"client_id":ex.clientId,"permanent_order_id":ex.permId,
                     "order_ref":ex.orderRef,"commission":optional(commission.commission) if matched else None,
                     "commission_currency":commission.currency if matched else None,
-                    "broker_realized_pnl":optional(commission.realizedPNL) if matched else None,
+                    "broker_realized_pnl":realized,
+                    "broker_realized_pnl_reported":realized is not None if matched else None,
                     "source":"IBKR execution report","verified":True})
             return {"ok":True,"identity":identity,"executions":result,"excluded":excluded,
                     "coverage":"Only executions exposed by this Gateway session/history window; this is not a complete account statement."}
@@ -515,6 +555,7 @@ def get_account() -> dict[str, Any]:
             if equity <= 0:
                 raise ValueError("IBKR equity must be positive")
             key = (id(ib), account)
+            _ACCOUNT_EQUITY[key] = equity
             first = key not in _PNL
             for row in ib.accountValues(account) if hasattr(ib, "accountValues") else []:
                 if row.account == account:
@@ -653,7 +694,7 @@ def _known_trades(ib):
     return list(retained) + list(ib.reqAllOpenOrders()) + list(ib.reqCompletedOrders(apiOnly=False))
 
 
-def _execution_state(ib, matches, order_id):
+def _execution_state(ib, matches, order_id, executions=None):
     """Completed status alone is never execution-price/quantity evidence."""
     trade = matches[-1]
     states = [str(t.orderStatus.status).lower() for t in matches]
@@ -677,8 +718,12 @@ def _execution_state(ib, matches, order_id):
             required = max(required, _number(candidate.order.totalQuantity))
     # reqExecutions is read-only and is necessary after a restart or a rapid fill.
     from ib_insync import ExecutionFilter
-    executions = ib.reqExecutions(ExecutionFilter(acctCode=trade.order.account))
+    if executions is None:
+        executions = ib.reqExecutions(ExecutionFilter(acctCode=trade.order.account))
     perms = {getattr(t.order, "permId", 0) for t in matches} - {0}
+    families = {}
+    earliest = {}
+    unversioned = []
     for fill in executions:
         ex = fill.execution
         if ex.acctNumber != trade.order.account:
@@ -686,18 +731,128 @@ def _execution_state(ib, matches, order_id):
         if not ((ex.permId in perms) or (not perms and
                 order_id == f"{ex.acctNumber}:{ex.clientId}:{ex.orderId}")):
             continue
+        revision = re.fullmatch(r"(.+)\.(\d+)", str(getattr(ex, "execId", "")))
+        if revision:
+            family, version = revision[1], int(revision[2])
+            if family not in earliest or version < earliest[family][0]:
+                earliest[family] = (version, ex)
+            if family not in families or version > families[family][0]:
+                families[family] = (version, ex)
+        else:
+            unversioned.append(ex)
+    retained = [ex for _, ex in families.values()] + unversioned
+    versions = {family: version for family, (version, _) in families.items()}
+    correction = bool(versions) and max(versions.values()) > 1
+    for ex in retained:
         q, p = _number(ex.cumQty), _number(ex.avgPrice)
         required = max(required, q)
         if q > 0 and p > 0:
             quantities.append((q, p))
     filled, price = max(quantities, key=lambda value: value[0], default=(0.0, 0.0))
+    if correction:
+        # Corrected per-execution quantities supersede their original revision;
+        # stale orderStatus/cumQty maxima must not restore invalidated shares.
+        # A partial history is not authority to reduce a previously retained fill.
+        shares = [_number(ex.shares) for ex in retained]
+        prices = [_number(ex.price) for ex in retained]
+        cumulative = [_number(ex.cumQty) for ex in retained]
+        total = sum(shares)
+        # A later fill's cumulative field can still include an earlier original
+        # that has since been corrected. Original reports can establish complete
+        # coverage while corrected per-fill shares/prices supply the new totals.
+        originals = [ex for _, ex in earliest.values()]
+        original_shares = [_number(ex.shares) for ex in originals]
+        original_complete = (all(q >= 0 for q in original_shares)
+            and math.isclose(sum(original_shares), max((_number(ex.cumQty) for ex in originals), default=0),
+                             rel_tol=0, abs_tol=1e-8))
+        complete = (not unversioned and all(q >= 0 for q in shares)
+                    and all(q == 0 or p > 0 for q, p in zip(shares, prices))
+                    and (original_complete or math.isclose(total, max(cumulative, default=0), rel_tol=0, abs_tol=1e-8)))
+        if not complete:
+            return {"state": "unknown", "terminal": False, "order_id": order_id,
+                    "execution_details_verified": False, "execution_correction": True,
+                    "execution_versions": versions,
+                    "error": "Corrected execution history is incomplete; reconcile against the broker statement"}
+        filled, price = total, sum(q*p for q, p in zip(shares, prices))/total if total else 0.0
+        required = total
     terminal = (status == "filled" or status in _DEAD) and filled >= required
-    if status == "filled" and filled <= 0:
+    if status == "filled" and filled <= 0 and not correction:
         terminal = False
     return {"state": "filled" if status == "filled" else ("partially_filled" if filled > 0 else ("failed" if terminal else "pending")),
             "terminal": terminal, "filled_qty": filled, "filled_avg_price": price,
             "broker_status": status, "alpaca_status": status, "order_id": order_id,
-            "execution_details_verified": filled >= required}
+            "execution_details_verified": filled >= required,
+            "execution_versions": versions, "execution_correction": correction}
+
+
+@_on_api_thread
+def refresh_execution_corrections(order_ids, expected_identity):
+    """Refresh bounded retained orders with one read-only execution snapshot."""
+    try:
+        from ib_insync import ExecutionFilter
+        if not isinstance(order_ids, (list, tuple)) or len(order_ids) > 50:
+            raise ValueError("At most 50 retained order IDs may be refreshed")
+        with _session() as ib:
+            identity = _identity(ib)
+            if identity != expected_identity:
+                raise ValueError("Execution correction account differs from the retained account")
+            trades = _known_trades(ib)
+            executions = ib.reqExecutions(ExecutionFilter(acctCode=identity["account_id"]))
+            if _identity(ib) != identity or _SERVER_UNAVAILABLE or _RESYNC_REQUIRED:
+                raise ValueError("Execution correction account or connection changed")
+            updates = []
+            for order_id in dict.fromkeys(order_ids):
+                if not isinstance(order_id, str) or order_id.split(":", 1)[0] != identity["account_id"]:
+                    continue
+                matches = [trade for trade in trades if _matches_order(trade, order_id)]
+                perms = {getattr(t.order, "permId", 0) for t in matches} - {0}
+                matches += [t for t in trades if t not in matches and t.order.account == identity["account_id"]
+                            and getattr(t.order, "permId", 0) in perms]
+                if matches:
+                    update = _execution_state(ib, matches, order_id, executions)
+                    update["identity"] = identity
+                    updates.append(update)
+            return {"ok": True, "identity": identity, "orders": updates}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:200], "orders": []}
+
+
+def _submission_risk_error(ib, order, identity):
+    """No broker I/O: validate callbacks after the final blocking preflight."""
+    authorization = order.get("risk_authorization")
+    if not isinstance(authorization, dict) or not isinstance(authorization.get("reducing"), bool):
+        return "Verified risk authorization required before broker submission"
+    account = identity["account_id"]
+    if (_SERVER_UNAVAILABLE or _RESYNC_REQUIRED or not ib.isConnected()
+            or _ACCOUNT_READY.get(account) is False or _VERIFIED.get("identity") != identity
+            or _VERIFIED.get("settings") != _settings()):
+        return "Broker connection or account changed during preflight; request a fresh review"
+    # managedAccounts reads the wrapper cache; it does not issue a broker request.
+    try:
+        if _identity(ib) != identity:
+            return "Broker account changed during preflight; request a fresh review"
+    except (ValueError, TypeError):
+        return "Broker account unavailable after preflight; request a fresh review"
+    equity = authorization.get("equity")
+    if isinstance(equity, bool) or not isinstance(equity, (int, float)) or not math.isfinite(equity) or equity <= 0:
+        return "Verified broker equity required before broker submission"
+    if _ACCOUNT_EQUITY.get((id(ib), account)) != equity:
+        return "Broker equity changed during preflight; request a fresh review"
+    if authorization["reducing"]:
+        return None  # Deliberate exception for an already verified reducing order.
+    daily = authorization.get("day_pnl")
+    if isinstance(daily, bool) or not isinstance(daily, (int, float)) or not math.isfinite(daily):
+        return "Verified daily P&L required before broker submission"
+    subscription = _PNL.get((id(ib), account))
+    if (not subscription or account not in _PNL_UPDATED or subscription.get("day") != _pnl_day()
+            or _API_PULSE.get("client") != id(ib) or time.monotonic() - _API_PULSE.get("at", 0) > 15):
+        return "Daily P&L or connection validity changed during preflight; request a fresh review"
+    try:
+        if _number(subscription["value"].dailyPnL) != daily:
+            return "Daily P&L changed during preflight; request a fresh review"
+    except (TypeError, ValueError):
+        return "Daily P&L unavailable after preflight; request a fresh review"
+    return None
 
 
 @_on_api_thread
@@ -756,13 +911,16 @@ def place_from_desk_order(order: dict[str, Any]) -> dict[str, Any]:
                 expiry_error = submission_window_error(order)
                 if expiry_error:
                     raise ValueError(expiry_error)
-                attempted = True
                 if order.get("type") == "limit":
                     from ib_insync import LimitOrder
                     native = LimitOrder(side.upper(), int(qty), float(order["limit"]),
                                         account=identity["account_id"], orderRef=ref, tif="DAY", outsideRth=False)
                 else:
                     native = MarketOrder(side.upper(), int(qty), account=identity["account_id"], orderRef=ref)
+                risk_error = _submission_risk_error(ib, order, identity)
+                if risk_error:
+                    raise ValueError(risk_error)
+                attempted = True
                 trade = ib.placeOrder(contract, native)
                 ib.sleep(0.5)
             return {"ok": True, "status": "paper_submitted" if identity["paper_mode"] else "live_submitted",

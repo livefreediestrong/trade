@@ -6,7 +6,7 @@ composite. Prefer yfinance, then data_sources.get_daily_with_fallback.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
@@ -393,6 +393,37 @@ def intraday_adjust(verdict: str, sig: dict[str, Any]) -> tuple[str, list[str], 
     return v, flags, notes
 
 
+def _validated_daily(daily, now):
+    """Daily indices label exchange sessions, independently of a quote's age."""
+    import paper_loop
+    if daily is None or not isinstance(daily.index, pd.DatetimeIndex) or daily.index.hasnans:
+        raise ValueError("Daily history has no verifiable session dates")
+    frame = daily.copy()
+    dates = frame.index.tz_convert(paper_loop.NY_TZ).date if frame.index.tz is not None else frame.index.date
+    if any(day > now.date() for day in dates):
+        raise ValueError("Daily history contains a future session")
+    frame.index = pd.DatetimeIndex(dates)
+    frame = frame.sort_index(kind="stable").loc[lambda rows: ~rows.index.duplicated(keep="last")]
+    frame = frame.loc[[paper_loop.session_close_time(day) is not None for day in frame.index.date]]
+    frame = frame.dropna(subset=["Close"])
+    if len(frame) < 2 or not np.isfinite(frame["Close"]).all() or (frame["Close"] <= 0).any():
+        raise ValueError("Not enough valid daily price history")
+    expected = now.date()
+    close = paper_loop.session_close_time(expected)
+    if close is None or now.time().replace(tzinfo=None) < close:
+        expected -= timedelta(days=1)
+    while paper_loop.session_close_time(expected) is None:
+        expected -= timedelta(days=1)
+    completed = frame.loc[frame.index.date <= expected]
+    if completed.empty or completed.index[-1].date() != expected:
+        raise ValueError("Daily history is behind the latest completed session")
+    if frame.index[-1].date() > expected and now.time().replace(tzinfo=None) < paper_loop.RTH_OPEN:
+        raise ValueError("Daily history contains a session that has not opened")
+    return frame, {"as_of_session": frame.index[-1].date().isoformat(),
+                   "completed_session": expected.isoformat(),
+                   "forming": frame.index[-1].date() > expected, "fresh": True}
+
+
 def analyze_ticker(ticker: str) -> dict[str, Any]:
     """Lean screener analysis for one symbol. Never raises."""
     ticker = (ticker or "").strip().upper()
@@ -423,18 +454,14 @@ def analyze_ticker(ticker: str) -> dict[str, Any]:
         daily = df
         sources_used.append(f"{src} (fallback)")
 
-    # yfinance sometimes returns a NaN close on the newest row; NaN would slip past
-    # every comparison (gap gate included) and still yield WATCH.
     try:
-        daily = daily.dropna(subset=["Close"])
-    except Exception:
-        pass
-    if daily is None or len(daily) < 2:
-        return {"ticker": ticker, "error": f"Not enough clean price history for '{ticker}'."}
+        daily, daily_status = _validated_daily(daily, datetime.now(ZoneInfo("America/New_York")))
+    except (ValueError, TypeError, KeyError) as exc:
+        return {"ticker": ticker, "error": str(exc), "daily_history": {"fresh": False},
+                "research_flags": ["daily_history_unavailable"]}
     last_close = float(daily["Close"].iloc[-1])
     if not np.isfinite(last_close) or last_close <= 0:
         return {"ticker": ticker, "error": f"No valid last price for '{ticker}'."}
-    prev_close = float(daily["Close"].iloc[-2]) if len(daily) > 1 else last_close
     # All price-dependent checks must use the same provider observation.
     # Updating the price after selecting a verdict can turn an SMA failure into PASS.
     try:
@@ -444,6 +471,18 @@ def analyze_ticker(ticker: str) -> dict[str, Any]:
     if price_quote.get("price"):
         sources_used.append(price_quote["source"])
         last_close = price_quote["price"]
+    price_day = daily.index[-1].date()
+    if price_quote.get("price") and price_quote.get("market_time"):
+        try:
+            stamp = pd.Timestamp(price_quote["market_time"])
+            if stamp.tzinfo is not None:
+                price_day = stamp.tz_convert("America/New_York").date()
+        except (ValueError, TypeError):
+            pass
+    previous = daily.loc[daily.index.date < price_day, "Close"]
+    if previous.empty:
+        return {"ticker": ticker, "error": "Previous completed close unavailable"}
+    prev_close = float(previous.iloc[-1])
     change_dollar = last_close - prev_close
     change_pct = (change_dollar / prev_close) * 100 if prev_close else 0.0
 
@@ -518,8 +557,13 @@ def analyze_ticker(ticker: str) -> dict[str, Any]:
 
     sector_etf = SECTOR_ETF.get(sector)
     sector_data = None
+    sector_error = None
     if sector_etf:
         s = _sector_daily(sector_etf)
+        try:
+            s, sector_status = _validated_daily(s, datetime.now(ZoneInfo("America/New_York")))
+        except (ValueError, TypeError, KeyError) as exc:
+            s, sector_error = None, str(exc)
         if s is not None and not s.empty and len(s) >= 2:
             today_pct = (s["Close"].iloc[-1] / s["Close"].iloc[-2] - 1) * 100
             five_d = (
@@ -537,6 +581,7 @@ def analyze_ticker(ticker: str) -> dict[str, Any]:
             if len(s) >= 6:
                 green_days_5 = int((s["Close"].iloc[-6:].pct_change().dropna() > 0).sum())
             sector_data = {
+                **sector_status,
                 "etf": sector_etf,
                 "today_pct": round(float(today_pct), 2),
                 "five_d_pct": round(float(five_d), 2),
@@ -562,6 +607,8 @@ def analyze_ticker(ticker: str) -> dict[str, Any]:
     gap_pct = float(change_pct) if change_pct is not None else 0.0
     halt_or_gap = False
     research_flags: list[str] = []
+    if sector_error:
+        research_flags.append("sector_history_unavailable")
     if not price_quote.get("fresh"):
         research_flags.append("stale_or_unverified_quote")
     if change_pct <= RadarTuning.DISTRIBUTION_PCT and rel_vol >= RadarTuning.DISTRIBUTION_REL_VOLUME:
@@ -708,6 +755,8 @@ def analyze_ticker(ticker: str) -> dict[str, Any]:
         "price": round(last_close, 2),
         "quote": price_quote,
         "as_of": price_quote.get("market_time"),
+        "daily_history": daily_status,
+        "sector_history_error": sector_error,
         "change_dollar": round(change_dollar, 2),
         "change_pct": round(change_pct, 2),
         "sources": sources_used,

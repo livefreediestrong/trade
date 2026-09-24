@@ -241,3 +241,79 @@ def test_saved_rehearsal_cannot_arm_or_mutate_live_configuration(isolated):
     assert desk.load_config()==before and not desk.load_ledger()['fills']
     assert isolated.post('/api/companion/settings',base_url=BASE,json={'daily_target':1000}).status_code==200
     assert desk.load_config()==before
+
+
+def notebook_model_inputs(monkeypatch):
+    import market_catalog
+    import market_discovery
+    import screener_logic
+    service = rc.Companion(desk)
+    now = dt.datetime(2026, 9, 23, 18, tzinfo=dt.timezone.utc)
+    monkeypatch.setattr(rc, 'now_utc', lambda: now)
+    monkeypatch.setattr(market_catalog, 'notebook_observations', lambda *a: [])
+    monkeypatch.setattr(market_discovery, 'candidates', lambda *a: [])
+    monkeypatch.setattr(desk.news_stream, 'news_for_symbol', lambda *a, **k: [])
+    monkeypatch.setattr(desk, '_llm_public_status', lambda cfg: {'model':'fixture'})
+    monkeypatch.setattr(screener_logic, 'analyze_ticker', lambda symbol: {'ticker':symbol,'quote':{'fresh':True}})
+    desk.save_config(dict(desk.load_config(), watchlist=['AAA'], llm_enabled=True, llm_on_scan=True, moss_paper={'enabled':False}))
+    bars = pd.DataFrame({'Close':[99, 100]}, index=pd.to_datetime(['2026-09-21', '2026-09-22']))
+    monkeypatch.setattr(ds, 'get_daily_with_fallback', lambda *a, **k: (bars, 'fixture'))
+    calls = []
+    monkeypatch.setattr(desk, '_research_thesis', lambda *a, **k: calls.append(k['source']) or {'side':'flat','thesis':'saved result'})
+    return service, bars, calls, now
+
+
+def test_stale_notebook_retries_do_not_start_model_work(isolated, monkeypatch):
+    service, bars, calls, now = notebook_model_inputs(monkeypatch)
+    bars.index = pd.to_datetime(['2026-09-18', '2026-09-21'])
+    service._work(True)
+    service._work(True)
+    assert calls == [] and not service.load()['briefs'] and service.due(now)
+    assert 'latest completed session' in service.last_error
+
+
+@pytest.mark.parametrize('revocation', ['enabled', 'use_model', 'llm_enabled', 'llm_on_scan'])
+def test_notebook_rechecks_current_permission_after_analysis(isolated, monkeypatch, revocation):
+    import screener_logic
+    service, bars, calls, _ = notebook_model_inputs(monkeypatch)
+    def analyze(symbol):
+        if revocation in ('enabled', 'use_model'):
+            current = service.load(); current['settings'][revocation] = False; service.save(current)
+        else:
+            desk.save_config(dict(desk.load_config(), **{revocation:False}))
+        return {'ticker':symbol, 'quote':{'fresh':True}}
+    monkeypatch.setattr(screener_logic, 'analyze_ticker', analyze)
+    service._work(True)
+    assert calls == []
+    briefs = service.load()['briefs']
+    if revocation == 'enabled':
+        assert not briefs
+    else:
+        assert len(briefs) == 1 and briefs[0]['model'] is None
+
+
+def test_scheduled_model_result_survives_notebook_save_retry_and_restart(isolated, monkeypatch):
+    service, bars, calls, _ = notebook_model_inputs(monkeypatch)
+    save = service.save
+    def fail_brief(current):
+        if current['briefs']:
+            raise ValueError('Synthetic notebook save failure')
+        save(current)
+    monkeypatch.setattr(service, 'save', fail_brief)
+    service._work(True)
+    assert calls == ['moss_notebook'] and not service.load()['briefs']
+    assert service.load()['model_attempts']['2026-09-23']['status'] == 'completed'
+    restarted = rc.Companion(desk)
+    restarted._work(True)
+    assert calls == ['moss_notebook']
+    assert restarted.load()['briefs'][0]['model']['thesis'] == 'saved result'
+
+
+def test_unfinished_scheduled_model_attempt_is_not_reissued(isolated, monkeypatch):
+    service, bars, calls, _ = notebook_model_inputs(monkeypatch)
+    saved = service.load()
+    saved['model_attempts'] = {'2026-09-23':{'status':'started','started_at':'2026-09-23T17:00:00+00:00'}}
+    service.save(saved)
+    service._work(True)
+    assert calls == []
+    assert 'no duplicate request' in service.load()['briefs'][0]['model']['error']

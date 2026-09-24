@@ -133,6 +133,10 @@ def snapshot(symbol: str) -> Optional[dict[str, Any]]:
         "dollar_volume": round(price * vol, 2) if price and vol else 0.0,
         "source": "polygon_snapshot",
         "updated": ticker.get("updated"),
+        "market_time": (last_trade.get("t") if last_trade.get("p") else last_quote.get("t")
+                        if last_quote.get("P") or last_quote.get("p") else day.get("t")
+                        if day.get("c") else (ticker.get("min") or {}).get("t")),
+        "market_time_unit": "ns" if last_trade.get("p") or last_quote.get("P") or last_quote.get("p") else "ms",
     }
 
 
@@ -174,6 +178,8 @@ def snapshots(symbols: list[str], *, limit: int = 80) -> list[dict[str, Any]]:
                     "volume": vol,
                     "dollar_volume": round(price * vol, 2) if price and vol else 0.0,
                     "source": "polygon_snapshot",
+                    "market_time": last_trade.get("t") if last_trade.get("p") else day.get("t"),
+                    "market_time_unit": "ns" if last_trade.get("p") else "ms",
                 }
             )
             if len(out) >= limit:

@@ -189,15 +189,19 @@ let activeWorkspace = 'live';
 global.window = {__brokerStatus:{broker:'ibkr',configured:true,paper_mode:false}};
 const elements = new Map();
 const $ = key => {
-  if (!elements.has(key)) elements.set(key, {
-    classList:{toggle(){},remove(){},add(){}},dataset:{},setAttribute(){},focus(){},textContent:'',innerHTML:''
-  });
+  if (!elements.has(key)) {
+    const classes = new Set(key === '#approve-modal' ? ['hidden'] : []);
+    elements.set(key, {
+      classList:{toggle(){},contains:name=>classes.has(name),remove:name=>classes.delete(name),add:name=>classes.add(name)},dataset:{},setAttribute(){},focus(){},textContent:'',innerHTML:''
+    });
+  }
   return elements.get(key);
 };
 const state = {config:{mode:'live_manual'},ledger:{cash:100000},daily:{pnl:12345},preset:{}};
 const lastDataAt = Date.now();
 let pendingApproveId = null;
 let approvalContext = null;
+let approveReturnFocus = null, approveReturnSignalId = null;
 const $$ = () => [];
 const signal = {id:'fresh',ticker:'TEST',side:'buy',actionable:true,suggested_shares:1,signal_price:100,
   llm_model:'actual-model',quote:{source:'Test feed',market_time:new Date().toISOString(),fresh:true}};

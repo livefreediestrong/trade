@@ -117,13 +117,20 @@
     const revision=costRevision;
     const r=await api('/api/cost-estimate',{budget:val('cost-budget'),price:val('cost-price'),exit_price:val('cost-exit'),fractional:val('cost-fractional')==='true',direction:val('cost-direction'),order_type:val('cost-type'),fee_mode:val('cost-fee-mode'),entry_fee:val('cost-entry-fee'),exit_fee:val('cost-exit-fee'),borrow_fee:val('cost-borrow-fee'),slippage_bps:Number(val('cost-slippage'))*100});
     if(revision!==costRevision) return;
-    $('cost-result').innerHTML=`<div class="estimate-grid"><div><span>Shares in this scenario</span><strong>${esc(r.shares)}</strong></div><div><span>Entry value · before fees</span><strong>${money(r.entry_value)}</strong></div><div><span>Estimated entry cash</span><strong>${r.direction==='short'?'Margin unverified':money(r.cash_needed_estimate)}</strong></div><div><span>Fees assumed · both sides</span><strong>${money(r.fees_assumed)}</strong></div><div><span>Estimated net result</span><strong>${money(r.net_pnl_estimate)}</strong></div><div><span>Break-even exit price</span><strong>${money(r.break_even_price)}</strong></div></div><p>${esc(r.note)}</p>${r.short_note?`<p>${esc(r.short_note)}</p>`:''}<p class="hint-line">${r.order_type==='limit'?'The calculation assumes the limit fills; it may never fill.':'The modeled price movement is an assumption, not a maximum.'}</p>`;
+    $('cost-result').innerHTML=`<div class="estimate-grid"><div><span>Shares in this scenario</span><strong>${esc(r.shares)}</strong></div><div><span>Entry value · before fees</span><strong>${money(r.entry_value)}</strong></div><div><span>Estimated entry cash</span><strong>${r.direction==='short'?'Margin unverified':money(r.cash_needed_estimate)}</strong></div><div><span>Fees assumed · both sides</span><strong>${money(r.fees_assumed)}</strong></div><div><span>Estimated net result</span><strong>${money(r.net_pnl_estimate)}</strong></div><div><span>Break-even exit price</span><strong>${r.break_even_possible===false?'Not attainable':money(r.break_even_price)}</strong></div></div><p>${esc(r.note)}</p>${r.short_note?`<p>${esc(r.short_note)}</p>`:''}<p class="hint-line">${r.order_type==='limit'?'The calculation assumes the limit fills; it may never fill.':'The modeled price movement is an assumption, not a maximum.'}</p>`;
   });});
   $('cost-quote').addEventListener('click',e=>task(e.currentTarget,'cost-quote-status',async()=>{
     const revision=costRevision, symbol=val('cost-symbol').trim().toUpperCase(), result=await api(`/api/cost-estimate/quote/${encodeURIComponent(symbol)}`), q=result.quote;
     if(revision!==costRevision){txt('cost-quote-status','Inputs changed while the price loaded. Get the price again.');return;}
-    if(q.price){$('cost-price').value=Number(q.price).toFixed(4);$('cost-exit').value=Number(q.price).toFixed(4);}
-    costRevision++; txt('cost-result','Price updated. Calculate again for the current inputs.');
+    const price=Number(q.price);
+    costRevision++;
+    if(!Number.isFinite(price)||price<=0){
+      txt('cost-result','No new price was obtained. Retained price inputs are prior/manual assumptions; calculate again only for that scenario.');
+      txt('cost-quote-status',`${symbol}: price unavailable · ${q.source || 'source unavailable'} · retained inputs are unverified assumptions.`);
+      return;
+    }
+    $('cost-price').value=price.toFixed(4);$('cost-exit').value=price.toFixed(4);
+    txt('cost-result','Price updated. Calculate again for the current inputs.');
     txt('cost-quote-status',`${symbol}: ${money(q.price)} · ${q.source} · ${q.market_time?new Date(q.market_time).toLocaleString():'time unknown'} · ${q.fresh?'recent observation':'old/unverified; scenario only'}`);
   }));
   $('cost-price').addEventListener('input',()=>txt('cost-quote-status','Price edited manually · hypothetical assumption, not a verified quote.'));

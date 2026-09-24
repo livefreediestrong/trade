@@ -81,6 +81,19 @@ def test_replay_fixed_capital_partial_fill_and_sell_direction():
     assert result["scenario_pnl_sum"] == 8.3
 
 
+def test_replay_current_producer_direction_and_legacy_precedence():
+    params = wb.experiment_parameters({'capital':1000, 'position_pct':100})
+    buy = event(intended_side='buy', outcome_move_bps=32)
+    buy.pop('decision')
+    sell = event(id='sell', intended_side='sell', decision='buy', outcome_move_bps=-32)
+    result = wb.replay([buy, sell], params)
+    assert result['eligible'] == 2 and result['excluded'] == 0
+    assert [r['side'] for r in result['trades']] == ['buy', 'sell']
+    assert result['trades'][0]['net_bps'] == result['trades'][1]['net_bps']
+    invalid = event(decision='unknown')
+    assert wb.replay([invalid], params)['excluded'] == 1
+
+
 def test_experiment_roundtrip_hash_and_separate_settings(files):
     desk._save_json(desk.DECISIONS_PATH,{"events":[event()]})
     cfg = desk.load_config()

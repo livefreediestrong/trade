@@ -138,7 +138,11 @@ class SaleScanner:
                     json.dumps(row, allow_nan=False)
                     failures = 0
                 except ValueError as exc:
-                    status, error, failures = "excluded", str(exc)[:240], 0
+                    from research_studio import RetryableHistoryError
+                    if isinstance(exc, RetryableHistoryError):
+                        status, error, failures = "provider_error", str(exc)[:240], failures+1
+                    else:
+                        status, error, failures = "excluded", str(exc)[:240], 0
                 except requests.HTTPError as exc:
                     code = exc.response.status_code if exc.response is not None else None
                     status = "excluded" if code in (404, 410) else "provider_error"

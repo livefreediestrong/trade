@@ -23,7 +23,7 @@ function harness({width=300,height=1000,reduced=false,saved={}}={}){
  const positions=()=>[nodes['moss-fox'].style.transform,nodes['moss-woman'].style.transform];
  const frames=()=>[nodes['moss-fox'].dataset.frame,nodes['moss-woman'].dataset.frame];
  function advance(ms){const end=now+ms;while(now<end){now=Math.min(end,now+100);for(const [id,t]of [...timers])if(t.at<=now){timers.delete(id);t.fn();}}}
- return{nodes,events,timers,doc,preference,sections,storage,advance,positions,frames,setDialog:v=>{dialog=v;}};
+ return{nodes,events,timers,doc,preference,sections,storage,advance,positions,frames,setDialog:v=>{dialog=v;},resize:(w,h)=>{width=w;height=h;events.resize();}};
 }
 let h=harness({saved:{motion:'roam',avatar:'both',habitatVersion:2}});
 assert.equal(h.nodes['moss-motion'].value,'cozy');assert.equal(h.nodes['moss-avatar'].value,'both');
@@ -76,5 +76,13 @@ h=harness();h.setDialog({});h.events['moss:news'](newsCue);assert.equal(heard,1)
 h=harness();h.doc.activeElement={matches:()=>true};h.events['moss:news'](newsCue);assert.equal(heard,1);
 h=harness();h.events['moss:guide']({detail:{target:'desk-options',text:'Requested guidance'}});h.events['moss:news'](newsCue);assert.equal(heard,1);
 h=harness({reduced:true});h.events['moss:news'](newsCue);assert.equal(heard,2);assert.equal(h.nodes['moss-speech'].dataset.topic,'news');assert.equal(h.nodes['moss-woman'].dataset.still,'true');
+h=harness({width:300,height:340});assert.equal(h.timers.size,0);assert.equal(h.nodes['moss-speech'].hidden,true);
+const beforeShortNews=heard,beforeShortBuzz=consumed;h.events['moss:news'](newsCue);h.events['moss:buzz'](cue);
+assert.equal(heard,beforeShortNews,'short stage never consumes undisplayed news');assert.equal(consumed,beforeShortBuzz,'short stage retains buzz fallback');
+h.nodes['moss-speech-enabled'].checked=false;h.nodes['moss-speech-enabled'].change();assert.equal(h.nodes['moss-speech'].hidden,true);
+h.resize(300,1000);assert.equal(h.nodes['moss-speech'].hidden,true,'speech-off survives resized geometry');assert.equal(h.timers.size,1);
+h.nodes['moss-speech-enabled'].checked=true;h.nodes['moss-speech-enabled'].change();h.events['moss:news'](newsCue);assert.equal(heard,beforeShortNews+1,'unconsumed news can display after resize');assert.equal(h.nodes['moss-speech'].dataset.topic,'news');
+h.resize(300,340);h.events['desk:attention']({detail:{quiet:true}});assert.equal(h.nodes['moss-speech'].hidden,true);assert.equal(h.timers.size,0);
+h.events.pagehide();assert.equal(h.nodes['moss-speech'].hidden,true);h.resize(300,1000);assert.equal(h.timers.size,0);h.events.pageshow();assert.equal(h.timers.size,1);assert.equal(h.nodes['moss-speech'].hidden,true,'quiet setting survives page lifecycle');
 console.log('Changing Woman news: attribution, external source link, expiry, cooldown, woman-only ownership, quiet/speech-off/typing/dialog/guidance suppression and reduced motion passed.');
 console.log('Cozy perches: stationary top/bottom through task changes, occasional expressions, pause/dock/reduced motion, dismissal, preferences migration, hidden/narrow lifecycle, and no animation loop or network actions passed.');

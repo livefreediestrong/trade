@@ -77,6 +77,8 @@ def analysis_inputs(monkeypatch):
         quote={"price": 110.0, "fresh": True, "source": "test provider", "market_time": NOW.isoformat()},
         bars5=bars(pd.date_range("2026-09-23 12:20", periods=9, freq="5min", tz="America/New_York")),
         history_error=False,
+        daily=daily,
+        sector=sector,
     )
 
     class Ticker:
@@ -84,7 +86,7 @@ def analysis_inputs(monkeypatch):
 
         def history(self, **kwargs):
             if kwargs["interval"] == "1d":
-                return daily.copy()
+                return fixture.daily.copy()
             if kwargs["interval"] == "60m":
                 return hours.copy()
             if fixture.history_error:
@@ -93,7 +95,7 @@ def analysis_inputs(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "yfinance", SimpleNamespace(Ticker=lambda symbol: Ticker()))
     monkeypatch.setattr(screener.ds, "latest_quote", lambda symbol: dict(fixture.quote))
-    monkeypatch.setattr(screener, "_sector_daily", lambda symbol: sector.copy())
+    monkeypatch.setattr(screener, "_sector_daily", lambda symbol: fixture.sector.copy())
     monkeypatch.setattr(screener, "chaikin_money_flow", lambda *args: .1)
     monkeypatch.setattr(screener, "_fetch_earnings", lambda *args: (None, None))
     monkeypatch.setattr(screener, "_rth_now", lambda: True)
@@ -139,3 +141,41 @@ def test_unverified_price_cannot_keep_pass_verdict(analysis_inputs):
     result = screener.analyze_ticker("TEST")
     assert result["verdict"] == "WATCH"
     assert "stale_or_unverified_quote" in result["research_flags"]
+
+
+@pytest.mark.parametrize("shift", [-365, 1])
+def test_current_quote_cannot_mask_stale_or_future_daily_history(analysis_inputs, shift):
+    analysis_inputs.daily.index += pd.Timedelta(days=shift)
+    result = screener.analyze_ticker("TEST")
+    assert result["error"] and not result["daily_history"]["fresh"]
+    assert result.get("verdict") != "PASS"
+
+
+def test_sector_history_is_checked_independently(analysis_inputs):
+    analysis_inputs.sector.index -= pd.Timedelta(days=365)
+    result = screener.analyze_ticker("TEST")
+    assert result["daily_history"]["fresh"] and result["quote"]["fresh"]
+    assert result["sector"] is None and result["verdict"] != "PASS"
+    assert "sector_history_unavailable" in result["research_flags"]
+
+
+@pytest.mark.parametrize("latest", ["completed", "forming", "nan"])
+def test_previous_close_uses_prior_session_for_each_daily_provider_shape(analysis_inputs, latest):
+    daily = analysis_inputs.daily
+    daily.loc[daily.index[-2], "Close"] = 110
+    daily.loc[daily.index[-3], "Close"] = 100
+    if latest == "completed":
+        analysis_inputs.daily = daily.iloc[:-1]
+    elif latest == "nan":
+        daily.loc[daily.index[-1], "Close"] = np.nan
+    result = screener.analyze_ticker("TEST")
+    assert result["prev_close"] == 110 and result["gap_pct"] == result["change_pct"] == 0
+    assert "gap_gt_8pct" not in result["research_flags"]
+
+
+def test_daily_history_sorts_and_deduplicates_sessions(analysis_inputs):
+    daily = analysis_inputs.daily
+    analysis_inputs.daily = pd.concat([daily.iloc[::-1], daily.iloc[[-1]]])
+    result = screener.analyze_ticker("TEST")
+    assert result["daily_history"]["completed_session"] == "2026-09-22"
+    assert result["prev_close"] == 105

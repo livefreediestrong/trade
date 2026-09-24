@@ -305,10 +305,10 @@ def test_market_radar_rejects_nonfinite_and_low_price():
 
 def test_market_radar_marks_distribution_and_parabolic_moves():
     distribution = market_radar._row_from_quote(
-        "AAA", price=100, pct=-4.0, volume=3_000_000, avg_vol=500_000
+        "AAA", price=100, pct=-4.0, volume=3_000_000, avg_vol=500_000, market_time=datetime.now(timezone.utc)
     )
     parabolic = market_radar._row_from_quote(
-        "BBB", price=100, pct=55.0, volume=3_000_000, avg_vol=500_000
+        "BBB", price=100, pct=55.0, volume=3_000_000, avg_vol=500_000, market_time=datetime.now(timezone.utc)
     )
     assert distribution and "distribution_day" in distribution["research_flags"]
     assert parabolic and "parabolic_move" in parabolic["research_flags"]

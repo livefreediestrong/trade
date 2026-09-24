@@ -48,9 +48,12 @@ def estimate(body):
     gross = shares * (exit_fill - entry) * (1 if direction == "long" else -1)
     fees = fee_in + fee_out + borrow if shares > 0 else Decimal(0)
     breakeven = None
+    feasible_break_even = None
     if known_fees and shares > 0:
         target = entry + fees / shares if direction == "long" else entry - fees / shares
-        breakeven = target / (1 - slip if direction == "long" else 1 + slip)
+        feasible_break_even = target >= 0
+        if feasible_break_even:
+            breakeven = target / (1 - slip if direction == "long" else 1 + slip)
     def convert(n):
         if n is None:
             return None
@@ -61,9 +64,10 @@ def estimate(body):
             "cash_needed_estimate": convert(shares * entry + (fee_in if shares > 0 else 0)) if known_fees and direction == "long" else None,
             "gross_pnl": convert(gross), "fees_assumed": convert(fees) if known_fees else None,
             "net_pnl_estimate": convert(gross - fees) if known_fees else None,
-            "break_even_price": convert(breakeven), "fees_known": known_fees,
+            "break_even_price": convert(breakeven), "break_even_possible": feasible_break_even, "fees_known": known_fees,
             "all_in_guaranteed": False, "live_fractional_available": False, "trade_possible": shares > 0,
             "note": "The budget cannot cover the minimum share size and assumed entry fee. No trade is modeled."
-                    if shares == 0 else "Your assumptions, not a broker quote. Market prices and fees can change."
+                    if shares == 0 else "No attainable break-even: assumed fees exceed the maximum possible proceeds."
+                    if feasible_break_even is False else "Your assumptions, not a broker quote. Market prices and fees can change."
                     if known_fees else "Fees are unknown. Total cost, net profit and break-even stay unknown.",
             "short_note": "Borrow availability, margin and borrow rates are unverified; research only. Short-sale losses can exceed the initial amount." if direction == "short" else None}
