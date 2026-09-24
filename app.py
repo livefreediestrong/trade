@@ -9105,6 +9105,8 @@ market_watch.register(app, __import__("sys").modules[__name__])
 if __name__ == "__main__":
     acquire_instance_lock()
     atexit.register(release_instance_lock)
+    import error_reporting
+    error_reporting.init()  # no-op unless SENTRY_DSN is set; before background threads start
     recover_interrupted_approvals()
 
 # Start background on import / run (TOMAHAWK_NO_BG=1 skips — used by tests)

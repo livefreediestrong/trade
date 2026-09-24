@@ -371,3 +371,13 @@ or in the live agent policy for the exit rules.
   within a band), so the live agent's minimum-confidence gate is repeatable.
 - **Live agent protective exits**: stop, target, breakeven stop, optional maximum hold and a sell before
   the close for stocks the agent bought. See `docs/LIVE_AGENT.md`.
+
+### Alerts and crash reports
+
+- `ALERT_WEBHOOK_URL` accepts a Discord or Slack incoming webhook, or a Zapier **Catch Hook** URL. Zapier
+  receives `content`, `text` and `event` (`kind`, `message`, `ts`) and can forward alerts to SMS, email
+  or a task list.
+- `SENTRY_DSN` (optional, needs `pip install "sentry-sdk[flask]"`) reports desk crashes to Sentry.
+  `error_reporting.py` sends exception types, messages and stack frames only, drops request bodies,
+  headers, cookies, local variables and breadcrumbs, and redacts broker account numbers and long tokens.
+  Without the variable nothing is sent.
