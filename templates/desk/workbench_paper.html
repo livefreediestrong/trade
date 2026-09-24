@@ -1,0 +1,20 @@
+<section class="panel workbench-wide" id="paper-experiments">
+  <h3>Paper experiments</h3>
+  <p>Capture recorded research inputs, decisions and outcomes with explicit assumptions. Runs are isolated from both trading books and live settings.</p>
+  <form id="experiment-form" class="experiment-form">
+    <label>Experiment name <input name="name" value="Research baseline" maxlength="80" required /></label>
+    <label>Strategy version <input name="strategy_version" value="captured-policy-v1" maxlength="100" required /></label>
+    <label>Model filter <input name="model" value="all" maxlength="100" /></label>
+    <label>Simulated capital $ <input name="capital" type="number" value="1000" min="1" max="100000000" required /></label>
+    <label>Position % <input name="position_pct" type="number" value="10" min="0.01" max="100" step="0.01" required /></label>
+    <label>Round-trip spread bps <input name="spread_bps" type="number" value="10" min="0" max="1000" required /></label>
+    <label>Fee bps per side <input name="fee_bps" type="number" value="1" min="0" max="1000" required /></label>
+    <label>Adverse delay bps <input name="delay_bps" type="number" value="5" min="0" max="1000" required /></label>
+    <label>Quantity filled % <input name="fill_pct" type="number" value="100" min="0" max="100" required /></label>
+    <label>Outcome horizon seconds <input name="horizon_sec" type="number" value="1200" min="1" max="86400" required /></label>
+    <button type="submit" class="btn">Capture &amp; run experiment</button>
+  </form>
+  <p class="hint-line">Independent fixed-capital scenarios; their P&amp;L sum is not a portfolio return. Delay uses adverse-price bps, not a queue simulator. Recorded decisions replay deterministically; the model is not called again.</p>
+  <button type="button" class="btn ghost" id="experiments-refresh">Load saved experiments</button>
+  <div id="experiment-results" role="status"></div>
+</section>

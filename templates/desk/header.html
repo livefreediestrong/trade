@@ -1,0 +1,88 @@
+<body class="ui-advanced unified-desk utilitarian-desk" data-workspace="live">
+  <div class="desert-scene" aria-hidden="true">
+    <div class="sky-bands"></div><div class="scene-horizon"></div><div class="scene-veil veil-near"></div><div class="scene-veil veil-far"></div><div id="scene-stars" class="scene-stars"></div>
+    <div id="scene-sun" class="scene-orb scene-sun"><i></i><b></b></div>
+    <div id="scene-moon" class="scene-orb scene-moon"><i></i><b></b></div>
+    <div id="scene-clouds" class="scene-clouds"></div><div id="scene-wind" class="scene-wind"></div><div class="scene-grain"></div>
+    <svg class="mesa-landscape" viewBox="0 0 1440 400" preserveAspectRatio="none"><path class="mesa-distant" d="M0 210 170 170 250 90 375 90 455 210 640 145 810 160 960 65 1110 65 1200 190 1440 140V400H0Z"/><path class="mesa-far" d="M0 260 130 240 210 135 330 135 405 250 520 235 590 80 740 80 810 235 940 180 1090 195 1170 130 1330 130 1440 250V400H0Z"/><path class="mesa-near" d="M0 340 200 280 290 305 420 255 590 335 700 310 870 270 1010 330 1190 260 1440 335V400H0Z"/></svg>
+    <svg class="desert-foreground" viewBox="0 0 1440 160" preserveAspectRatio="xMidYMax slice"><path class="sand-dune" d="M0 134 Q200 95 400 133 T810 124 T1210 127 T1440 120V160H0Z"/><g class="desert-cactus"><path d="M1190 139V68q0-12 9-12t9 12v29h15V79q0-8 7-8t7 8v22q0 11-11 11h-18v27Z M1190 116h-15q-11 0-11-11V82q0-9 7-9t7 9v20h12Z"/><path d="M850 138V100q0-7 5-7t5 7v12h8v-10q0-5 4-5t4 5v15q0 6-6 6h-10v15Z M850 124h-8q-6 0-6-6v-13q0-5 4-5t4 5v12h6Z"/></g></svg>
+    {% include 'desk/fauna.html' %}
+  </div>
+  <script>
+    (function () {
+      /* design themes deferred — clear legacy Pendleton / wool keys once */
+      try {
+        localStorage.removeItem("desk_theme");
+        localStorage.removeItem("wool_vibe");
+      } catch (e) {}
+    })();
+  </script>
+  <!-- Account, execution mode, and data health stay visible above the desk. -->
+  <div class="paper-chrome masthead" id="paper-chrome" aria-live="polite">
+    <div class="chrome-badges">
+      <span class="chrome-badge paper" id="chrome-paper" title="Checking the execution mode">CHECKING MODE</span>
+      <span class="chrome-badge broker hidden" id="chrome-broker" data-workspace-only="live" title="Broker connection and execution venue">Broker</span>
+      <span class="chrome-badge rth" id="chrome-rth" title="US regular trading session — open or closed">Market hours</span>
+      <span class="chrome-badge buzz-pill hidden adv-only" id="buzz-simple-pill" title="Watchlist attention from social feeds; Fox presents fresh buzz cues (research only)">Buzz</span>
+      <span class="chrome-badge live-ind polling" id="live-ind" data-health="connecting" title="How fresh the numbers are — seconds since the last update">Connecting…</span>
+    </div>
+    <span class="chrome-note" id="chrome-note">Paper only</span>
+    <span class="chrome-note banner-line adv-only" id="banner">{{ banner }}</span>
+  </div>
+
+  <p class="workspace-description" id="workspace-description">Live trading · your actual broker account. Paper research uses a separate simulated account below.</p>
+  <p class="warn" id="live-mode-notice" data-workspace-only="live" hidden></p>
+
+  <div class="stale-banner" id="stale-banner" role="alert" hidden>
+    <span data-stale-text>Numbers haven't updated recently. They may be out of date.</span>
+    <button type="button" class="btn sm" id="btn-stale-retry">Try again</button>
+  </div>
+  <div class="execution-summary" id="execution-summary" role="status" aria-live="polite">
+    <span class="execution-summary-label">Execution</span>
+    <strong id="execution-summary-mode">Checking mode…</strong>
+    <span id="execution-summary-broker">Broker status checking…</span>
+    <span id="execution-summary-session">Session not started</span>
+    <span id="execution-summary-pending">No pending ideas</span>
+  </div>
+
+  <p class="startup-status" id="startup-status" data-workspace-only="live" role="status" hidden></p>
+  <nav class="desk-guide" id="desk-guide" aria-label="Desk steps" hidden>
+    <ol class="desk-guide-steps">
+      <li class="desk-step" data-step="goal"><span class="step-num">1</span><span class="step-label">Goal</span></li>
+      <li class="desk-step-sep" aria-hidden="true">·</li>
+      <li class="desk-step" data-step="start"><span class="step-num">2</span><span class="step-label">Start</span></li>
+      <li class="desk-step-sep" aria-hidden="true">·</li>
+      <li class="desk-step" data-step="auto"><span class="step-num">3</span><span class="step-label">Auto paper</span></li>
+      <li class="desk-step-sep" aria-hidden="true">·</li>
+      <li class="desk-step" data-step="waiting"><span class="step-num">4</span><span class="step-label">Waiting</span></li>
+      <li class="desk-step-sep" aria-hidden="true">·</li>
+      <li class="desk-step" data-step="positions"><span class="step-num">5</span><span class="step-label">Positions</span></li>
+    </ol>
+  </nav>
+
+  <header class="topbar">
+    <div class="brand-cluster">
+      <div class="brand">
+        <h1>Trading desk</h1>
+        <span class="pill soft quiet" id="stat-llm" title="Brain picks Hold, Buy, or Sell">Brain...</span>
+        <span class="pill soft quiet adv-only" id="stat-mode">manual</span>
+        <span class="pill soft quiet adv-only" id="stat-preset">mid</span>
+      </div>
+      <div class="butler-card simple-only" id="butler-card" aria-label="Butler status">
+        <div class="butler-mark" aria-hidden="true"></div>
+        <div class="butler-card-text">
+          <div class="butler-card-label">Butler</div>
+          <p class="butler-card-status" id="butler-header-status">Standing by</p>
+        </div>
+      </div>
+    </div>
+    <div class="topbar-chrome-tools">
+
+      <button type="button" class="btn ghost sm howto-btn" id="btn-howto" title="Open a short tutorial">How to</button>
+      <button type="button" class="btn ghost sm" id="btn-report" data-workspace-only="paper" title="How the last 7 days went — with a grade">Report card</button>
+      <button type="button" class="btn ghost sm simple-only" id="btn-feeling-lucky" title="Pick a random watchlist ticker and focus the desk (no fill)">I&rsquo;m Feeling Lucky</button>
+      <button type="button" class="btn icon ghost theme-btn" id="btn-theme" title="Switch light / dark" aria-label="Switch to light mode">☀</button>
+      <button type="button" class="btn icon ghost simple-only" id="btn-simple-settings" data-workspace-only="live" title="Settings — friction &amp; alerts" aria-label="Open settings">⚙</button>
+    </div>
+
+  </header>

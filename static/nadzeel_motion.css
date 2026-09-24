@@ -1,0 +1,75 @@
+/* Adapted kit effects: weave, spin, quill, day in the sky, constellation. */
+:root{--scene-cloud:#2a2d58;--scene-night:1;--scene-glow:0;--mesa-distant:#2e3266}
+.desert-scene .sky-bands{opacity:.5}
+.scene-horizon{position:absolute;inset:48% 0 18%;background:radial-gradient(ellipse at bottom,#f2a86a55,transparent 70%);opacity:var(--scene-glow)}
+.scene-stars,.scene-clouds,.scene-wind,.scene-grain{position:absolute;inset:0;overflow:hidden}
+.scene-stars{opacity:var(--scene-night)}
+.scene-stars .sky-constellation{position:absolute;width:27%;height:auto;opacity:.48}.scene-stars .orion{left:18%;top:7%}.scene-stars .cassiopeia{left:48%;top:1%}.scene-stars .dipper{left:72%;top:21%}
+.sky-star-line{stroke:#d8c8b6;stroke-width:.55;opacity:.5}.sky-real-star{fill:#f1e6d2}.sky-pattern-label{fill:#c3b7b4;font:8px sans-serif;letter-spacing:.6px}
+.scene-stars .sky-pattern-label{display:none}
+.constellation-study{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.constellation-study .sky-constellation{width:100%;height:auto;background:var(--bg);border-radius:12px}.constellation-study .sky-pattern-label{fill:var(--text);font-size:10px}.constellation-study .sky-real-star{fill:var(--text)}
+@media(max-width:800px){.constellation-study{grid-template-columns:1fr}.scene-stars .sky-constellation{width:48%}.scene-stars .orion{left:2%;top:5%}.scene-stars .cassiopeia{left:48%;top:20%}.scene-stars .dipper{left:14%;top:46%}}
+.scene-star{position:absolute;aspect-ratio:1;border-radius:50%;background:#f1e6d2;box-shadow:0 0 5px #f1e6d255;animation:scene-twinkle var(--duration) ease-in-out var(--delay) infinite}
+.scene-orb{position:absolute;width:0;height:0;transition:left 15s linear,top 15s linear;opacity:.3}
+.scene-orb[hidden]{display:none}.scene-orb i,.scene-orb b{display:block;position:absolute;left:0;top:0;border-radius:50%;transform:translate(-50%,-50%)}
+.scene-sun i{width:360px;height:360px;background:radial-gradient(circle,#fff3d644,#f2a86a18 35%,transparent 65%);animation:scene-breathe 9s ease-in-out infinite}
+.scene-sun b{width:70px;height:70px;background:#fff0ce;box-shadow:0 0 55px #f2a86a55}
+.scene-moon{opacity:calc(var(--scene-night)*.32)}.scene-moon i{width:240px;height:240px;background:radial-gradient(circle,#dce1ff30,transparent 65%);animation:scene-breathe 11s ease-in-out infinite}
+.scene-moon b{width:46px;height:46px;background:#eeeaf6;box-shadow:inset -12px -5px #aaa8d277,0 0 30px #e6e6ff40}
+.scene-cloud{position:absolute;left:0;opacity:.2;animation:scene-drift var(--duration) linear var(--delay) infinite}
+.cloud-band{position:absolute;inset:0;background:var(--scene-cloud);border-radius:999px}
+.cloud-band::before{content:'';position:absolute;left:18%;top:-40%;width:46%;height:90%;background:inherit;border-radius:inherit}
+.cloud-puffs{display:none;position:absolute;inset:0}.cloud-puff{position:absolute;border-radius:50%;background:linear-gradient(var(--scene-cloud) 40%,color-mix(in srgb,var(--scene-cloud),var(--sky3) 40%))}
+.scene-gust{position:absolute;left:0;width:600px;color:#f1e6d2;opacity:.1;animation:scene-drift var(--duration) linear var(--delay) infinite}
+.scene-gust svg{display:block;animation:scene-sway 8s ease-in-out infinite}
+.mesa-distant{fill:var(--mesa-distant)}
+.desert-foreground{position:absolute;bottom:0;width:100%;height:18vh;opacity:.22;pointer-events:none}.sand-dune{fill:#d6a381}.desert-cactus{fill:#696877}
+.scene-grain{display:none;opacity:.09;background:radial-gradient(#000 .6px,transparent .8px) 0 0/3px 3px}
+:root[data-landscape=clouds] .sky-bands,:root[data-landscape=earth] .sky-bands{background:linear-gradient(var(--sky1),var(--sky2) 28%,var(--sky3) 49%,var(--sky4) 66%,var(--sky5) 81%,var(--sky6))}
+:root[data-landscape=clouds] .cloud-band{display:none}:root[data-landscape=clouds] .cloud-puffs,:root[data-landscape=earth] .scene-grain{display:block}
+:root[data-landscape=earth] .scene-cloud{filter:blur(9px)}
+:root[data-scene-preview=true] .scene-orb{transition:left .1s linear,top .1s linear}
+.page-nav #scene-mark{grid-row:span 2;color:var(--text);overflow:visible;flex-shrink:0}
+.nav-brand .wordmark{animation:scene-wordmark 1.6s ease-out both}
+.scene-controls{border:0;min-width:0}.scene-controls summary{cursor:pointer;color:var(--text);font-size:12px;padding:8px 0;list-style:revert}
+.scene-controls label{display:block;margin-top:10px;font-size:11px}.scene-controls select{margin:5px 0 0;width:100%}
+.scene-controls .scene-motion-label{display:flex;align-items:center;gap:7px}.scene-motion-label input{width:15px;min-height:15px;margin:0;accent-color:var(--accent)}
+.scene-controls button{font-size:10px;width:100%;margin:10px 0 8px;white-space:normal}
+.scene-note{display:block;color:var(--muted);font:10px/1.6 var(--mono)}
+.trade-sky{margin-top:18px;border:1px solid var(--border);border-radius:14px;background:color-mix(in srgb,var(--panel) 94%,transparent);padding:10px 18px}
+.trade-sky>summary{display:flex;align-items:center;gap:10px;cursor:pointer;font:17px var(--serif);min-height:32px}
+.trade-sky>summary::after{content:'+';margin-left:auto;font:18px var(--mono)}.trade-sky[open]>summary::after{content:'−'}
+.trade-sky>summary small{font:10px var(--mono);color:var(--muted)}
+.scene-quill{width:27px;height:27px;flex-shrink:0;fill:var(--text);overflow:visible}
+.scene-quill polyline{fill:none;stroke:var(--accent);stroke-width:6;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:100;animation:scene-sign 1.6s ease-out both}
+.scene-quill circle{fill:var(--accent);transform-box:fill-box;transform-origin:center;animation:scene-dot 1.9s ease-out both}
+.trade-sky[open] .scene-quill polyline{animation:scene-sign-open 1.6s ease-out both}.trade-sky[open] .scene-quill circle{animation:scene-dot-open 1.9s ease-out both}
+.trade-sky-field{height:160px;position:relative;border-radius:9px;overflow:hidden;background:linear-gradient(#0e0f22,#1e224e);margin:12px 0}
+#trade-sky-lines,#trade-sky-stars{position:absolute;inset:0;width:100%;height:100%}
+#trade-sky-empty{position:absolute;inset:0;display:grid;place-items:center;color:#c3bdd5;font-size:12px;text-align:center;padding:20px;margin:0}#trade-sky-empty[hidden]{display:none}
+.constellation-path{stroke:#f1e6d277;stroke-width:1;stroke-dasharray:1 1;vector-effect:non-scaling-stroke;animation:scene-connect 2s ease-out both}
+.trade-star{position:absolute;transform:translate(-50%,-50%);width:32px;height:32px;min-height:32px;padding:0;border:0;background:transparent!important;display:grid;place-items:center;border-radius:50%;cursor:pointer}
+.trade-star-diamond{width:7px;height:7px;transform:rotate(45deg);background:#f1e6d2;box-shadow:0 0 8px #f1e6d244;animation:scene-twinkle 7s ease-in-out var(--delay) infinite}
+.trade-star[aria-pressed=true] .trade-star-diamond{background:#e6a391;box-shadow:0 0 9px #e6a391aa}.trade-star:focus-visible{outline:2px solid #e6a391;outline-offset:2px}
+#trade-sky-detail{font-size:12px;overflow-wrap:anywhere;margin:10px 0}
+@keyframes scene-weave{from{opacity:0;scale:.2}to{opacity:1;scale:1}}
+@keyframes scene-wordmark{from{opacity:.35}to{opacity:1}}
+@keyframes scene-spin{to{transform:rotate(360deg)}}
+@keyframes scene-sign{from{stroke-dashoffset:100}to{stroke-dashoffset:0}}
+@keyframes scene-sign-open{from{stroke-dashoffset:100}to{stroke-dashoffset:0}}
+@keyframes scene-dot{0%,70%{scale:0}85%{scale:1.5}100%{scale:1}}
+@keyframes scene-dot-open{0%,70%{scale:0}85%{scale:1.5}100%{scale:1}}
+@keyframes scene-connect{from{opacity:0;clip-path:inset(0 100% 0 0)}to{opacity:1;clip-path:inset(0)}}
+@keyframes scene-twinkle{0%,100%{opacity:.35}50%{opacity:.85}}
+@keyframes scene-breathe{0%,100%{opacity:.5;scale:.96}50%{opacity:.9;scale:1.04}}
+@keyframes scene-drift{from{transform:translateX(-620px)}to{transform:translateX(calc(100vw + 620px))}}
+@keyframes scene-sway{0%,100%{transform:translateY(-5px)}50%{transform:translateY(5px)}}
+:root[data-scene-motion=off] .desert-scene *,:root[data-scene-motion=off] #scene-mark *,:root[data-scene-motion=off] .trade-sky *{animation-play-state:paused!important;transition:none!important}
+:root[data-scene-motion=off] .scene-mark-block{animation:none!important;opacity:1;scale:1}
+:root[data-scene-motion=off] .scene-quill *,:root[data-scene-motion=off] .constellation-path{animation:none!important}
+:root[data-scene-motion=off] .nav-brand .wordmark{animation:none!important}
+:root[data-theme=light] .desert-scene{opacity:.4}
+@media(prefers-reduced-motion:reduce){.desert-scene *,.trade-sky *,#scene-mark *{animation:none!important;transition:none!important}.scene-cloud:nth-child(2n){left:40%}.scene-cloud:nth-child(2n+1){left:5%}}
+@media(max-width:1200px){.page-nav #scene-mark{width:36px;height:36px}}
+@media(max-width:800px){.page-nav{background:color-mix(in srgb,var(--panel) 96%,transparent);padding:10px;border-radius:12px}.nav-bottom{display:block}.scene-controls{max-width:320px}.scene-controls[open]{padding-bottom:12px}.nav-bottom .scene-note{display:block}.scene-controls select{display:block;width:100%;margin:5px 0 0}.scene-controls button{width:auto}.scene-cloud:nth-child(n+4),.scene-gust:nth-child(n+3),.scene-star:nth-child(n+25){display:none}.trade-sky{padding:10px 12px}.trade-sky>summary{flex-wrap:wrap;gap:8px}.trade-sky>summary small{font-size:9px}.trade-sky-field{height:180px}}
+@media print{.trade-sky{display:none}}

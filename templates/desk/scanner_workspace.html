@@ -1,0 +1,8 @@
+ <article id="stocks-on-sale" class="panel desk-module studio-wide">
+  <div class="panel-head"><h3 class="module-title">Market scanner</h3><span class="pill">US stocks &amp; ETFs</span></div>
+  {% include "desk/sale_market.html" %}
+  <h4>Quick check · specific symbols</h4>
+  <form id="sale-form" class="compact-form"><label>Symbols · up to 12 per quick check<input name="symbols" placeholder="AAPL MSFT BRK-B" maxlength="160" required /></label><label>Optional sector comparison<input name="sector_proxy" placeholder="e.g. XLK" maxlength="5" /></label><button class="btn primary">Check completed sessions</button></form>
+  <p class="hint-line">Compares split- and dividend-adjusted daily closes with their 60-session median and observed high. A price drop is not a fair-value discount. Intraday entry timing remains unconfirmed.</p>
+  <div id="sale-results" class="source-results studio-result"></div>
+ </article>

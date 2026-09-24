@@ -1,0 +1,17 @@
+<section class="desk-module quiet-details" id="math-evidence-context">
+ <h3 class="module-title" tabindex="-1">Math &amp; evidence checks · Wolfram reference</h3>
+ <p>Example calculations checked with Wolfram on September 24, 2026. These are saved arithmetic checks, not live account verification or a strategy approval.</p>
+ <div class="table-wrap"><table><thead><tr><th>Check</th><th>Verified example</th><th>What it means</th></tr></thead><tbody>
+  <tr><td>Win-rate uncertainty</td><td>14 wins / 20 = 70%; approximate 95% Wilson range 48.1–85.5%.</td><td>Twenty outcomes can still leave substantial uncertainty. Related trades can make the interval too optimistic.</td></tr>
+  <tr><td>Small-sample weighting</td><td>With prior strength 10: 5 outcomes receive 33.3% sample weight; 10 receive 50%; 15 receive 80%; 20 receive 100%.</td><td>This is the selected research policy. Removing the discount does not establish a profitable edge or remove exposure limits.</td></tr>
+  <tr><td>Long break-even</td><td>9 shares at $100, $2 total fees: $100.222222 per share.</td><td>The example assumes zero slippage. The calculator also adjusts for your slippage assumption.</td></tr>
+  <tr><td>Short break-even</td><td>10 shares at $100, $5 total fees and borrow cost: $99.50.</td><td>A lower exit is needed to cover costs. Actual borrow availability and fees require broker data.</td></tr>
+  <tr><td>Theoretical options</td><td>$100 stock / $100 strike, 365 days, 20% volatility, 5% rate, no dividends: call $10.450584; put $5.573526 per share.</td><td>European Black–Scholes assumptions. These are model values, not tradable quotes or an early-exercise model.</td></tr>
+ </tbody></table></div>
+ <section class="desk-module"><h3 class="module-title" tabindex="-1">How to judge a strategy result</h3>
+  <ol><li><strong>Check the inputs:</strong> source, timestamp, market session, corporate-action basis, quote freshness and whether a fill actually occurred.</li><li><strong>Keep the sequence honest:</strong> choose rules using prior outcomes, then test later data. Repeatedly tuning on a test period stops it being an untouched test.</li><li><strong>Measure after costs:</strong> include spread, slippage, fees and borrow costs where applicable. A high win rate can still lose money.</li><li><strong>Read the uncertainty:</strong> review session-day coverage, clustered intervals and regime changes, not only the number of trades. Compare a matched benchmark before claiming outperformance.</li></ol>
+  <p>The desk filters overlapping ticker horizons, but outcomes can still share market shocks. Its displayed win-rate range is an exploratory binomial calculation. Day-cluster evaluation belongs in “Walk-forward evaluation &amp; uncertainty.”</p>
+ </section>
+ <section class="desk-module"><h3 class="module-title" tabindex="-1">Bayesian estimate versus research policy</h3><p>With 14 wins in 20 trials and a Beta(5, 5) prior, the ordinary posterior mean is 63.33%. This app's policy removes the shrinkage discount at 20 samples and uses 70% for its adjusted research score. That policy score should not be read as a calibrated probability of the next trade winning.</p></section>
+ <p><a href="https://reference.wolfram.com/language/ref/BetaDistribution.html" target="_blank" rel="noopener noreferrer">Wolfram: beta distribution ↗</a> · <a href="https://www.itl.nist.gov/div898/handbook/prc/section2/prc241.htm" target="_blank" rel="noopener noreferrer">NIST: Wilson interval ↗</a></p>
+</section>

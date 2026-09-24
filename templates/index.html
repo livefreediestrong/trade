@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>nadzeeɫ · Research & trading desk</title>
+  <link rel="icon" href="/static/nadzeel-mark.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/static/app.css" />
+  <link rel="stylesheet" href="/static/desk_attention.css?v=moonlit-20260924-1" />
+  <link rel="stylesheet" href="/static/moss_avatar.css?v=news-20260924-2" />
+  <link rel="stylesheet" href="/static/market_operations.css" />
+  <link rel="stylesheet" href="/static/nadzeel.css?v=moonlit-20260924-1" />
+  <link rel="stylesheet" href="/static/desk_guidance.css?v=moonlit-20260924-1" />
+  <link rel="stylesheet" href="/static/nadzeel_motion.css?v=moonlit-20260924-1" />
+  <link rel="stylesheet" href="/static/desk_layout.css?v=news-20260924-1" />
+  <script>
+    // Theme before first paint: saved choice, else follow the computer's setting.
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem("desk_theme_v2"); } catch (e) {}
+      if (t !== "light" && t !== "dark") {
+        t = "dark";
+      }
+      document.documentElement.setAttribute("data-theme", t);
+    })();
+  </script>
+</head>
+{% include "desk/header.html" %}
+<nav class="page-nav{% if config.get('COMPANION_AVAILABLE') %} has-companion-habitat{% endif %}" aria-label="On this page">
+  <a class="nav-brand" href="#desk-overview" aria-label="nadzeeɫ overview"><span class="logo-medallion">{% include "desk/brand_mark.html" %}</span><span class="wordmark">nadzeeɫ</span></a>
+  {% if config.get('COMPANION_AVAILABLE') %}{% include "desk/sidebar_companions.html" %}{% endif %}
+  <div class="sidebar-scroll" id="sidebar-scroll">
+  <span class="nav-caption">TRADE</span>
+  <a href="#desk-overview">Overview</a>
+  <a href="#live-automation">Live automation</a>
+  {% if config.get('COMPANION_AVAILABLE') %}<a href="#agent-research">Moss's brief</a>{% endif %}
+  {% if config.get('COMPANION_AVAILABLE') %}<a href="#companion-news">Headlines &amp; her take</a>{% endif %}
+  {% if config.get('OPTIONS_AVAILABLE') %}<a href="#desk-options">Options</a>{% endif %}
+  <a href="#desk-paper">Paper research</a>
+  <span class="nav-caption">RESEARCH</span>
+  <a href="#desk-research">Research records</a>
+  {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}<a href="#research-studio">Research studio</a><a href="#stocks-on-sale">Market scanner · on sale</a>{% endif %}
+  {% if config.get('MARKETS_AVAILABLE') %}<a href="#market-explorer">US markets</a><a href="#operations-desk">Evidence</a>{% endif %}
+  <span class="nav-caption">DESK</span>
+  {% if config.get('COMPANION_AVAILABLE') %}<a href="#moss-desk">Moss &amp; automation</a>{% endif %}
+  <a href="#desk-settings">Settings &amp; journal</a>
+  <div class="nav-bottom">
+    <section class="scene-controls desk-module"><h3 class="module-title">Scene &amp; motion</h3>
+      <label class="scene-motion-label"><input id="desk-scene-rotate" type="checkbox" checked /> Rotate scenery</label>
+      <label for="desk-sky">Desert sky</label><select id="desk-sky"><option value="auto">Follow Eastern time</option><option value="dawn">Dawn</option><option value="day">Day</option><option value="dusk">Dusk</option><option value="night">Night</option></select>
+      <label for="desk-landscape">Landscape treatment</label><select id="desk-landscape"><option value="banded">Banded sky</option><option value="clouds">Sculpted clouds</option><option value="earth">Earth &amp; grain</option></select>
+      <label class="scene-motion-label"><input id="desk-scene-motion" type="checkbox" checked /> Gentle scene motion</label>
+      <button id="desk-sky-preview" type="button" class="btn ghost sm" aria-pressed="false">Preview a day · 12s</button>
+      <span id="scene-motion-note" class="scene-note" role="status">Scenery rotates gently</span>
+    </section>
+    <small id="desk-clock"></small>
+  </div>
+  </div>
+</nav>
+<main id="unified-desk">
+  {% include "desk/attention.html" %}
+  {% include "desk/live_automation.html" %}
+  {% if config.get('COMPANION_AVAILABLE') %}{% include "desk/agent_summary.html" %}{% endif %}
+  {% include "desk/overview.html" %}
+  {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}{% include "desk/scanner_workspace.html" %}{% endif %}
+  {% include "desk/live.html" %}
+  {% if config.get('OPTIONS_AVAILABLE') %}{% include "desk/options.html" %}{% endif %}
+  {% include "desk/paper.html" %}
+  {% if config.get('COMPANION_AVAILABLE') %}
+    {% include "desk/companion.html" %}
+  {% else %}
+    <p class="hint-line">Moss and the new planning tools will appear after the next app restart.</p>
+  {% endif %}
+  <div class="research-shelf" role="region" aria-label="Research records and tools" tabindex="0">
+  {% include "desk/research.html" %}
+  {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}{% include "desk/research_studio.html" %}{% endif %}
+  </div>
+  {% include "desk/settings.html" %}
+</main>
+{% include "desk/dialogs.html" %}
+  <script src="/static/agent_desk.js?v=agent-20260924-2"></script>
+  <script src="/static/equity_scoreboard.js"></script>
+  <script src="/static/workbench.js"></script>
+  {% if config.get('MARKETS_AVAILABLE') %}<script src="/static/market_operations.js"></script>{% endif %}
+  <script src="/static/order_controls.js"></script>
+  <script src="/static/desk_attention.js?v=moonlit-20260924-1"></script>
+  {% if config.get('COMPANION_AVAILABLE') %}<script src="/static/paper_workday_ui.js?v=moonlit-20260924-1"></script>{% endif %}
+  {% if config.get('COMPANION_AVAILABLE') %}<script src="/static/news_quips.js?v=news-20260924-1"></script><script src="/static/moss_avatar.js?v=news-20260924-1"></script><script src="/static/companion.js?v=agent-20260924-1"></script><script src="/static/news_desk.js?v=news-20260924-1"></script>{% endif %}
+  <script src="/static/app.js?v=moonlit-20260924-6"></script>
+  {% if config.get('OPTIONS_AVAILABLE') %}<script src="/static/options.js?v=modules-20260924-1"></script>{% endif %}
+  <script src="/static/desk_guidance.js?v=guided-20260923-3"></script>
+  <script src="/static/context_help.js?v=modules-20260924-1"></script>
+  <script src="/static/nadzeel.js?v=moonlit-20260924-1"></script>
+  <script src="/static/constellations.js?v=moonlit-20260924-1"></script>
+  <script src="/static/nadzeel_motion.js?v=modules-20260924-1"></script>
+  {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}<script src="/static/research_studio.js?v=modules-20260924-1"></script><script src="/static/sale_market.js?v=modules-20260924-1"></script>{% endif %}
+</body>
+</html>

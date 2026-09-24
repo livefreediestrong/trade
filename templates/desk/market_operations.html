@@ -1,0 +1,48 @@
+<section class="panel workbench-wide" id="market-explorer" aria-labelledby="market-explorer-title">
+  <div class="panel-head"><h3 id="market-explorer-title">Explore US markets</h3><button class="btn ghost sm" id="markets-refresh" type="button">Coverage</button></div>
+ {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}{% include "desk/scanner_link.html" %}{% endif %}
+  <form id="market-search" class="compact-tools">
+    <label>Company, market or symbol <input id="market-query" maxlength="80" placeholder="Apple, semiconductors, SPY…" required /></label>
+    <label>Scope <select id="market-scope"><option value="us">US markets · primary</option><option value="global">Global research · optional</option></select></label>
+    <button class="btn" type="submit">Search markets</button>
+    <label>Explore a group <select id="market-group"><option value="">Choose a market</option></select></label>
+  </form>
+  <p id="market-coverage" role="status">Global discovery and historical research. Execution eligibility is checked separately.</p>
+  <div id="market-results" class="market-results"></div>
+  <section class="desk-module"><h3 class="module-title" tabindex="-1">Research watchlist · Moss context</h3>
+    <p class="hint-line">Saved global instruments rotate through Moss’s daily notebook, up to four per session. Prices keep their native units. These instruments do not enter the US stock paper or live order queues.</p>
+    <div id="global-watchlist"></div>
+  </section>
+</section>
+<section class="panel workbench-wide" id="operations-desk" aria-labelledby="operations-title">
+  <div class="panel-head"><h3 id="operations-title">Attention &amp; evidence</h3><button class="btn ghost sm" id="operations-refresh" type="button">Refresh desk review</button></div>
+  <p id="operations-status" role="status">Inspect the data behind a decision, an automation rule or a research result.</p>
+  <div id="attention-inbox"></div>
+  <section class="desk-module"><h3 class="module-title" tabindex="-1">Automation &amp; data dependencies</h3><div id="automation-rules"></div></section>
+  <section class="desk-module"><h3 class="module-title" tabindex="-1">Decision dossier &amp; researcher traces</h3>
+    <form id="evidence-filter" class="compact-tools"><label>Record type <select id="evidence-kind"><option value="">All records</option><option>signal</option><option>decision</option><option>fill</option><option>execution</option><option>option_fill</option><option>trace</option><option>notebook</option><option>market_observation</option></select></label><button type="submit" class="btn ghost sm">Load records</button></form>
+    <div id="evidence-list" class="evidence-list"></div><div id="evidence-inspector" aria-live="polite"></div>
+  </section>
+  <section class="desk-module"><h3 class="module-title" tabindex="-1">Evaluate a research improvement</h3>
+    <p class="hint-line">Freeze qualified local-paper evidence. Compare the recorded policy against three fixed confidence filters and holding cash. All attempts are retained; reused test outcomes are disclosed. This changes no trading policy.</p>
+    <form id="suite-form" class="compact-tools">
+      <label>Hypothesis <input name="hypothesis" maxlength="500" value="Higher recorded confidence may improve net expectancy" required /></label>
+      <label>Extra round-trip friction (bps) <input name="extra_friction_bps" type="number" value="5" min="0" max="100" required /></label>
+      <button class="btn" type="submit">Capture &amp; compare</button><button class="btn ghost" id="suites-load" type="button">Past attempts</button>
+    </form><div id="suite-results"></div>
+    <form id="suite-stage" class="compact-tools" hidden>
+      <label>Review stage <select name="stage"><option value="paper_observation">Paper observation</option><option value="reviewed">Reviewed</option></select></label>
+      <label>Review note <input name="note" minlength="10" maxlength="1000" required /></label><button class="btn ghost" type="submit">Record review</button>
+    </form>
+  </section>
+  <section class="desk-module"><h3 class="module-title" tabindex="-1">Compare a frozen scenario</h3>
+    <form id="scenario-form" class="compact-tools">
+      <label>Saved experiment <select id="scenario-experiment" required><option value="">Load experiments first</option></select></label><button class="btn ghost" type="button" id="scenario-load">Load experiments</button>
+      <label>Capital <input name="capital" type="number" min="1" max="100000000" value="1000" required /></label>
+      <label>Spread (bps) <input name="spread_bps" type="number" min="0" max="1000" value="10" required /></label>
+      <label>Fee per side (bps) <input name="fee_bps" type="number" min="0" max="1000" value="1" required /></label>
+      <label>Delay penalty (bps) <input name="delay_bps" type="number" min="0" max="1000" value="5" required /></label><button class="btn" type="submit">Compare assumptions</button>
+    </form><div id="scenario-result"></div>
+  </section>
+  <section class="desk-module"><h3 class="module-title" tabindex="-1">Release &amp; recovery</h3><div id="release-state"></div><p class="hint-line">The existing launcher remains the entry point. Source archives exclude account configuration, credentials, journals and databases. Recovery requires the app to be stopped and never reverses a trade.</p></section>
+</section>

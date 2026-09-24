@@ -1,0 +1,116 @@
+<div id="howto-modal" class="modal howto-modal hidden" role="dialog" aria-modal="true" aria-labelledby="howto-modal-title">
+    <div class="modal-card howto-card" role="document">
+      <h3 id="howto-modal-title">How to use nadzeeɫ</h3>
+      <p class="howto-intro">nadzeeɫ opens with an account overview. <strong>Live trading</strong> is the section for your actual broker account. <strong>Paper research</strong> is below, using simulated funds.</p>
+      <ol class="howto-steps">
+        <li><strong>Check your live account and execution mode.</strong> The live workspace shows broker balances, positions and desk order history. <strong>Start checking</strong> starts research using the current live mode. In approve-each-order mode, review the account and order, then type the ticker before submitting.</li>
+        <li><strong>Scroll to Paper research for simulations.</strong> Choose its paper risk preset and press <strong>Start paper research</strong>. Turn on <strong>Automatically approve eligible paper research</strong> to simulate eligible ideas without reviewing each one. These controls never enable automatic live trading.</li>
+        <li><strong>Review the correct account.</strong> Live and paper have separate idea lists, latest calls and results on this page. Hold decisions and stale quotes remain blocked. Paper auto approval never enables live automation.</li>
+      </ol>
+      <p class="howto-more muted">Use the idea buttons to open an explicit review. Navigation shortcuts never trade or skip an idea. <strong>Stop</strong> stops new live research; <strong>Stop paper research</strong> stops new simulations. Neither closes existing positions. Orders from this desk have no attached protective exits; manage those at your broker.</p>
+      <label class="howto-seen-opt chk">
+        <input type="checkbox" id="howto-show-once" checked />
+        Show this once when I open the desk
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="btn primary" id="btn-howto-close" title="Close tutorial">Got it</button>
+        <button type="button" class="btn ghost" id="btn-howto-dismiss" title="Close tutorial">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="approve-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="approve-modal-title">
+    <div class="modal-card">
+      <h3 id="approve-modal-title">Confirm paper fill</h3>
+      <div id="approve-preview" class="approve-preview"></div>
+      <fieldset id="broker-order-options" hidden>
+        <legend>Broker order terms</legend>
+        <p class="guide-copy">Review the account, buy/sell direction, share count, price and estimated fees above. Only the final confirmation sends the reviewed order. A received order still needs a broker fill.</p>
+        <label>Order type <select id="broker-order-type"><option value="limit">DAY limit · my price or better</option><option value="market">Market · next available price</option></select></label>
+        <p class="hint-line">A limit can remain unfilled. A market order can fill at several prices and does not cap your total cost. Partial fills stay tracked until the remainder fills, expires or is canceled.</p>
+        <label>Limit price $ <input id="broker-order-limit" type="number" min="0.0001" step="0.0001" /></label>
+        <button type="button" class="btn ghost" id="broker-order-review">Review updated terms</button>
+        <p id="broker-order-terms-status" role="status">Changing terms requires a fresh review.</p>
+      </fieldset>
+      <label class="live-ack hidden" id="live-ack-wrap" for="live-ack-input">
+        Type <strong id="live-ack-ticker">the ticker</strong> to confirm this live order
+        <input type="text" id="live-ack-input" autocomplete="off" autocapitalize="characters" spellcheck="false" />
+      </label>
+      <div class="approve-bracket simple-quiet" id="approve-bracket">
+        <p class="approve-bracket-gloss muted" id="approve-bracket-gloss">Optional paper stop &amp; take-profit — blank uses your risk preset.</p>
+        <div class="approve-bracket-row">
+          <label for="approve-stop" title="Exit if the trade goes against you">Stop <span class="title-ctx">(exit if it goes against you)</span>
+            <input type="text" id="approve-stop" inputmode="decimal" placeholder="e.g. 1% or 178.5" autocomplete="off" />
+          </label>
+          <label for="approve-tp" title="Exit if the trade goes your way">Take profit <span class="title-ctx">(exit if it goes your way)</span>
+            <input type="text" id="approve-tp" inputmode="decimal" placeholder="e.g. 2.5% or 185" autocomplete="off" />
+          </label>
+        </div>
+        <label class="approve-trail" for="approve-trail" title="The stop follows the price up and never moves down. Example: 3 means the stop stays 3% below the highest price since you bought.">Trailing stop % <span class="title-ctx">(optional — locks in gains as the price rises)</span>
+          <input type="text" id="approve-trail" inputmode="decimal" placeholder="e.g. 3" autocomplete="off" />
+        </label>
+        <label class="chk approve-bracket-off">
+          <input type="checkbox" id="approve-no-bracket" />
+          No stop / take-profit on this fill
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn good" id="btn-approve-confirm" title="Place this paper trade">Confirm fill</button>
+        <button type="button" class="btn ghost" id="btn-approve-cancel" title="Close without trading">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <p class="simple-disclaimer simple-only" id="simple-disclaimer">
+    Research desk with local paper and optional broker execution. Check the account and execution mode before approving an order. Research does not promise a profit.
+  </p>
+  <button type="button" class="footer-mock-link simple-only" id="btn-simple-mock" title="Open standalone One Job mock (not live)">Old mock (comparison)</button>
+
+  <div class="sheet-backdrop" id="simple-sheet-backdrop" hidden></div>
+  <aside class="sheet simple-settings-sheet" id="simple-settings-sheet" role="dialog" aria-modal="true" aria-labelledby="simple-settings-title" hidden>
+    <div class="sheet-head">
+      <h2 id="simple-settings-title">Settings</h2>
+      <button type="button" class="btn ghost sm" id="btn-simple-sheet-close">Close</button>
+    </div>
+    <div class="sheet-body" id="simple-settings-body">
+      <section class="simple-wl" aria-labelledby="simple-wl-title">
+        <h3 id="simple-wl-title">Your watchlist <span class="muted" id="simple-wl-count"></span></h3>
+        <p class="muted">The stocks the desk checks, one per line (e.g. AAPL).</p>
+        <textarea id="simple-wl" rows="6" spellcheck="false" autocapitalize="characters" aria-describedby="simple-wl-status"></textarea>
+        <div class="simple-wl-actions">
+          <button type="button" class="btn good sm" id="btn-simple-wl-save">Save watchlist</button>
+          <span class="muted" id="simple-wl-status" role="status"></span>
+        </div>
+      </section>
+      <p class="hint-quiet muted" style="padding:0;margin:0.75rem 0">Costs and alerts:</p>
+      <!-- friction + alerts moved here by JS in Simple mode -->
+    </div>
+  </aside>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <div class="undo-bar" id="undo-bar" role="status" hidden>
+    <span data-undo-text>Skipped.</span>
+    <button type="button" class="btn sm" data-undo-btn>Undo</button>
+  </div>
+
+  <div id="recap-modal" data-workspace-only="paper" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="recap-title">
+    <div class="modal-card recap-card">
+      <h3 id="recap-title">How today went</h3>
+      <div id="recap-body" class="recap-body"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn danger hidden" id="btn-recap-flatten">Close all paper positions</button>
+        <button type="button" class="btn ghost" id="btn-recap-report">Week's report card</button>
+        <button type="button" class="btn good" id="btn-recap-ok">Keep them &amp; close</button>
+      </div>
+    </div>
+  </div>
+<div id="cancel-order-dialog" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="cancel-order-title">
+  <div class="modal-card">
+    <h3 id="cancel-order-title">Review broker cancellation</h3>
+    <p id="cancel-order-message" role="status"></p>
+    <label>Confirm ticker <input id="cancel-order-ack" autocomplete="off" autocapitalize="characters" /></label>
+    <button type="button" class="btn danger" id="cancel-order-submit" disabled>Cancel remaining broker quantity</button>
+    <button type="button" class="btn ghost" id="cancel-order-close">Close review</button>
+  </div>
+</div>

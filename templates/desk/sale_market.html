@@ -1,0 +1,26 @@
+<div class="sale-toolbar">
+ <button type="button" class="btn primary" id="sale-market-start">Scan US market</button>
+ <button type="button" class="btn" id="sale-market-resume" hidden>Resume scan</button>
+ <button type="button" class="btn" id="sale-market-pause" hidden>Pause scan</button>
+ <span id="sale-market-state" class="pill">Loading coverage</span>
+</div>
+<p id="sale-market-message" role="status" aria-live="polite">Loading saved progress…</p>
+<progress id="sale-market-progress" max="100" value="0" aria-label="US directory scan progress"></progress>
+<div class="sale-coverage" id="sale-market-coverage"></div>
+<p id="sale-market-date" class="source-meta"></p>
+<p id="sale-market-warning" class="sale-warning">Results cover only the listings successfully checked so far.</p>
+<form id="sale-market-filters" class="sale-filters">
+ <fieldset class="segmented scanner-lenses"><legend class="sr-only">Research view</legend><label><input type="radio" name="lens" value="pullbacks" checked /><span>Stocks on Sale</span></label><label><input type="radio" name="lens" value="momentum" /><span>Momentum</span></label><label><input type="radio" name="lens" value="active" /><span>Volume activity</span></label><label><input type="radio" name="lens" value="all" /><span>All checked</span></label></fieldset>
+ <fieldset class="segmented"><legend class="sr-only">Listing type</legend><label><input type="radio" name="kind" value="all" checked /><span>All</span></label><label><input type="radio" name="kind" value="stock" /><span>Stocks</span></label><label><input type="radio" name="kind" value="etf" /><span>ETFs</span></label></fieldset>
+ <label>Find a listing<input type="search" name="q" maxlength="80" placeholder="Symbol or company" /></label>
+ <label id="sale-discount-filter">Below typical · at least %<input type="number" name="minimum" min="0" max="100" step="1" value="0" /></label>
+ <label class="chk"><input type="checkbox" name="liquid" value="1" /> $10m+ daily dollar volume</label>
+ <label class="chk"><input type="checkbox" name="issues" value="1" /> Show coverage gaps</label>
+ <button type="submit" class="btn">Apply filters</button>
+</form>
+<div id="sale-market-results" class="studio-table"></div>
+<div class="sale-pagination"><button type="button" class="btn sm" id="sale-market-prev" disabled>Previous</button><span id="sale-market-page"></span><button type="button" class="btn sm" id="sale-market-next" disabled>Next</button></div>
+<section id="sale-market-detail" class="sale-inspection" aria-label="Selected listing"><h4>Listing context</h4><p>Select a symbol for price history, liquidity and timing context.</p></section>
+<p class="hint-line keep-visible">Shared discovery: Moss uses a bounded candidate slot in Broad US mode; radar uses the directory when its fresh-quote fallback is needed. Open a result in Charts &amp; news, Options or the Cost calculator. Each destination checks its own data.</p>
+<p class="hint-line keep-visible sale-scope">US exchange-listed stocks and ETFs, including supported small caps and US-listed ADRs. OTC, preferred shares, warrants, rights, units, debt and non-US listings are outside this scan. New listings may lack the required 60 sessions. <a href="https://www.nasdaqtrader.com/Trader.aspx?id=SymbolDirDefs" target="_blank" rel="noopener noreferrer">Directory definitions ↗</a></p>
+<p class="hint-line">One paced data request at a time. Progress survives closing this tab and an app restart; resume after restarting the app. Provider limits pause the scan. It may take hours. Adjusted historical prices measure a pullback, not company value or an intraday buy signal.</p>

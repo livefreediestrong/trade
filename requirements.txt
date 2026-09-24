@@ -1,0 +1,11 @@
+Flask>=3.0.0
+pydantic>=2.13,<3  # Validated contracts for the isolated paper execution kernel
+waitress>=3.0.0
+yfinance>=0.2.40
+pandas>=2.0.0
+numpy>=1.24.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+tzdata>=2024.1  # Windows has no system tz database (zoneinfo needs it)
+anthropic>=1.8  # Claude brain / head-to-head (optional; needs ANTHROPIC_API_KEY)
+ib-insync>=0.9.86  # Optional Interactive Brokers Gateway adapter

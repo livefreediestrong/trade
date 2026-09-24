@@ -1,0 +1,34 @@
+<section class="desk-module quiet-details" id="moss-workday"><h3 class="module-title" tabindex="-1">Paper workday · open to close</h3>
+ <p id="moss-workday-status" role="status">Opening workday status…</p><p class="hint-line" id="moss-workday-progress"></p>
+ <form id="moss-paper-form"><div class="compact-form">
+  <label class="chk"><input id="moss-paper-enabled" type="checkbox" /> Run automated paper research every market day</label>
+  <label>Trading personality<select id="moss-personality"><option value="stoic">Stoic evidence collector · fixed small size</option><option value="empirical_bayes">Empirical Bayes · adaptive paper size</option></select></label>
+  {% if config.get('OPTIONS_AVAILABLE') %}<label for="moss-universe">Research universe<select id="moss-universe"><option value="focus">My focus list</option><option value="broad_us">Broad US stocks &amp; ETFs + focus list</option></select></label>{% endif %}
+  <label>Liquid focus symbols<input id="moss-paper-symbols" required /></label>
+  <label>Seconds between checks<input id="moss-paper-interval" type="number" min="60" max="1800" step="1" required /></label>
+  <label>US candidates per cycle<input id="moss-paper-batch" type="number" min="2" max="8" step="1" value="6" required /></label>
+  <label>Outcome horizon · minutes<input id="moss-paper-horizon" type="number" min="5" max="60" step="1" required /></label>
+  <label>Base paper amount · $<input id="moss-paper-base" type="number" min="0.01" max="5000" step="0.01" required /></label>
+  <label>Maximum paper amount · $<input id="moss-paper-max" type="number" min="0.01" max="5000" step="0.01" required /></label>
+  <label>Maximum AI research attempts per day<input id="moss-paper-calls" type="number" min="1" max="400" step="1" required /></label>
+  <label>Recorded desk AI budget · $<input id="moss-paper-cost" type="number" min="0.01" max="100" step="0.01" required /></label>
+  <label class="chk"><input id="moss-paper-close" type="checkbox" /> Attempt to close Moss paper holdings before the close</label>
+ </div><section class="desk-module"><h3 class="module-title" tabindex="-1">Paper risk &amp; data limits</h3><div class="compact-form">
+  <label>Maximum paper positions<input id="moss-paper-positions" type="number" min="1" max="10" step="1" required /></label>
+  <label>Total paper exposure · % of equity<input id="moss-paper-exposure" type="number" min="1" max="25" step="0.1" required /></label>
+  <label>Maximum paper fills per day<input id="moss-paper-trades" type="number" min="1" max="200" step="1" required /></label>
+  <label>Paper daily loss limit · %<input id="moss-paper-loss" type="number" min="0.1" max="5" step="0.1" required /></label>
+ </div><p class="hint-line" id="moss-paper-data-limits"></p></section>
+ <button class="btn" type="submit">Save paper workday</button><p id="moss-paper-save" role="status"></p></form>
+ {% if config.get('OPTIONS_AVAILABLE') %}<p id="moss-universe-status" role="status"></p><button type="button" class="btn" id="moss-universe-refresh">Refresh US symbol directory</button>{% endif %}
+ <p class="hint-line">Runs while this app and PC are on. Only simulated money. Research continues when entry or AI limits are reached. Fresh quotes are required for exits; missing prices never create invented fills. Recorded AI costs are estimates and exclude unreported charges. A research attempt may use more than one model call.</p>
+ <section class="desk-module"><h3 class="module-title" tabindex="-1">Evidence rules &amp; adaptive sizing</h3><p>Mock data, future or out-of-session ticks, stale execution, missing provenance and overlapping ticker horizons are excluded. Liquid stocks with higher measured completed-bar volatility receive research priority; rotation preserves coverage.</p><p>The optional empirical-Bayes personality pulls small cohorts toward a peer baseline. The discount tapers from 10 to 19 samples and is removed at 20. Paper size grows only with positive after-cost expectancy, stable win rates and a lower 95% Wilson win-rate bound above 50%. The maximum paper amount, position count, total exposure and daily-loss limits still apply.</p><p class="hint-line">Sample weight controls the blend of observed results and the baseline; it is not a capital allocation. Non-overlapping outcomes may still be correlated. The 20-sample rule is a research policy, not a pure Bayesian posterior or proof of future profit.</p><a href="#math-evidence-context" data-guide-jump="math-evidence-context">Understand the math</a><div id="moss-workday-evaluation"></div></section>
+</section>
+<section class="desk-module quiet-details"><h3 class="module-title" tabindex="-1">What can run automatically?</h3>
+ <ul><li><strong>Stock paper research:</strong> market-session checks, candidate collection, quality filters, ranking and eligible simulated entries while the paper workday is enabled.</li>
+ <li><strong>Research universe:</strong> daily US symbol-directory refresh; failed refreshes retain the last list and retry after an hour. Two to eight candidates per cycle keep requests bounded. Candidate coverage is not whole-market real-time monitoring.</li>
+ <li><strong>Paper evaluation:</strong> horizon exits, optional pre-close exit attempts, outcome grading and end-of-day reports. Missing prices leave positions unresolved.</li>
+ <li><strong>Actual trade journal:</strong> read-only broker execution and fee sync about once per minute while the app runs. Coverage depends on the Gateway history window.</li>
+ <li><strong>Options:</strong> contract lookup, fresh price checks and fee/payoff calculations run on request. Paper entry and closing each require a review and click; automatic options trading is not implemented.</li></ul>
+ <p>The PC, app and required data connections must stay available. These research features do not arm real-money trading.</p>
+</section>
