@@ -7,8 +7,10 @@
 Hard rules (owner decision): upkeep never blocks or changes live trading.
 It never edits config, orders, positions, sessions or broker settings, never
 stops or restarts a running desk, and never logs Gateway out. The watchdog
-only (re)runs the normal launcher when the desk is unreachable or the broker
-socket is down, which reuses a healthy desk and never submits orders.
+only (re)runs the normal launcher (without opening Gateway) when the desk is
+unreachable. When the broker socket is down it asks the running desk, as an
+automatic caller, whether Gateway should be reopened; the desk never reopens a
+Gateway window the owner closed. It never submits orders.
 """
 from __future__ import annotations
 
@@ -97,9 +99,13 @@ def health(timeout: float = 10.0) -> dict | None:
 
 
 def run_launcher(reason: str) -> dict:
-    """Normal launcher, headless. Reuses a healthy desk; never places orders."""
+    """Normal launcher, headless, desk only. Reuses a healthy desk; never places orders.
+
+    -NoBroker: Gateway launches are decided by the desk's automatic-launch
+    policy (ensure_gateway), never by an unattended launcher run.
+    """
     cmd = ["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
-           "-File", str(LAUNCHER), "-NoBrowser", "-NoDialogs"]
+           "-File", str(LAUNCHER), "-NoBrowser", "-NoDialogs", "-NoBroker"]
     log(f"watchdog: running launcher ({reason})")
     try:
         done = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=240,
@@ -107,6 +113,21 @@ def run_launcher(reason: str) -> dict:
         return {"exit": done.returncode, "tail": (done.stdout + done.stderr)[-400:]}
     except Exception as exc:  # launcher problems are reported, never fatal
         return {"exit": None, "error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
+def ensure_gateway_via_desk(timeout: float = 30.0) -> dict:
+    """Ask the running desk to apply its automatic Gateway policy."""
+    body = json.dumps({"launch_if_down": True, "automatic": True}).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{PORT}/api/broker-ensure-gateway", data=body,
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.load(resp)
+    except Exception as exc:  # reported, never fatal
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+    if not isinstance(data, dict):
+        return {"ok": False, "error": "unexpected response"}
+    return {k: data.get(k) for k in ("ok", "launched", "port_open", "automatic_launch_held", "note")}
 
 
 def watchdog() -> dict:
@@ -130,13 +151,10 @@ def watchdog() -> dict:
         result["desk"] = "ok"
         result["broker"] = {k: broker.get(k) for k in ("status", "connected", "connected_label")}
         if broker.get("configured") and not broker.get("connected"):
-            # Launcher reuses the running desk and only opens Gateway if its
-            # API port is down; Gateway sign-in / 2FA stays with the owner.
-            if cooldown_ok:
-                result["action"], result["launcher"] = "ensure_gateway", run_launcher("broker disconnected")
-                state["last_launch_ts"] = time.time()
-            else:
-                result["action"] = "cooldown"
+            # The desk decides: it relaunches only a Gateway that signed in and
+            # then went away, never one the owner closed. Sign-in / 2FA stays
+            # with the owner.
+            result["action"], result["gateway"] = "ensure_gateway", ensure_gateway_via_desk()
     state["last"] = result
     _save("watchdog.json", state)
     if result["action"] != "none":

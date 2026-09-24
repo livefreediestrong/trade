@@ -312,9 +312,20 @@ The [Moss paper workday](docs/MOSS_WORKDAY.md) runs local paper research through
 that runs the live desk.
 
 - **Tomahawk-Desk-Watchdog** (every 5 min): if `/api/health` is unreachable twice 20s apart, runs the
-  normal launcher headless (`-NoBrowser -NoDialogs`). If the desk is up but the broker socket is down,
-  runs the launcher so Gateway is opened when its API port is closed. 10-minute cooldown. Never stops or
-  restarts a healthy desk.
+  normal launcher headless for the desk only (`-NoBrowser -NoDialogs -NoBroker`, 10-minute cooldown).
+  If the desk is up but the broker socket is down, it asks the desk (`POST /api/broker-ensure-gateway`
+  with `automatic: true`) instead of opening Gateway itself. Never stops or restarts a healthy desk.
+
+### When the desk reopens IB Gateway
+
+Unattended callers (the watchdog, the Moss agent's tick, the daily `Ensure-IBGateway.ps1` task) reopen
+Gateway only when it had signed in and served the API since its last launch and has then been gone for
+90 seconds (so Gateway's own auto-restart is not raced). A login window you close, or one that exits
+without signing in, stays closed: the desk shows "closed before it signed in" and waits for you to use
+**Ensure Gateway** (Live trading section) or the desktop shortcut. Nothing ever starts a second Gateway while one is running
+(`ibgateway.exe`, `tws.exe`, or a Gateway/TWS `java.exe`/`javaw.exe` such as IBC), and launches share a
+180-second cooldown. Launch and sign-in times are kept in `data/gateway_launch.json` (`at`, `source`,
+`api_seen_at`).
 - **Tomahawk-Desk-Upkeep** (daily 16:40): moves root `_*` backups/scratch and `data/_*` probe dumps into
   `_archive/`, deletes `_archive` items untouched for `UPKEEP_BACKUP_DAYS` (default 30), rolls
   `data/*.log` over `UPKEEP_LOG_MAX_MB` (default 25) when not in use, clears `__pycache__`, runs SQLite

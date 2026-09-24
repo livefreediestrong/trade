@@ -6484,8 +6484,10 @@ def api_broker_ensure_gateway():
         return jsonify(ok=False, error="IBKR adapter missing ensure_gateway"), 500
     body = request.get_json(silent=True) or {}
     launch = True if not isinstance(body, dict) else bool(body.get("launch_if_down", True))
+    # The desk button is an owner action; the upkeep watchdog sends automatic=true.
+    automatic = isinstance(body, dict) and body.get("automatic") is True
     try:
-        result = ensure(launch_if_down=launch)
+        result = ensure(launch_if_down=launch, automatic=automatic)
     except Exception as exc:
         return jsonify(ok=False, error=str(exc)[:200], gateway_restarted=False), 500
     return jsonify(result if isinstance(result, dict) else {"ok": False, "error": "unexpected ensure result"})

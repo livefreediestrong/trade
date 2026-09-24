@@ -374,11 +374,12 @@ class LiveAgent:
                 book = None
             ready = bool(book and book.get("risk_ready") is True and book.get("account", {}).get("day_pnl") is not None)
             if minutes > 0 and not ready:
-                # If Gateway API port is down, try relaunch (login/2FA may still be needed).
+                # If Gateway went away after signing in, relaunch it once (login/2FA
+                # may still be needed). Never reopens a window the owner closed.
                 ensure = getattr(broker_router, "ensure_gateway", None)
                 if callable(ensure):
                     try:
-                        ensure(launch_if_down=True)
+                        ensure(launch_if_down=True, automatic=True)
                     except Exception:
                         pass
                 refresher = getattr(broker_router, "maybe_scheduled_soft_refresh", None)

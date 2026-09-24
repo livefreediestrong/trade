@@ -405,6 +405,7 @@ def _gateway_env(monkeypatch, tmp_path, launched):
     monkeypatch.setattr(broker, "_port_open", lambda host, port, timeout=0.6: False)
     monkeypatch.setattr(broker, "_gateway_exe_candidates", lambda: [str(exe)])
     monkeypatch.setattr(broker, "_launch_gateway", lambda exe, host, port, result: launched.append(exe) or dict(result, launched=True))
+    monkeypatch.setattr(broker, "_GATEWAY_ABSENT_SINCE", [None])
     return exe
 
 
@@ -424,3 +425,102 @@ def test_ensure_gateway_cooldown_blocks_back_to_back_launches(monkeypatch, tmp_p
     second = broker.ensure_gateway(launch_if_down=True)
     assert len(launched) == 1 and first["launched"] and not second["launched"]
     assert "waiting for sign-in" in second["note"]
+
+
+def _write_stamp(tmp_path, **values):
+    import json
+    (tmp_path / "gateway_launch.json").write_text(json.dumps(values), encoding="utf-8")
+
+
+def _clock(monkeypatch, start=1_000_000.0):
+    now = [start]
+    monkeypatch.setattr(broker.time, "time", lambda: now[0])
+    return now
+
+
+def test_automatic_launch_never_reopens_a_gateway_closed_before_sign_in(monkeypatch, tmp_path):
+    launched = []
+    _gateway_env(monkeypatch, tmp_path, launched)
+    monkeypatch.setattr(broker, "_running_gateway_processes", lambda: [])
+    now = _clock(monkeypatch)
+    # Launched an hour ago; the API was never seen afterwards (window closed / no sign-in).
+    _write_stamp(tmp_path, at=now[0] - 3600, api_seen_at=now[0] - 7200, source="launcher")
+    for _ in range(3):
+        now[0] += 600
+        result = broker.ensure_gateway(launch_if_down=True, automatic=True)
+        assert not result["launched"] and result.get("automatic_launch_held")
+        assert "closed before it signed in" in result["note"]
+    assert not launched
+    # The owner's button still opens it.
+    assert broker.ensure_gateway(launch_if_down=True)["launched"] and len(launched) == 1
+
+
+def test_automatic_launch_waits_out_gateway_self_restart_then_launches_once(monkeypatch, tmp_path):
+    launched = []
+    _gateway_env(monkeypatch, tmp_path, launched)
+    monkeypatch.setattr(broker, "_running_gateway_processes", lambda: [])
+    now = _clock(monkeypatch)
+    # Signed in after its last launch, then went away.
+    _write_stamp(tmp_path, at=now[0] - 7200, api_seen_at=now[0] - 3600)
+    first = broker.ensure_gateway(launch_if_down=True, automatic=True)
+    assert not first["launched"] and "confirming" in first["note"]
+    now[0] += broker.GATEWAY_ABSENT_DEBOUNCE_SEC - 1
+    assert not broker.ensure_gateway(launch_if_down=True, automatic=True)["launched"]
+    now[0] += 2
+    assert broker.ensure_gateway(launch_if_down=True, automatic=True)["launched"]
+    # That window was then closed without signing in: no further automatic launches.
+    for _ in range(3):
+        now[0] += 1800
+        assert not broker.ensure_gateway(launch_if_down=True, automatic=True)["launched"]
+    assert len(launched) == 1
+
+
+def test_gateway_reappearing_resets_the_absence_debounce(monkeypatch, tmp_path):
+    launched = []
+    _gateway_env(monkeypatch, tmp_path, launched)
+    running = [[]]
+    monkeypatch.setattr(broker, "_running_gateway_processes", lambda: running[0])
+    now = _clock(monkeypatch)
+    _write_stamp(tmp_path, at=now[0] - 7200, api_seen_at=now[0] - 3600)
+    broker.ensure_gateway(launch_if_down=True, automatic=True)  # absence observed
+    running[0] = ["ibgateway.exe"]  # Gateway restarted itself
+    now[0] += 60
+    broker.ensure_gateway(launch_if_down=True, automatic=True)
+    running[0] = []
+    now[0] += 60
+    assert not broker.ensure_gateway(launch_if_down=True, automatic=True)["launched"]
+    assert not launched
+
+
+def test_port_open_records_sign_in_and_rearms_automatic_relaunch(monkeypatch, tmp_path):
+    import json
+    launched = []
+    _gateway_env(monkeypatch, tmp_path, launched)
+    monkeypatch.setattr(broker, "_running_gateway_processes", lambda: [])
+    now = _clock(monkeypatch)
+    _write_stamp(tmp_path, at=now[0] - 100, source="launcher")
+    monkeypatch.setattr(broker, "_port_open", lambda host, port, timeout=0.6: True)
+    assert broker.ensure_gateway(launch_if_down=True, automatic=True)["ok"]
+    stamp = json.loads((tmp_path / "gateway_launch.json").read_text(encoding="utf-8"))
+    assert stamp["api_seen_at"] == now[0] and stamp["source"] == "launcher"
+    monkeypatch.setattr(broker, "_port_open", lambda host, port, timeout=0.6: False)
+    broker.ensure_gateway(launch_if_down=True, automatic=True)
+    now[0] += broker.GATEWAY_ABSENT_DEBOUNCE_SEC + 1
+    assert broker.ensure_gateway(launch_if_down=True, automatic=True)["launched"]
+
+
+def test_java_hosted_gateway_counts_as_running():
+    listing = "\n".join([
+        r"javaw.exe|C:\Jts\ibgateway\1030\jre\bin\javaw.exe -cp jts4launch.jar ibgateway.GWClient",
+        r"java.exe|C:\IBC\java.exe -cp C:\IBC\IBC.jar ibcalpha.ibc.IbcGateway",
+        r"java.exe|C:\Program Files\Java\bin\java.exe -jar some-other-app.jar",
+    ])
+    assert broker._java_gateway_matches(listing) == ["javaw.exe", "java.exe"]
+    assert broker._java_gateway_matches("") == []
+
+
+def test_live_agent_gateway_check_is_automatic():
+    from pathlib import Path
+    src = Path(broker.__file__).with_name("live_agent.py").read_text(encoding="utf-8-sig")
+    assert "ensure(launch_if_down=True, automatic=True)" in src
+    assert "ensure(launch_if_down=True)\n" not in src

@@ -102,6 +102,14 @@ function Set-GatewayLaunchStamp([string]$Exe) {
             ConvertTo-Json -Compress | Set-Content -LiteralPath $path -Encoding ASCII
     } catch {}
 }
+function Get-RunningGateway {
+    # Gateway/TWS by image name (any version or path), plus Gateway/TWS JVMs started
+    # by IBC or a re-executing launcher (java.exe / javaw.exe with a Jts/IBC command line).
+    @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -in @('ibgateway.exe', 'tws.exe') -or
+        ($_.Name -in @('java.exe', 'javaw.exe') -and "$($_.CommandLine)" -match '(?i)ibgateway|ibcalpha|\\jts\\|/jts/|jclient|twslaunch')
+    })
+}
 function Start-ConfiguredBroker {
     if ($NoBroker -or (Get-LaunchSetting 'BROKER_PROVIDER' 'alpaca') -ne 'ibkr') {
         return @{ state = 'not_needed'; message = 'Desk ready.' }
@@ -120,8 +128,7 @@ function Start-ConfiguredBroker {
     }
     # Any running Gateway/TWS (any version or path) counts: its API port stays closed
     # until sign-in, so a closed port must never stack another login window.
-    $existing = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -in @('ibgateway.exe', 'tws.exe') })
+    $existing = @(Get-RunningGateway)
     if ($existing.Count -eq 0 -and -not (Test-RecentGatewayLaunch)) {
         # Interactive sign-in window: the user completes login and 2FA.
         Set-GatewayLaunchStamp $gateway
