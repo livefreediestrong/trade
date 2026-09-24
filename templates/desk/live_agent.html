@@ -13,7 +13,13 @@
   <label>Research attempts per day<input id="la-max_research_per_day" type="number" min="1" max="10000" step="1" required /></label>
   <label title="Pauses when recorded total desk AI cost reaches this amount. Cost is estimated and may exclude unreported charges; one research attempt may use several model calls.">Recorded desk AI budget · $<input id="la-model_budget_usd" type="number" min="0.01" max="100000" step="0.01" required /></label>
   <label title="A model confidence score is not a calibrated probability of profit.">Minimum decision confidence · 0–1<input id="la-min_confidence" type="number" min="0" max="1" step="0.01" required /></label>
- 
+  <fieldset id="la-exits"><legend>Protective exits (stocks the agent bought)</legend>
+   <label class="chk"><input type="checkbox" id="la-protective_exits" checked /> Sell at the planned stop or target</label>
+   <label title="Once the price is up this many times the planned risk, the stop moves to the entry price so the trade cannot turn into a loss beyond costs. 0 turns this off.">Move stop to entry after · R<input id="la-breakeven_after_r" type="number" min="0" max="10" step="0.1" required /></label>
+   <label title="Sell a position held this long. 0 means no time limit.">Maximum hold · minutes<input id="la-max_hold_min" type="number" min="0" max="1440" step="1" required /></label>
+   <label title="Sell agent positions this many minutes before the regular close. 0 lets them stay open overnight.">Sell before the close · minutes<input id="la-flatten_before_close_min" type="number" min="0" max="120" step="1" required /></label>
+   <p class="hint-line keep-visible">Exits use fresh real-time quotes only and are limit orders below the bid, so a fast market can still skip past them. Positions you open yourself are not touched.</p>
+  </fieldset>
   <fieldset id="la-auto-options"><legend>Moss LIVE options (auto)</legend>
    <p class="hint-line keep-visible" id="la-auto-options-label">Moss LIVE options | calls/puts | shorts gated | BAG verticals</p>
    <label class="chk"><input type="checkbox" id="la-ao-enabled" /> Enable auto options conversion on PASS stock setups</label>
@@ -31,6 +37,6 @@
  <div class="compact-form"><label>Type REAL or PAPER for the displayed account<input id="live-agent-confirm" autocomplete="off" spellcheck="false" /></label>
  <button class="btn" id="live-agent-start" type="button" disabled>Start broker agent</button><button class="btn" id="live-agent-pause" type="button">Pause agent</button></div>
  <p id="live-agent-result" role="status"></p>
- <p class="hint-line keep-visible">Regular US sessions only. Existing desk risk limits also apply. Pause stops future decisions; a submission already committed may finish. Working orders and positions remain at the broker. Sells are research-driven; this version has no automatic stop/target exits, close-time flattening or protective brackets. Whole shares for stock; options use contracts × premium × 100. Naked shorts and assignment remain residual risks.</p>
- <p id="live-agent-today"></p><ol id="live-agent-history" aria-label="Recent live agent decisions"></ol>
+ <p class="hint-line keep-visible">Regular US sessions only. Existing desk risk limits also apply. Pause stops future decisions; a submission already committed may finish. Working orders and positions remain at the broker. Protective exits (above) watch the stocks this agent bought on each cycle; they are not resting broker orders, so they only act while the desk is running. Whole shares for stock; options use contracts × premium × 100. Naked shorts and assignment remain residual risks.</p>
+ <p id="live-agent-today"></p><p id="live-agent-managed" class="hint-line keep-visible"></p><ol id="live-agent-history" aria-label="Recent live agent decisions"></ol>
 </section>

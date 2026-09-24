@@ -18,7 +18,17 @@ An explicitly enabled policy persists across app restarts and waits for the next
 - Buy/sell/hold is a research decision. The agent requires PASS, configured minimum confidence, fresh attributable in-session quotes, and no late/chasing entry or existing research/model block. Mock, synthetic, future-dated and stale data cannot authorize orders. Confidence is not a calibrated probability of profit.
 - Only listed US stocks/ETFs, whole shares, and the IBKR adapter are supported. Buy can open/add a long; sell can reduce held shares; buy against an existing short can cover it. The selected symbols may include holdings acquired elsewhere. It never intentionally opens a new short position.
 - Server policy computes quantity and price terms. DAY limits use the decision price plus the configured offset for buys or minus it for sells, rounded conservatively. Sizing uses the larger of the fresh mark and limit. Existing ATR, preset, position, loss and working-order limits can reduce quantity or block the order. Market orders may fill beyond the estimated amount; fees are not a guaranteed upper bound.
-- Research-directed sells are the only automatic exit decisions in this version. There is no automatic stop/target exit, close-time flattening, broker bracket, fractional execution or live options execution. A low budget may be unable to buy one whole share. An unfilled DAY limit remains monitored and can block subsequent submissions until resolved.
+- **Protective exits** (on by default; policy fields `protective_exits`, `breakeven_after_r`, `max_hold_min`, `flatten_before_close_min`). When an agent stock buy fills, the agent records the position with the research plan's stop and target distances, re-anchored to the actual fill price (0.8% of price and twice that when the plan has none). Each cycle, before new research, it reads broker holdings and a fresh, non-delayed IBKR quote. It sells only the shares it bought and still holds, when:
+  - the bid reaches the stop (`stop_loss`);
+  - the bid reaches the target (`take_profit`);
+  - the price has moved `breakeven_after_r` times the planned risk in favor, so the stop moves to the entry price, and the bid then falls back to entry (`breakeven_stop`);
+  - `max_hold_min` has passed;
+  - fewer than `flatten_before_close_min` minutes remain before the regular close (`end_of_day`).
+
+  Exit limits sit 25 bps below the bid, or 50 bps for stop and end-of-day exits (at least the policy offset). They go through the same gated order path as entries, as reducing orders. Exits are allowed for symbols outside the evaluated universe and count as broker attempts, but the daily attempt cap does not block them. One exit is sent per cycle, and no exit is sent while any broker order is unresolved or when the verified account differs from the policy's account.
+
+  Exits are checks the desk makes on each cycle. They are not resting broker orders or brackets, so they act only while the desk and Gateway run, and a gap can fill below the stop. Positions opened outside the agent are never managed. Policies saved before this version get the defaults.
+- There is no broker bracket, fractional execution or live options exit management. A low budget may be unable to buy one whole share. An unfilled DAY limit remains monitored and can block subsequent submissions until resolved.
 - Every broker attempt, including sells/covers, rejected attempts and uncertain outcomes, consumes the agent's daily attempt budget before submission. This conservative count is separate from the desk's existing broker-fill count. Raising a limit changes the cap, not the count. Client-ID changes do not reset account counters.
 - Daily loss is measured on the broker account. Missing P&L blocks new risk; the existing narrowly verified reducing-order exception remains. The attempt cap can still block a reducing order, so it is not an exit guarantee. Reaching a stop blocks new risk; it does not flatten positions or cancel working orders.
 - Identity, mode, active session, policy revision and per-activation run ID are checked again before durable submission. Changing settings during research discards the result. Pausing/restarting cannot authorize an old activation's decision. The adapter verifies the qualified US instrument and cached position/working quantities immediately before submission. External broker activity can still race.
@@ -30,7 +40,7 @@ The AI cost limit checks recorded whole-desk estimated cost before an agent rese
 
 `config.json.live_agent` contains `{policy, revision, enabled, run_id}`. No new `.env` flag is needed; the existing verified IBKR settings still apply. The server alone creates policy revisions and activation IDs.
 
-`data/live_agent.json` retains per-account/day research and broker-attempt counters, consumed signal IDs, next-cycle time, rotation cursor and the latest 200 activity entries. Corrupt state blocks execution and is not silently replaced. Source recovery archives exclude both files and never rewind order state.
+`data/live_agent.json` retains per-account/day research and broker-attempt counters, consumed signal IDs, next-cycle time, rotation cursor, the latest 200 activity entries and `managed` agent positions (shares, entry, stop, target, planned risk per share, breakeven flag, optional hold deadline). Corrupt state blocks execution and is not silently replaced. Source recovery archives exclude both files and never rewind order state.
 
 - `GET /api/live-agent`: local read-only status, saved policy and latest 30 activity records.
 - `POST /api/live-agent/policy`: exact `{policy, revision}`; leaves the agent paused.
@@ -41,7 +51,7 @@ The existing background worker reconciles broker orders before running the agent
 
 ## Validation boundary
 
-Tests exercise the actual agent, risk gateway, durable reservations and order lifecycle using isolated files and intercepted broker transport; network connections are denied in the fixture. Scenarios include exact activation/account/revision, Market and DAY limit terms, sizing/holdings, pauses during slow work, restart cadence/counters, failed and empty cycles, uncertain submissions, partial fills, daily budgets, missing P&L, corrupt state and final IBKR position checks. Browser-controller tests exercise account confirmation, duplicate clicks, stale status, unsaved edits and uncertain activation responses.
+Tests exercise the actual agent, risk gateway, durable reservations and order lifecycle using isolated files and intercepted broker transport; network connections are denied in the fixture. Scenarios include exact activation/account/revision, protective exits (stop, breakeven, target, hold limit, close, stale quotes, changed account, positions sold elsewhere), Market and DAY limit terms, sizing/holdings, pauses during slow work, restart cadence/counters, failed and empty cycles, uncertain submissions, partial fills, daily budgets, missing P&L, corrupt state and final IBKR position checks. Browser-controller tests exercise account confirmation, duplicate clicks, stale status, unsaved edits and uncertain activation responses.
 
 These checks are software evidence, not completed broker-paper qualification, live execution proof or strategy profitability. The implementation pass does not activate the installed agent or send/cancel real orders.
 

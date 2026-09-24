@@ -173,7 +173,8 @@
 #live-agent fieldset{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:12px 24px;min-width:0;border:1px solid var(--border);border-radius:8px;padding:10px 12px}
 #live-agent fieldset .chk{display:inline-flex;align-items:flex-start;gap:8px;white-space:normal;max-width:100%;min-width:0}
 #live-agent fieldset .chk>input{flex:0 0 auto;margin-top:2px}
-#live-agent .compact-form input[type=radio]{display:inline-block;width:16px;height:16px;min-height:16px;margin:0;flex:0 0 16px}
+#live-agent .compact-form input[type=radio],#live-agent .compact-form input[type=checkbox]{display:inline-block;width:16px;height:16px;min-height:16px;margin:0;flex:0 0 16px}
+#la-exits>.chk{flex-basis:100%}
 #live-agent-history{max-height:180px;overflow:auto;font-size:12px;padding-left:22px}
 #live-agent .live-agent-budget{border:1px solid var(--border);border-radius:8px;padding:12px;margin:12px 0;font-size:12px;overflow-wrap:anywhere}
 #live-agent-budget-list{padding-left:18px;margin:8px 0;max-height:220px;overflow:auto}

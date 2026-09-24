@@ -31,7 +31,14 @@ DEFAULTS = {
     "max_order_usd": 1e9, "max_daily_loss_usd": 1e9, "max_orders_per_day": 100000,
     "max_research_per_day": 100, "model_budget_usd": 5.,
     "limit_offset_bps": 5., "min_confidence": .6, "max_quote_age_sec": 30,
+    # Protective exits for positions this agent opened (stocks): the planned stop and
+    # target, a breakeven stop after the price moves this many R in favor (0 = off),
+    # an optional maximum hold, and a flatten before the close (0 = off).
+    "protective_exits": True, "breakeven_after_r": 1.0, "max_hold_min": 0,
+    "flatten_before_close_min": 10,
 }
+# Fields added after policies were first saved; older saved policies get these defaults.
+_ADDED_FIELDS = ("protective_exits", "breakeven_after_r", "max_hold_min", "flatten_before_close_min")
 
 # Bad/delisted/unquotable symbols: skip for a while instead of blocking forever.
 _QUOTE_SKIP: dict[str, dict] = {}
@@ -105,6 +112,8 @@ def now_utc():
 
 
 def validate(body):
+    if isinstance(body, dict):
+        body = {**{k: DEFAULTS[k] for k in _ADDED_FIELDS if k not in body}, **body}
     if not isinstance(body, dict) or set(body) != set(DEFAULTS):
         raise ValueError("Save all displayed live-agent policy fields; unknown fields are not accepted")
     policy = copy.deepcopy(body)
@@ -121,8 +130,12 @@ def validate(body):
     ranges = {"interval_sec": (30, 3600), "max_order_usd": (.01, 1e9),
               "max_daily_loss_usd": (.01, 1e9), "max_orders_per_day": (1, 100000),
               "max_research_per_day": (1, 10000), "model_budget_usd": (.01, 100000),
-              "limit_offset_bps": (0, 100), "min_confidence": (0, 1), "max_quote_age_sec": (1, 60)}
-    integers = {"interval_sec", "max_orders_per_day", "max_research_per_day", "max_quote_age_sec"}
+              "limit_offset_bps": (0, 100), "min_confidence": (0, 1), "max_quote_age_sec": (1, 60),
+              "breakeven_after_r": (0, 10), "max_hold_min": (0, 1440), "flatten_before_close_min": (0, 120)}
+    integers = {"interval_sec", "max_orders_per_day", "max_research_per_day", "max_quote_age_sec",
+                "max_hold_min", "flatten_before_close_min"}
+    if not isinstance(policy["protective_exits"], bool):
+        raise ValueError("protective_exits must be true or false")
     for key, bounds in ranges.items():
         value = number(policy[key], key, *bounds)
         if key in integers and value != int(value):
@@ -150,7 +163,7 @@ def authorization_error(signal, cfg):
     except (ValueError, KeyError, TypeError):
         return "Live agent policy is invalid"
     allowed = order_universe(cfg, policy)
-    if signal.get("ticker") not in allowed:
+    if signal.get("ticker") not in allowed and not signal.get("agent_exit"):
         return "Symbol is outside the live agent's evaluated equity universe"
     return None
 
@@ -204,6 +217,8 @@ def execution_terms(signal, cfg, price, execution_quote):
         error = quote_error(quote, policy["max_quote_age_sec"])
         if error:
             raise ValueError(error)
+    if signal.get("agent_exit"):
+        return _exit_terms(signal, policy, price)
     confidence = number(signal.get("confidence"), "Decision confidence", 0, 1)
     if confidence < Decimal(str(policy["min_confidence"])) or signal.get("verdict") != "PASS":
         raise ValueError("Live agent needs a PASS setup meeting its minimum confidence")
@@ -226,6 +241,61 @@ def execution_terms(signal, cfg, price, execution_quote):
     if shares < 1:
         raise ValueError("Agent order budget or proposed size is below one whole share")
     return canonical_order(dict(signal, suggested_shares=shares), options)
+
+
+def _exit_terms(signal, policy, price):
+    """Sell terms for a protective exit of an agent-opened position.
+
+    Reducing only (the desk caps shares to what is held). Limit exits sit far
+    enough below the market to fill in a moving market: 25 bps minimum, 50 bps
+    for stop-loss and end-of-day exits.
+    """
+    if signal.get("side") != "sell":
+        raise ValueError("Protective exits only sell agent-opened long positions")
+    number(price, "Execution price", .000001, 1e9)
+    shares = number(signal.get("suggested_shares"), "Exit shares", 1, 1e9)
+    options = {"type": policy["order_type"]}
+    if options["type"] == "limit":
+        urgent = signal.get("agent_exit") in ("stop_loss", "breakeven_stop", "end_of_day")
+        offset_bps = max(Decimal(str(policy["limit_offset_bps"])), Decimal(50 if urgent else 25))
+        limit = Decimal(str(signal["quote"]["price"])) * (1 - offset_bps / 10000)
+        quantum = Decimal(".01") if limit >= 1 else Decimal(".0001")
+        options["limit_price"] = float(limit.quantize(quantum, rounding=ROUND_UP))
+    return canonical_order(dict(signal, suggested_shares=int(shares)), options)
+
+
+def _minutes_to_close(now):
+    et = now.astimezone(paper_loop.NY_TZ) if paper_loop.NY_TZ else now
+    close = paper_loop.session_close_time(et.date())
+    if close is None:
+        return None
+    return (datetime.combine(et.date(), close, tzinfo=et.tzinfo) - et).total_seconds() / 60
+
+
+def exit_decision(row, bid, now, policy, minutes_to_close):
+    """(reason or None, updates) for one managed position at the current bid.
+
+    Reasons: stop_loss / breakeven_stop (bid at or below the stop), take_profit
+    (bid at or above the target), max_hold, end_of_day.
+    """
+    updates = {}
+    entry, stop = float(row["entry"]), float(row["stop"])
+    risk = float(row.get("risk_per_share") or entry - stop)
+    trigger_r = float(policy.get("breakeven_after_r") or 0)
+    if trigger_r > 0 and not row.get("breakeven") and risk > 0 and bid >= entry + trigger_r * risk:
+        stop = max(stop, entry)
+        updates.update(stop=round(stop, 4), breakeven=True)
+    if bid <= stop:
+        return ("breakeven_stop" if (row.get("breakeven") or updates.get("breakeven")) else "stop_loss"), updates
+    if bid >= float(row["target"]):
+        return "take_profit", updates
+    exit_at = row.get("exit_at")
+    if exit_at and now >= datetime.fromisoformat(exit_at):
+        return "max_hold", updates
+    before = int(policy.get("flatten_before_close_min") or 0)
+    if before > 0 and minutes_to_close is not None and minutes_to_close <= before:
+        return "end_of_day", updates
+    return None, updates
 
 
 class LiveAgent:
@@ -279,6 +349,8 @@ class LiveAgent:
             elif saved and not paper_loop.is_rth(now_utc()):
                 message = "Waiting for the next regular US market session"
             pol = saved.get("policy") or copy.deepcopy(DEFAULTS)
+            if isinstance(pol, dict):  # policies saved before protective exits existed
+                pol = {**{k: DEFAULTS[k] for k in _ADDED_FIELDS}, **pol}
             try:
                 eval_syms = research_universe(cfg, pol if isinstance(pol, dict) else {})
             except Exception:
@@ -292,6 +364,7 @@ class LiveAgent:
                     "phase": self.phase, "message": message, "busy": self.cycle_lock.locked(),
                     "today": raw["days"].get(self.key(cfg), {"research": 0, "orders": 0}),
                     "events": raw["events"][:30], "next_at": raw.get("next_at"),
+                    "managed": raw.get("managed") or {},
                     "eval_symbols_count": len(eval_syms),
                     "eval_symbols_sample": eval_syms[:12],
                     "order_symbols": order_syms,
@@ -302,6 +375,124 @@ class LiveAgent:
                     "eval_note": (
                         f"Live auto-orders + eval: full equity watchlist ({len(eval_syms)} symbols; junk deny-list on)"
                     )}
+
+    def _track_entry(self, signal, fill, policy):
+        """Remember an agent stock buy so its planned stop/target can be enforced."""
+        try:
+            shares = float(fill.get("shares") or 0)
+            price = float(fill.get("price") or 0)
+        except (TypeError, ValueError):
+            return
+        if (signal.get("side") != "buy" or shares <= 0 or price <= 0
+                or str(signal.get("asset_type") or "STK").upper() in ("OPT", "BAG")):
+            return
+        ref = float(signal.get("signal_price") or price)
+        stop, target = signal.get("stop"), signal.get("target")
+        # Keep the planned distances, re-anchored to the actual fill price.
+        stop_dist = ref - float(stop) if isinstance(stop, (int, float)) and stop < ref else ref * 0.008
+        target_dist = float(target) - ref if isinstance(target, (int, float)) and target > ref else stop_dist * 2
+        ticker = str(signal.get("ticker") or "").upper()
+        now = now_utc()
+        with self.desk._lock:
+            raw = self.load()
+            managed = raw.setdefault("managed", {})
+            row = managed.get(ticker)
+            if row:  # add to an existing agent position: blend the entry
+                total = float(row["shares"]) + shares
+                price = (float(row["entry"]) * float(row["shares"]) + price * shares) / total
+                shares = total
+            managed[ticker] = {
+                "shares": shares, "entry": round(price, 4),
+                "stop": round(price - stop_dist, 4), "target": round(price + target_dist, 4),
+                "risk_per_share": round(stop_dist, 4), "breakeven": False,
+                "opened_at": (row or {}).get("opened_at") or now.isoformat(),
+                "exit_at": ((now + timedelta(minutes=policy["max_hold_min"])).isoformat()
+                            if policy["max_hold_min"] else None),
+                "signal_id": signal.get("id"),
+            }
+            self.save(raw)
+
+    def _manage_exits(self, cfg, policy):
+        """Close agent positions that hit their stop/target/hold/close rule. True if an order went out."""
+        import broker_router
+        with self.desk._lock:
+            managed = dict(self.load().get("managed") or {})
+            if not managed or self.desk.load_ledger().get("pending_broker_orders"):
+                return False
+        try:
+            context = broker_router.verify_execution_context()
+            if not context.get("ok") or context.get("identity") != cfg.get("broker_identity"):
+                return False  # never send an exit to an account the policy was not approved for
+            positions = broker_router.get_positions()
+        except Exception:  # noqa: BLE001 - unreadable account: try again next tick
+            return False
+        if not isinstance(positions, dict) or not positions.get("ok"):
+            return False
+        held = {}
+        for row in positions.get("positions") or []:
+            try:
+                qty = float(row.get("qty") or 0)
+            except (TypeError, ValueError):
+                continue
+            # A short is never "held" for a protective sell (the desk also refuses it).
+            held[str(row.get("symbol") or "").upper()] = -abs(qty) if str(row.get("side") or "").lower() == "short" else qty
+        now = now_utc()
+        to_close = _minutes_to_close(now)
+        for ticker, row in managed.items():
+            shares = int(min(float(row["shares"]), held.get(ticker, 0.0)))
+            if shares < 1:  # sold elsewhere (or never filled): stop managing it
+                self._update_managed(ticker, None)
+                continue
+            retry_after = row.get("retry_after")
+            if retry_after and now < datetime.fromisoformat(retry_after):
+                continue  # a recent exit attempt was refused; do not hammer the gates
+            try:
+                quote = broker_router.stock_quote(ticker)
+            except Exception:  # noqa: BLE001
+                continue
+            if not isinstance(quote, dict) or not (quote.get("ok") and quote.get("fresh") and quote.get("price")) or quote.get("delayed"):
+                continue  # never act on a stale or delayed price
+            bid = quote.get("bid") if isinstance(quote.get("bid"), (int, float)) and quote.get("bid") > 0 else quote["price"]
+            reason, updates = exit_decision(row, float(bid), now, policy, to_close)
+            if updates:
+                self._update_managed(ticker, updates)
+            if not reason:
+                continue
+            signal = {
+                "id": str(uuid.uuid4()), "ticker": ticker, "side": "sell", "suggested_shares": shares,
+                "source": "live_agent", "workspace": "live", "agent_exit": reason, "verdict": "EXIT",
+                "confidence": 1.0, "signal_price": float(bid), "status": "pending",
+                "reason": f"Protective exit ({reason.replace('_', ' ')}) of an agent position: entry "
+                          f"{row['entry']}, stop {updates.get('stop', row['stop'])}, target {row['target']}, bid {bid}",
+                "quote": {"price": float(bid), "source": quote.get("source") or "IBKR", "market_time": quote.get("market_time"),
+                          "received_at": quote.get("received_at"), "fresh": True, "bid": quote.get("bid"),
+                          "ask": quote.get("ask"), "con_id": quote.get("con_id")},
+                "agent_revision": cfg["live_agent"]["revision"], "agent_run_id": cfg["live_agent"].get("run_id"),
+                "agent_identity": copy.deepcopy(cfg["broker_identity"]),
+                "created_at": now.isoformat(), "ts": now.isoformat(),
+                "expires_at": (now + timedelta(seconds=policy["max_quote_age_sec"])).isoformat(),
+            }
+            result = self.desk._ingest_one_signal(signal, cfg_override=cfg)
+            fill = result.get("fill") if isinstance(result.get("fill"), dict) else None
+            if fill:
+                remaining = float(row["shares"]) - float(fill.get("shares") or 0)
+                self._update_managed(ticker, {"shares": remaining, "retry_after": None} if remaining >= 1 else None)
+            else:
+                self._update_managed(ticker, {"retry_after": (now + timedelta(seconds=60)).isoformat()})
+            self.record("exit_" + reason, result.get("reject_reason") or result.get("error") or
+                        (f"Protective {reason.replace('_', ' ')} exit sent for {shares} {ticker}"), signal)
+            return True
+        return False
+
+    def _update_managed(self, ticker, updates):
+        with self.desk._lock:
+            raw = self.load()
+            managed = raw.setdefault("managed", {})
+            if updates is None:
+                managed.pop(ticker, None)
+            elif ticker in managed:
+                managed[ticker].update(updates)
+            self.save(raw)
 
     def record(self, status, message, signal=None):
         self.phase, self.message = status, message
@@ -321,7 +512,8 @@ class LiveAgent:
             raw = self.load()
             if signal.get("id") in raw["attempts"]:
                 return "This agent decision already reserved a broker attempt; it cannot be retried"
-            if raw["days"].get(self.key(cfg), {}).get("orders", 0) >= policy["max_orders_per_day"]:
+            if (not signal.get("agent_exit")
+                    and raw["days"].get(self.key(cfg), {}).get("orders", 0) >= policy["max_orders_per_day"]):
                 return "Live agent reached its daily broker-attempt limit"
         if not reducing and (day_pnl is None or day_pnl <= -policy["max_daily_loss_usd"]):
             return "Live agent daily loss limit reached or daily P&L unavailable"
@@ -334,7 +526,7 @@ class LiveAgent:
         if signal["id"] in raw["attempts"]:
             raise ValueError("Agent decision already reserved")
         row = raw["days"].setdefault(key, {"research": 0, "orders": 0})
-        if row["orders"] >= cfg["live_agent"]["policy"]["max_orders_per_day"]:
+        if not signal.get("agent_exit") and row["orders"] >= cfg["live_agent"]["policy"]["max_orders_per_day"]:
             raise ValueError("Live agent daily broker-attempt limit reached")
         row["orders"] += 1
         raw["attempts"][signal["id"]] = {"key": key, "revision": signal["agent_revision"]}
@@ -392,6 +584,8 @@ class LiveAgent:
             self.phase, self.message = "waiting_for_market", "Waiting for the next regular US market session"
             return
         policy = validate(saved["policy"])
+        if policy["protective_exits"] and self._manage_exits(cfg, policy):
+            return  # an exit went out this tick; new research waits for the next one
         with self.desk._lock:
             raw = self.load()
             if self.desk._CORRUPT_PATHS:
@@ -510,6 +704,8 @@ class LiveAgent:
                 return
         # No paper clone, no reuse of the rehearsal plan, one execution owner.
         result = self.desk._ingest_one_signal(signal, cfg_override=cfg)
+        if isinstance(result.get("fill"), dict):
+            self._track_entry(signal, result["fill"], policy)
         with self.desk._lock:
             unresolved = any((row.get("signal") or {}).get("id") == result.get("id")
                              for row in self.desk.load_ledger().get("pending_broker_orders") or [])

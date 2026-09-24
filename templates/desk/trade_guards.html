@@ -1,0 +1,11 @@
+<section class="desk-module panel" id="trade-guards" aria-labelledby="trade-guards-title">
+  <h3 class="module-title" id="trade-guards-title">Entry &amp; profit guards <span class="title-ctx">(paper and broker ideas)</span></h3>
+  <form id="trade-guards-form"><div class="compact-form">
+    <label title="After fees, slippage and the bid/ask spread, the target must pay at least this many times the risk to the stop. Setups below it become Watch.">Minimum reward to risk after costs · x<input id="tg-min_net_reward_risk" type="number" min="0" max="10" step="0.1" required /></label>
+    <label class="chk"><input type="checkbox" id="tg-evidence_gate_enabled" /> Skip setups whose own scored record is losing after costs</label>
+    <label title="How many scored trades of the same setup are needed before its record can block it.">Scored trades needed · count<input id="tg-evidence_min_samples" type="number" min="3" max="10000" step="1" required /></label>
+    <label title="Once today's broker profit reaches a meaningful level, new risk pauses if more than this share of the day's best profit is given back. 0 turns this off. Exits are never blocked.">Pause after giving back · % of today's peak<input id="tg-giveback_stop_pct" type="number" min="0" max="100" step="1" required /></label>
+  </div>
+  <button class="btn" id="trade-guards-save" type="submit">Save guards</button></form>
+  <p id="tg-status" role="status" class="hint-line keep-visible">These guards only block or downgrade new entries; they never place orders.</p>
+</section>

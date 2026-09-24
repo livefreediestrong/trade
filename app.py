@@ -281,6 +281,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "fee_bps": 1.0,
     "risk_per_trade_pct": 0.25,
     "atr_stop_multiple": 1.0,
+    # Trade intelligence gates (all trades). A PASS must keep this reward:risk after
+    # round-trip fees, slippage and spread; 0 disables.
+    "min_net_reward_risk": 1.2,
+    # Block execution of a setup whose own scored after-cost record is below breakeven.
+    "evidence_gate_enabled": True,
+    "evidence_min_samples": 12,
+    # Pause new broker risk after giving back this % of the day's peak gain; 0 disables.
+    "giveback_stop_pct": 50.0,
 }
 
 _lock = threading.RLock()
@@ -595,6 +603,9 @@ _NUMERIC_CFG_LIMITS: dict[str, tuple[float, float]] = {
     "promotion_max_drawdown_pct": (0.0, 100.0),
     "promotion_window_days": (1.0, 3650.0),
     "macro_size_mult": (0.1, 1.0),
+    "min_net_reward_risk": (0.0, 10.0),
+    "evidence_min_samples": (3.0, 10000.0),
+    "giveback_stop_pct": (0.0, 100.0),
 }
 
 
@@ -1290,6 +1301,8 @@ def _broker_book_cached() -> dict[str, Any] | None:
             "account_id": acct.get("account_id") or a.get("id"),
             "error": None if (acct.get("ok") and pos.get("ok")) else acct.get("error") or pos.get("error") or "Couldn't reach configured broker",
         }
+        if acct.get("ok") and acct.get("risk_ready") is True and a.get("day_pnl") is not None and day_pnl is not None:
+            _note_day_pnl_peak(day_pnl)  # the give-back guard also sees peaks between orders
     _BROKER_BOOK_CACHE.update(at=now, val=val, key=cache_key)
     return val
 
@@ -1793,6 +1806,7 @@ def _broker_day_pnl() -> tuple[float | None, float | None, str | None]:
         if last is None or last <= 0:
             return None, equity, "Broker daily P&L unavailable — new risk is blocked"
         day_pnl = equity - last
+    _note_day_pnl_peak(day_pnl)
     return day_pnl, equity, None
 
 
@@ -1844,7 +1858,30 @@ def _broker_risk_gate(
     target = _finite_float(cfg.get("daily_profit_target_usd"))
     if target is not None and target > 0 and day_pnl >= target:
         return False, f"Your broker account reached today's profit target (${target:,.2f}); new risk is paused"
+    giveback = _finite_float(cfg.get("giveback_stop_pct"), 0.0) or 0.0
+    peak = _finite_float(((ledger.get("broker_daily") or {}).get(_today_str()) or {}).get("peak_pnl"))
+    # Only a meaningful peak (a quarter of the daily loss limit) arms the guard.
+    meaningful = equity * float(preset["max_daily_loss_pct"]) / 100.0 * 0.25
+    if giveback > 0 and peak is not None and peak > 0 and peak >= meaningful and day_pnl <= peak * (1 - giveback / 100.0):
+        return False, (f"Protecting today's gains: P&L fell from a ${peak:,.2f} peak to ${day_pnl:,.2f} "
+                       f"(more than {giveback:g}% given back); new risk is paused")
     return True, "ok"
+
+
+def _note_day_pnl_peak(day_pnl: float) -> None:
+    """Remember today's best broker P&L for the give-back guard (writes only on a new high)."""
+    try:
+        with _lock:
+            if _CORRUPT_PATHS:
+                return
+            ledger = load_ledger()
+            day = ledger.setdefault("broker_daily", {}).setdefault(_today_str(), {"trades": 0})
+            peak = _finite_float(day.get("peak_pnl"))
+            if peak is None or day_pnl > peak:
+                day["peak_pnl"] = round(float(day_pnl), 2)
+                save_ledger(ledger)
+    except Exception:  # noqa: BLE001 - bookkeeping never blocks an account read
+        pass
 
 
 def _broker_working_reservations(ticker: str, px: float) -> tuple[dict[str, float], str | None]:
@@ -2384,7 +2421,73 @@ def _confidence_for_verdict(verdict: str, lateness_label: str | None) -> float:
         ("AVOID", "chasing"): (0.10, 0.20),
     }
     lo, hi = ranges.get((v, label), (0.40, 0.55))
-    return round(random.uniform(lo, hi), 2)
+    # Deterministic: confidence gates real orders (live agent min_confidence), so the
+    # same setup must always score the same. It was random within the band before.
+    return round((lo + hi) / 2, 2)
+
+
+def _stop_target_distances(price: float, intraday: dict | None, cfg: dict[str, Any],
+                           preset: dict[str, Any]) -> tuple[float, float]:
+    """Stop and target distances per share: ATR-based when known, else 0.8% of price."""
+    atr_usd = _finite_float((intraday or {}).get("atr_usd"))
+    atr_multiple = _finite_float(cfg.get("atr_stop_multiple"), 1.0) or 1.0
+    base = atr_usd * atr_multiple if atr_usd and atr_usd > 0 else price * 0.008
+    stop_dist = round(base * float(preset["stop_r"]), 2)
+    return stop_dist, round(stop_dist * float(preset["target_r"]), 2)
+
+
+def _edge_after_costs(price: float, stop_dist: float, target_dist: float, cfg: dict[str, Any],
+                      intraday: dict | None = None, quote: dict | None = None) -> dict[str, Any]:
+    """Round-trip friction per share and the reward:risk that survives it.
+
+    Costs: entry+exit fees and slippage (fee_bps, slip_bps each way) plus one full
+    bid/ask spread (quote when present, else the screener's spread/ATR estimate).
+    """
+    bps = 2 * ((_finite_float(cfg.get("fee_bps"), 0.0) or 0.0) + (_finite_float(cfg.get("slip_bps"), 0.0) or 0.0))
+    q = quote if isinstance(quote, dict) else {}
+    bid, ask = _finite_float(q.get("bid")), _finite_float(q.get("ask"))
+    spread = None
+    if bid and ask and ask >= bid > 0:
+        spread = ask - bid
+    else:
+        spread_atr = _finite_float((intraday or {}).get("spread_atr"))
+        atr_usd = _finite_float((intraday or {}).get("atr_usd"))
+        if spread_atr is not None and atr_usd:
+            spread = max(0.0, spread_atr * atr_usd)
+    cost = price * bps / 1e4 + (spread or 0.0)
+    net_risk = stop_dist + cost
+    if stop_dist <= 0 or net_risk <= 0:
+        return {"round_trip_cost_usd": round(cost, 4), "net_reward_risk": None, "breakeven_win_rate": None}
+    net_rr = (target_dist - cost) / net_risk
+    return {
+        "round_trip_cost_usd": round(cost, 4),
+        "net_reward_risk": round(net_rr, 3),
+        # Win rate at which a stop-or-target trade breaks even after costs.
+        "breakeven_win_rate": round(1 / (1 + net_rr), 3) if net_rr > 0 else 1.0,
+    }
+
+
+def _evidence_block(sig: dict[str, Any], cfg: dict[str, Any]) -> str | None:
+    """Refuse execution when this setup's own scored after-cost record is losing."""
+    if not cfg.get("evidence_gate_enabled", True):
+        return None
+    side = str(sig.get("side") or "").lower()
+    if side not in ("buy", "sell"):
+        return None
+    try:
+        rec = lessons.track_record(LESSONS_PATH, ticker=str(sig.get("ticker") or ""), verdict=sig.get("verdict"),
+                                   lateness=sig.get("lateness_label"), scope=_research_scope(cfg))
+    except Exception:  # noqa: BLE001 - missing history never blocks
+        return None
+    stats = (rec.get("side_stats") or {}).get(side) or {}
+    samples = int(stats.get("samples") or 0)
+    rate, move = stats.get("helped_rate"), stats.get("avg_move_bps")
+    need = int(_finite_float(cfg.get("evidence_min_samples"), 12.0) or 12)
+    breakeven = _finite_float(sig.get("breakeven_win_rate")) or 0.5
+    if samples >= need and rate is not None and move is not None and rate < breakeven and move <= 0:
+        return (f"setup_losing_record: this {rec.get('setup')} {side} setup won {rate:.0%} of {samples} "
+                f"scored trades after costs (breakeven {breakeven:.0%}), average {move:+.1f} bps")
+    return None
 
 
 def _suggested_size_cut(lateness_label: str | None) -> float:
@@ -2461,13 +2564,8 @@ def _analysis_to_signal(
 
     intraday = analysis.get("intraday") or {}
     atr_usd = _finite_float(intraday.get("atr_usd"))
-    atr_multiple = _finite_float(cfg.get("atr_stop_multiple"), 1.0) or 1.0
-    stop_dist = round(
-        (atr_usd * atr_multiple if atr_usd and atr_usd > 0 else price * 0.008)
-        * preset["stop_r"],
-        2,
-    )
-    target_dist = round(stop_dist * preset["target_r"], 2)
+    stop_dist, target_dist = _stop_target_distances(price, intraday, cfg, preset)
+    edge = _edge_after_costs(price, stop_dist, target_dist, cfg, intraday, analysis.get("quote"))
     stop = round(price - stop_dist, 2)
     target = round(price + target_dist, 2)
 
@@ -2508,6 +2606,7 @@ def _analysis_to_signal(
         "target": target,
         "stop_r": preset["stop_r"],
         "target_r": preset["target_r"],
+        **edge,
         "atr_usd": atr_usd,
         "spread_atr": _finite_float(intraday.get("spread_atr")),
         "vwap_dist_atr": _finite_float(intraday.get("vwap_dist_atr")),
@@ -2692,7 +2791,11 @@ def _enrich_signal_with_llm(sig: dict[str, Any], analysis: dict, cfg: dict) -> d
         price = float(sig.get("signal_price") or 0)
         stop_r = float(sig.get("stop_r") or 1)
         target_r = float(sig.get("target_r") or 2)
-        stop_dist = round(price * 0.008 * stop_r, 2)
+        # Keep the screener's (ATR-based) stop distance; sizing already used it.
+        prior_stop = _finite_float(sig.get("stop"))
+        stop_dist = round(abs(price - prior_stop), 2) if prior_stop is not None and price else 0.0
+        if stop_dist <= 0:
+            stop_dist = round(price * 0.008 * stop_r, 2)
         target_dist = round(stop_dist * target_r, 2)
         if llm_side == "sell":
             sig["stop"] = round(price + stop_dist, 2)
@@ -2831,12 +2934,30 @@ def generate_scan_signal(
             ]
             verdict = "WATCH"
 
+        min_rr = _finite_float(cfg.get("min_net_reward_risk"), 0.0) or 0.0
+        price_now = _finite_float(analysis.get("price"))
+        if verdict == "PASS" and min_rr > 0 and price_now and price_now > 0:
+            sd, td = _stop_target_distances(price_now, intraday, cfg, preset)
+            edge = _edge_after_costs(price_now, sd, td, cfg, intraday, analysis.get("quote"))
+            if edge["net_reward_risk"] is not None and edge["net_reward_risk"] < min_rr:
+                analysis = dict(analysis)
+                analysis["verdict"] = "WATCH"
+                analysis["verdict_text"] = (analysis.get("verdict_text") or "Setup found.") + (
+                    f" Entry blocked: after round-trip costs (${edge['round_trip_cost_usd']:.2f}/share) the reward is only "
+                    f"{edge['net_reward_risk']:.2f}x the risk (minimum {min_rr:g}x).")
+                analysis["research_flags"] = list(analysis.get("research_flags") or []) + ["thin_edge_after_costs"]
+                verdict = "WATCH"
+
         if verdict == "PASS":
             sig = _analysis_to_signal(analysis, cfg, preset, force=force)
             if sig:
                 if still_authorized is not None and not still_authorized():
                     return None
                 sig = _enrich_signal_with_llm(sig, analysis, cfg)
+                block = _evidence_block(sig, cfg)
+                if block and not sig.get("execution_block"):
+                    sig["execution_block"] = block
+                    sig["research_flags"] = list(sig.get("research_flags") or []) + ["setup_losing_record"]
                 append_journal(
                     "scan_hit",
                     {"ticker": sym, "verdict": verdict, "lateness": lateness, "force": force},
@@ -6735,10 +6856,15 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
             "promotion_min_expectancy_usd", "promotion_min_profit_factor",
             "promotion_max_drawdown_pct",
             "promotion_window_days",
+            "min_net_reward_risk", "evidence_min_samples", "giveback_stop_pct",
         ):
             if key in body:
                 lo, hi = _NUMERIC_CFG_LIMITS[key]
                 cfg[key] = _num(body[key], key, lo=lo, hi=hi)
+        if "evidence_min_samples" in body:
+            cfg["evidence_min_samples"] = int(cfg["evidence_min_samples"])
+        if "evidence_gate_enabled" in body:
+            cfg["evidence_gate_enabled"] = body["evidence_gate_enabled"] is True
 
         if "heat_enabled" in body:
             cfg["heat_enabled"] = bool(body["heat_enabled"])

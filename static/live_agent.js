@@ -2,7 +2,7 @@
 (() => {
  'use strict';
  const $=id=>document.getElementById(id),form=$('live-agent-form');if(!form)return;
- const fields=['interval_sec','max_order_usd','max_daily_loss_usd','max_orders_per_day','max_research_per_day','model_budget_usd','limit_offset_bps','min_confidence','max_quote_age_sec'];
+ const fields=['interval_sec','max_order_usd','max_daily_loss_usd','max_orders_per_day','max_research_per_day','model_budget_usd','limit_offset_bps','min_confidence','max_quote_age_sec','breakeven_after_r','max_hold_min','flatten_before_close_min'];
  let snapshot=null,dirty=false,editRevision=null,busy=false,received=0,epoch=0,timer=null,loading=false;
  let quoteRows=[],quoteRun=0,quoteBusy=false,quoteDraft=null;
  const set=(id,text)=>{$(id).textContent=text;};
@@ -73,10 +73,13 @@
   })();
   set('live-agent-status',s.message||'Waiting for agent status');
   set('live-agent-next',!identity?'Next: verify the account in broker settings. You can check your draft budget below.':!s.configured?'Next: check your symbols and budget, then save a policy.':s.enabled?'Agent enabled. Pause stops new work; working orders and positions stay at the broker.':dirty?'Next: save your edited policy. This leaves the agent paused.':'Policy saved and paused. After broker-paper testing, confirm the displayed account to start.');
+  const managed=Object.entries(s.managed||{});
+  if($('live-agent-managed'))set('live-agent-managed',managed.length?'Protecting: '+managed.map(([t,m])=>`${t} ${m.shares} sh · entry $${m.entry} · stop $${m.stop}${m.breakeven?' (at entry)':''} · target $${m.target}`).join(' | '):'');
   set('live-agent-today',`${s.today?.research||0} research attempts · ${s.today?.orders||0} broker attempts today${s.next_at?' · next cycle no earlier than '+new Date(s.next_at).toLocaleTimeString():''}`);
   if(!dirty){
    $('la-symbols').value=s.policy.symbols.join(' ');
    for(const key of fields)$('la-'+key).value=s.policy[key];
+   if($('la-protective_exits'))$('la-protective_exits').checked=s.policy.protective_exits!==false;
    form.querySelector(`[name="la-order-type"][value="${s.policy.order_type}"]`).checked=true;
    const ao=s.auto_options||{};
    const strats=new Set(ao.strategies||[]);
@@ -115,7 +118,7 @@
  }
  function edited(){if(!dirty)editRevision=snapshot?.revision;dirty=true;form.dataset.edits=String(Number(form.dataset.edits||0)+1);$('live-agent-confirm').value='';clearBudget();controls();}
  form.addEventListener('input',edited);form.addEventListener('change',edited);
- form.addEventListener('submit',event=>{event.preventDefault();if(!snapshot||busy)return;const policy={symbols:$('la-symbols').value.toUpperCase().split(/[\s,]+/).filter(Boolean),order_type:form.querySelector('[name="la-order-type"]:checked').value};for(const key of fields)policy[key]=Number($('la-'+key).value);const strategies=[];if($('la-ao-long-call')?.checked)strategies.push('long_call');if($('la-ao-long-put')?.checked)strategies.push('long_put');if($('la-ao-short-call')?.checked)strategies.push('short_call');if($('la-ao-spreads')?.checked)strategies.push('call_debit','put_debit','call_credit','put_credit');if(!strategies.length)strategies.push('long_call','long_put');const auto_options={enabled:!!$('la-ao-enabled')?.checked,strategies,allow_naked_short:!!$('la-ao-naked')?.checked,max_contracts:Number($('la-ao-max-contracts')?.value||2),dte_min:5,dte_max:45,max_quote_age_sec:15,prefer_otm_pct:0.5,spread_width_pct:1.0,every_n_stock_cycles:1};mutate('policy',{policy,auto_options,revision:dirty?editRevision:snapshot.revision});});
+ form.addEventListener('submit',event=>{event.preventDefault();if(!snapshot||busy)return;const policy={symbols:$('la-symbols').value.toUpperCase().split(/[\s,]+/).filter(Boolean),order_type:form.querySelector('[name="la-order-type"]:checked').value};for(const key of fields)policy[key]=Number($('la-'+key).value);policy.protective_exits=!!$('la-protective_exits')?.checked;const strategies=[];if($('la-ao-long-call')?.checked)strategies.push('long_call');if($('la-ao-long-put')?.checked)strategies.push('long_put');if($('la-ao-short-call')?.checked)strategies.push('short_call');if($('la-ao-spreads')?.checked)strategies.push('call_debit','put_debit','call_credit','put_credit');if(!strategies.length)strategies.push('long_call','long_put');const auto_options={enabled:!!$('la-ao-enabled')?.checked,strategies,allow_naked_short:!!$('la-ao-naked')?.checked,max_contracts:Number($('la-ao-max-contracts')?.value||2),dte_min:5,dte_max:45,max_quote_age_sec:15,prefer_otm_pct:0.5,spread_width_pct:1.0,every_n_stock_cycles:1};mutate('policy',{policy,auto_options,revision:dirty?editRevision:snapshot.revision});});
  $('live-agent-reload').addEventListener('click',()=>{if(busy)return;dirty=false;clearBudget();$('live-agent-confirm').value='';++epoch;received=0;read();controls();});
  $('live-agent-budget-check').addEventListener('click',checkBudget);
  $('live-agent-confirm').addEventListener('input',controls);

@@ -350,3 +350,24 @@ Gateway out. Check status with `.venv\Scripts\python.exe tools\desk_upkeep.py st
 - `place_from_desk_order` runs on the IBKR API owner thread again, like every other broker call.
 - The live agent AI budget counts only live-agent research (`model_usage.json` now records a per-scope
   total), so paper Moss spending cannot pause live research.
+
+### Profit and loss guards
+
+These guards apply to both paper and broker ideas. Change them under **Settings → Entry & profit guards**,
+or in the live agent policy for the exit rules.
+
+- **Reward to risk after costs** (`min_net_reward_risk`, default 1.2): a PASS setup whose target, after
+  round-trip fees, slippage and the bid/ask spread, pays less than this multiple of the risk to its stop
+  becomes WATCH (`thin_edge_after_costs`). Stops and targets use ATR when known. Each signal carries
+  `round_trip_cost_usd`, `net_reward_risk` and `breakeven_win_rate`.
+- **Evidence gate** (`evidence_gate_enabled`, `evidence_min_samples`, default 12): once a setup (verdict
+  and entry timing) has enough scored trades, it is blocked from execution when its after-cost hit rate
+  is below breakeven and its average move is not positive (`setup_losing_record`). Blocked setups are
+  still scored as research, so the block lifts when the record recovers.
+- **Give-back guard** (`giveback_stop_pct`, default 50): once today's broker P&L peak reaches a quarter
+  of the daily loss limit, new risk pauses if more than this share of the peak is given back. Exits are
+  never blocked.
+- **Deterministic confidence**: the same setup always scores the same confidence (it used to be random
+  within a band), so the live agent's minimum-confidence gate is repeatable.
+- **Live agent protective exits**: stop, target, breakeven stop, optional maximum hold and a sell before
+  the close for stocks the agent bought. See `docs/LIVE_AGENT.md`.
