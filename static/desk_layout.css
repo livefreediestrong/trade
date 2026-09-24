@@ -174,6 +174,10 @@
 #live-agent fieldset .chk{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
 #live-agent .compact-form input[type=radio]{display:inline-block;width:16px;height:16px;min-height:16px;margin:0;flex:0 0 16px}
 #live-agent-history{max-height:180px;overflow:auto;font-size:12px;padding-left:22px}
+#live-agent .live-agent-budget{border:1px solid var(--border);border-radius:8px;padding:12px;margin:12px 0;font-size:12px;overflow-wrap:anywhere}
+#live-agent-budget-list{padding-left:18px;margin:8px 0;max-height:220px;overflow:auto}
+#live-agent-budget-list:empty{display:none}
+#live-agent-budget-list li{margin:7px 0;line-height:1.6}
 .utilitarian-desk .headline-take{border-left:2px solid var(--accent);padding:8px 14px;margin:10px 0;background:color-mix(in srgb,var(--accent) 5%,var(--panel))}
 .utilitarian-desk .headline-take p{font:italic 16px/1.65 var(--serif,Georgia);margin:5px 0 10px}
 .utilitarian-desk .headline-take small,.utilitarian-desk #headline-sources small,.utilitarian-desk .headline-list small{display:block;color:var(--muted);font-size:10px;line-height:1.6;margin-top:5px}
