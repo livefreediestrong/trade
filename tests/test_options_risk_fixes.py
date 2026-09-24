@@ -217,3 +217,10 @@ def test_bag_close_requires_the_spread_to_be_held():
     held = _FakeIB([_pos("OPT", "SPY", 1, "C", 1000), _pos("OPT", "SPY", -1, "C", 1050)])
     with pytest.raises(ValueError, match="risk authorization"):
         ibkr._place_bag_from_desk(held, _bag_close(), IDENTITY, "ref")
+
+
+def test_covered_flag_does_not_shrink_short_put_risk():
+    put = {"contracts": 1, "option_intent": "STO", "right": "P", "strike": 50, "covered": True}
+    assert order_terms.option_max_loss(put, 1.0) == pytest.approx(49 * 100)
+    call = {**put, "right": "C"}
+    assert order_terms.option_max_loss(call, 1.0) == pytest.approx(100)

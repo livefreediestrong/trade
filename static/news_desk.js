@@ -5,7 +5,7 @@
  let timer=null,busy=false,active=true,seen=new Set(),rows=[];
  try{seen=new Set(JSON.parse(sessionStorage.getItem('changing_woman_news_v1')||'[]'));}catch(_){}
  function el(tag,text){const n=document.createElement(tag);if(text)n.textContent=text;return n;}
- function link(text,url){const a=el('a',text);a.href=url;a.target='_blank';a.rel='noopener noreferrer';return a;}
+ function link(text,url){if(!/^https?:\/\//i.test(String(url||'')))return el('span',text);const a=el('a',text);a.href=url;a.target='_blank';a.rel='noopener noreferrer';return a;}
  const date=t=>t?new Date(t*1000).toLocaleString():'not checked';
  function present(){
   if(document.hidden||!active)return;

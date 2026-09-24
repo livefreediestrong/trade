@@ -139,10 +139,13 @@ def option_max_loss(order, premium=None):
             width = abs(positive(order.get("long_strike"), "Buy-leg strike")
                         - positive(order.get("short_strike"), "Sell-leg strike"))
             per = max(width - px, Decimal("0"))
-    elif intent == "STO" and not order.get("covered"):
-        strike = positive(order.get("strike"), "Strike")
+    elif intent == "STO":
         right = str(order.get("right") or "").upper()
-        per = max(strike - px, Decimal("0")) if right in ("P", "PUT") else strike
+        # Only a short CALL is covered by held shares; a "covered" put is still a
+        # short put whose loss runs to the strike.
+        if not (order.get("covered") and right in ("C", "CALL")):
+            strike = positive(order.get("strike"), "Strike")
+            per = max(strike - px, Decimal("0")) if right in ("P", "PUT") else strike
     return float(per * qty * 100)
 
 
