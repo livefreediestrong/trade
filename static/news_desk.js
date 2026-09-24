@@ -45,5 +45,5 @@
   finally{clearTimeout(timeout);busy=false;if(active&&!document.hidden)timer=setTimeout(poll,loading?10000:60000);}
  }
  document.addEventListener('visibilitychange',()=>{clearTimeout(timer);if(!document.hidden)poll();});
- window.addEventListener('pagehide',()=>{active=false;clearTimeout(timer);});window.addEventListener('pageshow',()=>{active=true;poll();});poll();
+ window.addEventListener('pagehide',()=>{active=false;clearTimeout(timer);});window.addEventListener('pageshow',e=>{active=true;if(e&&e.persisted)poll();});poll();
 })();

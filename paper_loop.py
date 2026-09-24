@@ -1138,7 +1138,6 @@ class PaperLoop:
 
             decision = "hold"
             late = bool(decision_late)
-            hold = True
             filled = False
             fill_info = None
             result = None  # execute_loop_decision payload when fill path runs
@@ -1150,14 +1149,12 @@ class PaperLoop:
             # Late / miss tick deadline → hold, do NOT fill, cancel stale intent
             if decision_late:
                 late = True
-                hold = True
                 decision = "hold"
                 error = "decision_late"
                 intent_status = "late"
                 self._bump_total("late_blocks", 1)
                 _cancel_symbol(ticker, "decision_late")
             elif llm_error:
-                hold = True
                 decision = "hold"
                 error = str(llm_error)
                 intent_status = "error"
@@ -1166,7 +1163,6 @@ class PaperLoop:
                 late = True  # entry lateness label (separate from decision_late)
                 if raw_side == "flat":
                     decision = "hold"
-                    hold = True
                     intent_status = "held"
                 else:
                     # still may try fill path unless allow_late gates inside execute
@@ -1175,7 +1171,6 @@ class PaperLoop:
             if not decision_late and not llm_error:
                 # Confidence gate — force hold, no fill
                 if low_confidence:
-                    hold = True
                     decision = "hold"
                     error = "low_confidence"
                     intent_status = "held"
@@ -1184,7 +1179,6 @@ class PaperLoop:
 
                 # Soft advisory KILL (only when ADVISORY_SOFT_SIZE=1) → hold
                 if soft_kill and not low_confidence:
-                    hold = True
                     decision = "hold"
                     error = error or "advisory_kill"
                     intent_status = "held"
@@ -1194,7 +1188,6 @@ class PaperLoop:
                 shadow_gate_fn = deps.get("shadow_gate_enabled")
                 if shadow and not shadow.get("coherent") and shadow_gate_fn and shadow_gate_fn():
                     gate_shadow = True
-                    hold = True
                     decision = "hold"
                     error = "shadow_incoherent"
                     intent_status = "held"
@@ -1203,7 +1196,6 @@ class PaperLoop:
                 gate_conf = low_confidence or soft_kill
                 if not gate_shadow and not gate_conf and raw_side == "flat":
                     decision = "hold"
-                    hold = True
                     intent_status = "held"
                 elif not gate_shadow and not gate_conf and raw_side in ("buy", "sell"):
                     gen_snap = self._generation
@@ -1265,7 +1257,6 @@ class PaperLoop:
                     )
                     if result.get("abstain"):
                         decision = "hold"
-                        hold = True
                         error = reason
                         filled = False
                         fill_info = result.get("prior_fill") if result.get("fill_reversed") else None
@@ -1276,7 +1267,6 @@ class PaperLoop:
                     elif result.get("ok") and (result.get("pending") or result.get("queued")):
                         # Ask me first — enqueued for Waiting Approve/Skip
                         decision = raw_side
-                        hold = True
                         filled = False
                         fill_info = None
                         intent_status = "pending"
@@ -1292,7 +1282,6 @@ class PaperLoop:
                             size_at_price = f"{sh}@{px}"
                     elif result.get("ok") and result.get("fill"):
                         decision = raw_side
-                        hold = False
                         filled = True
                         fill_info = result.get("fill")
                         intent_status = "filled"
@@ -1304,7 +1293,6 @@ class PaperLoop:
                             )
                     else:
                         decision = "hold"
-                        hold = True
                         filled = False
                         error = reason or "fill_blocked"
                         intent_status = "held"

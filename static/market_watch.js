@@ -99,6 +99,6 @@
  }
  $('mw-refresh').addEventListener('click',()=>poll(true));
  document.addEventListener('visibilitychange',()=>{clearTimeout(timer);if(!document.hidden)poll(false);});
- window.addEventListener('pagehide',()=>{active=false;clearTimeout(timer);});window.addEventListener('pageshow',()=>{active=true;poll(false);});
+ window.addEventListener('pagehide',()=>{active=false;clearTimeout(timer);});window.addEventListener('pageshow',e=>{active=true;if(e.persisted)poll(false);});
  poll(false);
 })();

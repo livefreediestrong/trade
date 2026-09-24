@@ -3749,7 +3749,6 @@ def _ledger_equity_mtm(ledger: dict[str, Any], mark_by_ticker: dict[str, float] 
         if sh <= 0:
             continue
         t = str(p.get("ticker") or "").upper()
-        avg = float(p.get("avg_price") or 0)
         if t not in marks:
             continue
         mark = float(marks[t])
@@ -4086,7 +4085,6 @@ def paper_fill(
             "paper_fill_reverse",
         ):
             try:
-                pos_side = "long" if side == "buy" else "long"  # sells only close longs
                 # After buy: attach to long; after sell cover short rarely remains — attach to leftover long only
                 open_side = None
                 entry_ref = fill_px

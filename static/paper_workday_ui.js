@@ -70,5 +70,5 @@
  function age(){clearTimeout(timer);if(!active||document.hidden)return;buttons();timer=setTimeout(age,1000);}
  document.addEventListener('visibilitychange',()=>{clearTimeout(timer);if(!document.hidden)age();});
  window.addEventListener('pagehide',()=>{active=false;clearTimeout(timer);});
- window.addEventListener('pageshow',()=>{active=true;age();window.dispatchEvent(new Event('moss:refresh'));});age();
+ window.addEventListener('pageshow',e=>{active=true;age();if(e.persisted)window.dispatchEvent(new Event('moss:refresh'));});age();
 })();

@@ -6,7 +6,7 @@ Never places orders itself — callers feed desk ingest / place_from_desk_order.
 from __future__ import annotations
 
 import copy
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -15,7 +15,6 @@ from order_terms import (
     canonical_bag_order,
     canonical_option_order,
     option_max_loss,
-    option_notional,
     positive,
     round_option_price,
 )

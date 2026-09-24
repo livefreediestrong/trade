@@ -445,7 +445,6 @@ def stock_quote(symbol: str) -> dict[str, Any]:
             if not ib.qualifyContracts(contract) or not contract.conId:
                 return {"ok": False, "error": "Underlying stock could not be qualified",
                         "symbol": symbol, "fresh": False, "identity": identity}
-            started = datetime.now(timezone.utc)
             # Live API subscription is often unpaid (Error 10089); delayed is available.
             # Prefer delayed (3) so agent quotes succeed without fighting PnL/account feeds.
             try:
@@ -881,7 +880,7 @@ def get_account() -> dict[str, Any]:
                 except (ValueError, TypeError):
                     pass
             if (_ACCOUNT_UNSUBSCRIBED or _PNL_WATCH.get("pending_resubscribe")) and now >= _ACCOUNT_RESUBSCRIBE_AFTER:
-                actions = _resubscribe_account_and_pnl(ib, account)
+                _resubscribe_account_and_pnl(ib, account)
                 _PNL_WATCH["pending_resubscribe"] = False
                 if account not in _PNL_UPDATED:
                     # Stay on this socket; schedule soft reconnect only after backoff.

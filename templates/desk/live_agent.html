@@ -1,5 +1,5 @@
 <section class="desk-module" id="live-agent" aria-labelledby="live-agent-title">
- <div class="panel-head"><h3 id="live-agent-title">Fox · broker agent <span class="title-ctx">(Moss)</span></h3><span class="pill" id="live-agent-state">Loading</span></div>
+ <div class="panel-head"><h3 id="live-agent-title">Fox · broker agent</h3><span class="pill" id="live-agent-state">Loading</span></div>
  <p id="live-agent-status" role="status">Reading the saved policy.</p>
  <p id="live-agent-next" class="hint-line keep-visible">Verify account → check budget → save policy → start.</p>
  <form id="live-agent-form"><div class="compact-form">
@@ -20,8 +20,8 @@
    <label title="Sell agent positions this many minutes before the regular close. 0 lets them stay open overnight.">Sell before the close · minutes<input id="la-flatten_before_close_min" type="number" min="0" max="120" step="1" required /></label>
    <p class="hint-line keep-visible">Exits use fresh real-time quotes only and are limit orders below the bid, so a fast market can still skip past them. Positions you open yourself are not touched.</p>
   </fieldset>
-  <fieldset id="la-auto-options"><legend>Moss LIVE options (auto)</legend>
-   <p class="hint-line keep-visible" id="la-auto-options-label">Moss LIVE options | calls/puts | shorts gated | BAG verticals</p>
+  <fieldset id="la-auto-options"><legend>Fox LIVE options (auto)</legend>
+   <p class="hint-line keep-visible" id="la-auto-options-label">Fox LIVE options | calls/puts | shorts gated | BAG verticals</p>
    <label class="chk"><input type="checkbox" id="la-ao-enabled" /> Enable auto options conversion on PASS stock setups</label>
    <label class="chk"><input type="checkbox" id="la-ao-long-call" checked /> Long call BTO/STC</label>
    <label class="chk"><input type="checkbox" id="la-ao-long-put" checked /> Long put BTO/STC</label>

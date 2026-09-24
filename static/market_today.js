@@ -68,6 +68,7 @@
       else if (t === "dn") dn += 1;
       else flat += 1;
     });
+    grid.hidden = items.length > 0 && missing === items.length;  // 15 empty "No quote" tiles say nothing
     if (summary) {
       if (!items.length) {
         summary.innerHTML = '<span class="flat">Loading market pulse…</span>';

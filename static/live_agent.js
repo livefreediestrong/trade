@@ -69,7 +69,7 @@
     else {label='Session stopped'; cls='is-paused';}
     chip.className='bx-agent-chip '+cls;
     chip.textContent=label;
-    if(detail) detail.textContent=s.message||s.next||'Moss agent status';
+    if(detail) detail.textContent=s.message||s.next||'Fox agent status';
   })();
   set('live-agent-status',s.message||'Waiting for agent status');
   set('live-agent-next',!identity?'Next: verify the account in broker settings. You can check your draft budget below.':!s.configured?'Next: check your symbols and budget, then save a policy.':s.enabled?'Agent enabled. Pause stops new work; working orders and positions stay at the broker.':dirty?'Next: save your edited policy. This leaves the agent paused.':'Policy saved and paused. After broker-paper testing, confirm the displayed account to start.');

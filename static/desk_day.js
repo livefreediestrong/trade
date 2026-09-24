@@ -50,6 +50,6 @@
  }
  document.addEventListener('visibilitychange',()=>{clearTimeout(timer);if(!document.hidden)poll();});
  window.addEventListener('pagehide',()=>{active=false;clearTimeout(timer);});
- window.addEventListener('pageshow',()=>{active=true;poll();});
+ window.addEventListener('pageshow',e=>{active=true;if(e.persisted)poll();}); // a normal load already polled
  poll();
 })();

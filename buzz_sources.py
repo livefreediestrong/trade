@@ -1210,14 +1210,12 @@ def _merge_live_chat_paste(
     # Paste TTL — expire stale paste
     rows = paste.get("tickers") or []
     parsed_at = paste.get("parsed_at")
-    expired = False
     if parsed_at:
         try:
             ts = datetime.fromisoformat(str(parsed_at).replace("Z", "+00:00"))
             age = (datetime.now(timezone.utc) - ts).total_seconds()
             if age > PASTE_TTL_SEC:
                 rows = []
-                expired = True
         except Exception:
             pass
     weight = SOURCE_WEIGHT.get("wsb_live_chat", 1.35)

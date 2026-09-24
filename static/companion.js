@@ -147,6 +147,6 @@
   document.addEventListener('visibilitychange',()=>{clearTimeout(pollTimer);if(!document.hidden)refresh();});
   window.addEventListener('moss:refresh',refresh);
   window.addEventListener('pagehide',()=>{pageActive=false;clearTimeout(pollTimer);});
-  window.addEventListener('pageshow',()=>{pageActive=true;clearTimeout(pollTimer);refresh();});
+  window.addEventListener('pageshow',e=>{pageActive=true;if(!e.persisted)return;clearTimeout(pollTimer);refresh();});
   refresh();
 })();

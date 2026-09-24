@@ -276,3 +276,8 @@
 #trade-guards .tg-wide textarea{width:100%;box-sizing:border-box;font-family:var(--mono);font-size:12px}
 #trade-guards .compact-form .chk{max-width:none;white-space:normal}
 #trade-guards .compact-form input[type=checkbox]{width:16px;height:16px;flex:0 0 16px}
+/* Columns size to their own content (Fox's list is usually shorter than Changing Woman's chores). */
+.desk-day .desk-day-grid{align-items:start}
+.mt-grid[hidden]{display:none}
+/* On the dedicated Research page the shelf is the page: no nested 720px scroll box. */
+.desk-page-main[data-desk-page="research"] .research-shelf{max-height:none;overflow:visible;border:0;padding:0}
