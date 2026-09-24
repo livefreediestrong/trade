@@ -28,6 +28,30 @@ Companion-style app for a Windows PC beside `holdings-options-monitor`.
 
 Kill-switch / daily profit target remain **optional** research controls; they do not block mode entry by default.
 
+### Master live trading switch (primary UI)
+
+The main screen has **one** prominent control: `Live trading: OFF` / `ON`.
+
+- **OFF** (default) always forces `mode=manual` — ask-before-every-trade,
+  paper/research only. It never touches the broker and needs no confirmation.
+- **ON** always means `live_manual` — the operator still approves every
+  single order; this switch can **never** arm `auto_live`. Turning it on
+  requires the desk's existing readiness gate to pass (broker connected,
+  `can_submit`, a selected account, and `can_transition_live` when the
+  connected endpoint is real money) **plus one explicit typed confirmation**
+  (`GO LIVE`). No orders are ever sent by the switch itself — it only changes
+  `mode`.
+- Backend: `POST /api/live/master` with `{"live": true|false, "confirm": "GO LIVE"}`
+  (confirm only required/checked when `live: true`). Returns the same
+  `config`/`broker` shape as `/api/config`.
+- The advanced `How trades run` dropdown (manual / auto paper / live-manual /
+  auto-live) is still available under **Advanced** for operators who need
+  `auto_live` or finer control; the master switch is the simple, unambiguous
+  front door and does not remove that dropdown.
+- See `tests/test_safety.py::test_live_master_*` for the enforced contract
+  (fail-closed on missing broker/account/confirmation; `auto_live` cannot be
+  requested through this endpoint even if the client tries to smuggle it in).
+
 ## Durable automation lifecycle (`lifecycle.py`)
 
 `paper_loop.PaperLoop` is backed by a durable worker-lifecycle foundation
@@ -232,6 +256,7 @@ Open `http://127.0.0.1:5056`
 
 - `GET /api/state` — config, signals by status, ledger, journal
 - `POST /api/config` — mode / preset / watchlist / optional kill-switch
+- `POST /api/live/master` — single ON/OFF live-trading switch (`{"live": bool, "confirm": "GO LIVE"}`); OFF forces `manual`, ON sets `live_manual` only after readiness checks pass
 - `POST /api/signals/generate` — force one watchlist scan (optional `{"ticker": "AAPL"}`); the idea always waits for Approve
 - `POST /api/signals/<id>/approve` — paper fill; if mode=auto_live → gate then broker-or-paper (no dual-book)
 - `GET /api/data-quality` — provider readiness, data-file health, and fallback policy

@@ -5590,6 +5590,74 @@ def api_broker_readiness():
     return jsonify({"ok": True, "broker": _broker_readiness(fresh=True)})
 
 
+@app.route("/api/live/master", methods=["POST"])
+def api_live_master():
+    """One master ON/OFF switch for live trading — the primary-UI control.
+
+    OFF always forces the desk back to `manual` (ask-before-every-trade,
+    paper/research only) and never touches the broker. ON always means
+    `live_manual` — the operator approves every single order; this switch
+    can never arm `auto_live`. Turning ON reuses the desk's existing
+    readiness gate (broker configured + can_submit + can_transition_live
+    for real money + a selected account) plus exactly one explicit typed
+    confirmation ("GO LIVE"). No orders are sent by this endpoint itself.
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"ok": False, "error": "JSON object required"}), 400
+    live = bool(body.get("live"))
+    with _lock:
+        cfg = load_config()
+        if not live:
+            try:
+                res = _api_config_post(cfg, {"mode": "manual"})
+            except BadNumber as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
+            if not (isinstance(res, tuple) and len(res) == 4):
+                return res
+            append_journal("live_master_off", {"broker": _broker_public_status()})
+            return _api_config_after(*res)
+
+        broker = _broker_readiness(fresh=True)
+        if not broker.get("configured"):
+            return jsonify({
+                "ok": False,
+                "error": "Connect a broker first (Advanced > Broker setup) before going live.",
+                "broker": broker,
+            }), 409
+        has_capability_info = "can_submit" in broker
+        if has_capability_info and not broker.get("can_submit"):
+            detail = (broker.get("diagnostics") or [{}])[0].get("message") or "Broker readiness check failed."
+            return jsonify({"ok": False, "error": f"Broker is not ready: {detail}", "broker": broker}), 409
+        if has_capability_info and broker.get("paper_mode") is False and not broker.get("can_transition_live"):
+            detail = (broker.get("diagnostics") or [{}])[0].get("message") or "Live broker readiness check failed."
+            return jsonify({"ok": False, "error": f"Live transition refused: {detail}", "broker": broker}), 409
+        if has_capability_info and not str(broker.get("selected_account") or "").strip():
+            return jsonify({
+                "ok": False,
+                "error": "Select a broker account (Advanced > Broker setup) before going live.",
+                "broker": broker,
+            }), 409
+        confirm = str(body.get("confirm") or "").strip().upper()
+        if confirm != "GO LIVE":
+            return jsonify({
+                "ok": False,
+                "error": "Type GO LIVE to confirm before switching live trading on.",
+                "broker": broker,
+            }), 400
+        # Map onto the pre-existing token-based gate: this reuses the same
+        # safety check as the advanced mode dropdown, never a weaker one.
+        expected_token = "REAL" if broker.get("paper_mode") is False else "AUTO_LIVE"
+        try:
+            res = _api_config_post(cfg, {"mode": "live_manual", "live_confirm": expected_token})
+        except BadNumber as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        if not (isinstance(res, tuple) and len(res) == 4):
+            return res
+        append_journal("live_master_on", {"broker": _broker_public_status()})
+    return _api_config_after(*res)
+
+
 @app.route("/api/config", methods=["GET", "POST"])
 def api_config():
     with _lock:

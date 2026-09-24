@@ -60,6 +60,14 @@
     <span id="execution-summary-pending">No pending ideas</span>
   </div>
 
+  <div class="live-master-bar" id="live-master-bar" role="group" aria-label="Live trading master control">
+    <button type="button" class="live-master-toggle" id="btn-live-master" aria-pressed="false" title="One switch for real-money orders. OFF always means paper/research only.">
+      <span class="live-master-dot" aria-hidden="true"></span>
+      <span class="live-master-text" id="live-master-text">Live trading: OFF</span>
+    </button>
+    <span class="live-master-hint" id="live-master-hint">Paper &amp; research only — no broker orders are sent.</span>
+  </div>
+
   <nav class="desk-guide" id="desk-guide" aria-label="Desk steps" hidden>
     <ol class="desk-guide-steps">
       <li class="desk-step" data-step="goal"><span class="step-num">1</span><span class="step-label">Goal</span></li>

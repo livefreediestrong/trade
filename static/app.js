@@ -1788,7 +1788,82 @@
             : "Fake money — local paper sim only");
       }
     }
+    renderLiveMasterBar(b, currentMode);
   }
+
+  // ---- Master live trading switch: one ON/OFF control, no multi-step ambiguity.
+  // OFF always means paper/research only. ON always means live_manual (never
+  // auto_live) and only after the desk's existing readiness checks pass.
+  function renderLiveMasterBar(broker, currentMode) {
+    const btn = document.getElementById("btn-live-master");
+    const text = document.getElementById("live-master-text");
+    const hint = document.getElementById("live-master-hint");
+    if (!btn || !text || !hint) return;
+    const b = broker || window.__brokerStatus || {};
+    const isOn = ["live_manual", "auto_live"].includes(currentMode);
+    const realMoneyLive = isOn && !!b.configured && b.paper_mode === false;
+    btn.setAttribute("aria-pressed", isOn ? "true" : "false");
+    text.textContent = isOn ? "Live trading: ON" : "Live trading: OFF";
+    if (!isOn) {
+      hint.textContent = "Paper & research only — no broker orders are sent.";
+      hint.classList.remove("warn");
+    } else if (realMoneyLive) {
+      const provider = String(b.broker || "broker").toUpperCase();
+      hint.textContent = `REAL MONEY — approved ideas place orders on your ${provider} account.`;
+      hint.classList.add("warn");
+    } else if (b.configured) {
+      const provider = String(b.broker || "broker").toUpperCase();
+      hint.textContent = `Approved ideas place orders on your ${provider} paper account.`;
+      hint.classList.remove("warn");
+    } else {
+      hint.textContent = "Live trading is on, but no broker is connected yet — orders will fail closed.";
+      hint.classList.add("warn");
+    }
+  }
+
+  async function setLiveMaster(live) {
+    const btn = document.getElementById("btn-live-master");
+    const hint = document.getElementById("live-master-hint");
+    const body = { live: !!live };
+    if (live) {
+      const typed = prompt(
+        "This switches the desk to live_manual: every approved idea places one real broker order " +
+        "(paper or real money, whichever your connected account uses). Nothing runs automatically.\n\n" +
+        "Type GO LIVE to confirm:"
+      );
+      if (String(typed || "").trim().toUpperCase() !== "GO LIVE") {
+        toast("Not switched — still off");
+        return;
+      }
+      body.confirm = "GO LIVE";
+    } else if (!confirm("Turn live trading OFF? The desk goes back to ask-before-every-trade paper mode immediately.")) {
+      return;
+    }
+    if (btn) btn.disabled = true;
+    try {
+      const data = await api("/api/live/master", { method: "POST", body: JSON.stringify(body) });
+      state = state || {};
+      state.config = data.config || state.config;
+      window.__brokerStatus = data.broker || window.__brokerStatus;
+      renderBrokerStatus(data.broker || window.__brokerStatus);
+      toast(live ? "Live trading ON — live_manual (approve each order)" : "Live trading OFF — back to paper/research", !!live);
+      refresh();
+    } catch (e) {
+      if (hint) {
+        hint.textContent = e?.data?.error || e?.message || "Could not change live trading state.";
+        hint.classList.add("warn");
+      }
+      toast(e?.data?.error || e?.message || "Could not change live trading state.", true);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  $("#btn-live-master")?.addEventListener("click", () => {
+    const btn = document.getElementById("btn-live-master");
+    const isOn = btn?.getAttribute("aria-pressed") === "true";
+    setLiveMaster(!isOn);
+  });
 
   function brokerToastHint(broker, book, paperFallback, fill) {
     const b = broker || window.__brokerStatus || {};

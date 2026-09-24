@@ -165,6 +165,113 @@ def test_paper_auto_live_requires_explicit_confirmation(client):
     assert r.status_code == 200
 
 
+# ---------------------------------------------------------------- master live switch
+
+def test_live_master_off_forces_manual_and_blocks_broker(client, monkeypatch):
+    monkeypatch.setattr(
+        desk,
+        "_broker_readiness",
+        lambda **kwargs: {
+            "broker": "ibkr", "configured": True, "paper_mode": False,
+            "capability_state": "live_ready", "can_submit": True,
+            "can_transition_live": True, "selected_account": "U123",
+            "diagnostics": [],
+        },
+    )
+    r = client.post("/api/live/master", base_url=BASE, json={"live": True, "confirm": "GO LIVE"})
+    assert r.status_code == 200
+    assert desk.load_config().get("mode") == "live_manual"
+
+    r = client.post("/api/live/master", base_url=BASE, json={"live": False})
+    assert r.status_code == 200
+    assert r.get_json()["config"]["mode"] == "manual"
+    assert desk.load_config().get("mode") == "manual"
+
+
+def test_live_master_off_needs_no_confirmation(client):
+    r = client.post("/api/live/master", base_url=BASE, json={"live": False})
+    assert r.status_code == 200
+    assert desk.load_config().get("mode") == "manual"
+
+
+def test_live_master_on_requires_broker_configured(client, monkeypatch):
+    monkeypatch.setattr(
+        desk,
+        "_broker_readiness",
+        lambda **kwargs: {"configured": False},
+    )
+    r = client.post("/api/live/master", base_url=BASE, json={"live": True, "confirm": "GO LIVE"})
+    assert r.status_code == 409
+    assert desk.load_config().get("mode") != "live_manual"
+
+
+def test_live_master_on_requires_explicit_confirmation(client, monkeypatch):
+    monkeypatch.setattr(
+        desk,
+        "_broker_readiness",
+        lambda **kwargs: {
+            "broker": "alpaca", "configured": True, "paper_mode": True,
+            "capability_state": "paper_ready", "can_submit": True,
+            "can_transition_live": False, "selected_account": "paper-1",
+            "diagnostics": [],
+        },
+    )
+    r = client.post("/api/live/master", base_url=BASE, json={"live": True})
+    assert r.status_code == 400
+    assert desk.load_config().get("mode") != "live_manual"
+    r = client.post("/api/live/master", base_url=BASE, json={"live": True, "confirm": "go live"})
+    assert r.status_code == 200
+    assert desk.load_config().get("mode") == "live_manual"
+
+
+def test_live_master_on_never_arms_auto_live(client, monkeypatch):
+    monkeypatch.setattr(
+        desk,
+        "_broker_readiness",
+        lambda **kwargs: {
+            "broker": "alpaca", "configured": True, "paper_mode": True,
+            "capability_state": "paper_ready", "can_submit": True,
+            "can_transition_live": False, "selected_account": "paper-1",
+            "diagnostics": [],
+        },
+    )
+    r = client.post("/api/live/master", base_url=BASE, json={"live": True, "confirm": "GO LIVE", "mode": "auto_live"})
+    assert r.status_code == 200
+    assert desk.load_config().get("mode") == "live_manual"
+
+
+def test_live_master_on_requires_selected_account(client, monkeypatch):
+    monkeypatch.setattr(
+        desk,
+        "_broker_readiness",
+        lambda **kwargs: {
+            "broker": "ibkr", "configured": True, "paper_mode": True,
+            "capability_state": "paper_ready", "can_submit": True,
+            "can_transition_live": False, "selected_account": None,
+            "diagnostics": [],
+        },
+    )
+    r = client.post("/api/live/master", base_url=BASE, json={"live": True, "confirm": "GO LIVE"})
+    assert r.status_code == 409
+    assert desk.load_config().get("mode") != "live_manual"
+
+
+def test_live_master_on_requires_live_transition_for_real_money(client, monkeypatch):
+    monkeypatch.setattr(
+        desk,
+        "_broker_readiness",
+        lambda **kwargs: {
+            "broker": "ibkr", "configured": True, "paper_mode": False,
+            "capability_state": "profile_invalid", "can_submit": False,
+            "can_transition_live": False, "selected_account": "U123",
+            "diagnostics": [{"code": "profile_invalid", "message": "Not the expected account."}],
+        },
+    )
+    r = client.post("/api/live/master", base_url=BASE, json={"live": True, "confirm": "GO LIVE"})
+    assert r.status_code == 409
+    assert desk.load_config().get("mode") != "live_manual"
+
+
 # ---------------------------------------------------------------- #3 corrupt data
 
 def test_bom_config_loads(isolated_data):
