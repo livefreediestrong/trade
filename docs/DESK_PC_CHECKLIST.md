@@ -5,6 +5,7 @@ Items from the September 2026 review that the build sandbox could not check. Run
 ## Launcher and Gateway
 
 - [ ] Desktop shortcut starts the desk under the default Windows script policy (`Launch.vbs` / `Launch.bat` pass `-ExecutionPolicy Bypass`).
+- [ ] After one launch, the Desktop and Start menu each have a single **Daytrade Signal Desk** shortcut to `Launch.vbs`; older desk shortcuts are gone and unrelated shortcuts are untouched.
 - [ ] After a `git pull` with the desk running, the page shows the restart notice and the shortcut offers to restart. The restart is refused while a broker order is unresolved.
 - [ ] Closing the Gateway login window before signing in keeps it closed (no relaunch every few minutes). **Ensure Gateway** reopens it.
 - [ ] A signed-in Gateway that exits is relaunched once after about 90 seconds, only while a live session is active.

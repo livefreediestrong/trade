@@ -39,6 +39,10 @@ Companion-style app for a Windows PC beside `holdings-options-monitor`.
 
 Double-click **Daytrade Signal Desk** on the desktop. The shortcut runs `Launch.vbs`, which calls the single `Start-Tomahawk.ps1` startup flow without leaving a terminal open.
 
+**This is the only launcher you need.** In the desk folder, `Launch.vbs` is the one to double-click. `Launch.bat` does the same thing with a visible console (for troubleshooting), and `Start-Tomahawk.ps1` is the startup flow both of them run. The older `run.bat`, `force_restart.ps1`, `install_and_restart.ps1` and `restart_signal_desk.ps1` have been removed.
+
+Each time you start the desk, the launcher keeps exactly one **Daytrade Signal Desk** shortcut on your Desktop and in the Start menu, pointing at `Launch.vbs` with the desk icon. Any other shortcut that starts this desk folder (for example one made for an older script) is replaced by it. Shortcuts to anything else are never touched, and headless runs (`-NoDialogs`, the watchdog) leave shortcuts alone. If no shortcut works, double-click `Launch.vbs` in the desk folder once, or run `tools\Install-DeskShortcut.ps1`.
+
 The launcher creates a missing Python environment, repairs missing dependencies, starts the desk, waits for its health check, opens its browser page, and opens the installed IB Gateway when IBKR is selected and the configured API port is unavailable. It reuses existing components on repeat clicks. Previous server logs are retained as `.previous` files; setup failures show an explanation and keep details in `data/setup.log` or `data/server.stderr.log`.
 
 Complete **IB Gateway sign-in / 2FA** when prompted. The launcher does not store credentials, choose an account, change execution mode, or submit orders. The desk displays remaining startup steps at the top of the page; account verification and mode confirmation still happen before broker execution. A reachable Gateway port alone is not account verification.
@@ -49,7 +53,7 @@ If daily P&L stays unavailable, check **Configure → Settings → API → Setti
 
 **2FA / IB Key cannot be eliminated** and must never be disabled. Soft reconnect does not log Gateway out, so it usually avoids 2FA. Human 2FA is required when Gateway fully logs out (weekly reauthentication, explicit logout, cold start after token expiry). To make full logouts rare: in IB Gateway set **Configure → Lock and Exit → Never lock** and **Auto restart** at a time you are around (IB’s recommended API setup). Optional later: [IBC](https://github.com/IbcAlpha/IBC) can drive Auto-Restart; this desk documents it only — it is not bundled. A Windows Task Scheduler proposal lives in `tools/Register-GatewayDailyRestart.ps1` (relaunches `ibgateway.exe`; login may auto if the session is cached, otherwise you still approve IB Key).
 
-Gateway is discovered under `C:\Jts\ibgateway` or your user `Jts\ibgateway` directory. For another location, set `IB_GATEWAY_EXE` in `.env`. `Launch.bat` and the older start/restart scripts delegate to the same launcher; none blindly terminates a port owner. For diagnostics, run `Launch.bat -NoBrowser -NoDialogs`.
+Gateway is discovered under `C:\Jts\ibgateway` or your user `Jts\ibgateway` directory. For another location, set `IB_GATEWAY_EXE` in `.env`. `Launch.bat` runs the same launcher; it never blindly terminates a port owner. For diagnostics, run `Launch.bat -NoBrowser -NoDialogs`.
 
 The launcher reuses a running desk only when its health response identifies this checkout and the configured data directory. If the code in this folder changed after that desk started (for example after `git pull`), the launcher asks whether to restart it; the desk refuses to stop while a broker order is unresolved, and headless runs (`-NoDialogs`, the watchdog) never restart it. The page also shows a notice until the desk is restarted. `Launch.vbs` and `Launch.bat` run the launcher with a process-scoped `-ExecutionPolicy Bypass`, so Windows' default script policy does not block the shortcut. Another checkout on the same port is reported as a conflict. Process environment settings override `.env`; inline comments are supported, and quote values that contain a literal `#` after whitespace. Jev request budgets use `JEV_RPM=30` and `JEV_DAILY=500` by default and are reserved before provider requests.
 
@@ -189,19 +193,7 @@ Flask + Jinja + vanilla JS + yfinance/pandas/requests. Dark desk UI (`--bg #0b0f
 
 Double-click the **Daytrade Signal Desk** desktop shortcut. It runs `Launch.vbs` and the shared `Start-Tomahawk.ps1` startup flow, including environment setup when needed, then opens the browser.
 
-(`Launch.bat` uses the same `.venv` folder.)
-
-Or after first setup:
-
-```bat
-run.bat
-```
-
-After a deploy from the box:
-
-```powershell
-powershell -NoProfile -File install_and_restart.ps1
-```
+(`Launch.bat` uses the same `.venv` folder and shows a console window.) After a `git pull`, open the same shortcut: it offers to restart a desk that is still running the old code.
 
 ## Linux / this box
 

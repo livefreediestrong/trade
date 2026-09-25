@@ -16,8 +16,7 @@ VERSION = "source-release-v1"
 FOLDERS = {"static", "templates", "tools", "tests", "docs"}
 EXTENSIONS = {".py", ".js", ".cjs", ".css", ".html", ".md", ".ps1", ".cmd", ".bat", ".vbs", ".png", ".svg", ".ico", ".txt", ".ttf", ".woff2"}
 ROOT_FILES = {"README.md", "requirements.txt", "Launch.vbs", "Launch.bat", "Start-Tomahawk.ps1",
-              "run.bat", "force_restart.ps1", "install_and_restart.ps1", "restart_signal_desk.ps1",
-              "import_gf_watchlist.ps1", ".env.example", ".gitignore"}
+              ".env.example", ".gitignore"}
 
 
 def allowed(name):

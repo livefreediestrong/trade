@@ -323,3 +323,24 @@ if ($script:asked -ne 1) { throw 'Restart not requested' }
 $status = Get-Content -Raw (Join-Path $Root 'data\launcher-status.json') | ConvertFrom-Json
 if ($status.message -notlike '*still unresolved*') { throw "Refusal not reported: $($status.message)" }
 """)
+
+
+def test_one_desk_shortcut_replaces_older_ones(tmp_path):
+    run_ps(tmp_path, r'''
+Set-Content -LiteralPath (Join-Path $Root 'Launch.vbs') -Value "' stub"
+$desk = Join-Path $Root 'desktop'; New-Item -ItemType Directory -Path $desk | Out-Null
+$shell = New-Object -ComObject WScript.Shell
+function New-Link($Name, $Target, $Arguments) {
+    $l = $shell.CreateShortcut((Join-Path $desk "$Name.lnk")); $l.TargetPath = $Target; $l.Arguments = $Arguments; $l.Save()
+}
+New-Link 'Old desk' (Join-Path $Root 'run.bat') ''
+New-Link 'Desk console' 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' ('-File "' + (Join-Path $Root 'Start-Tomahawk.ps1') + '"')
+New-Link 'Notepad' 'C:\Windows\System32\notepad.exe' ''
+$changes = @(Repair-DeskShortcut @($desk))
+$names = @(Get-ChildItem -LiteralPath $desk -Filter '*.lnk' | ForEach-Object BaseName | Sort-Object)
+if (($names -join ',') -ne 'Daytrade Signal Desk,Notepad') { throw "Shortcuts left: $($names -join ',')" }
+$link = $shell.CreateShortcut((Join-Path $desk 'Daytrade Signal Desk.lnk'))
+if ($link.Arguments -ne ('"' + (Join-Path $Root 'Launch.vbs') + '"')) { throw "Wrong target: $($link.Arguments)" }
+if ($changes.Count -ne 3) { throw "Changes: $($changes -join ' | ')" }
+if (@(Repair-DeskShortcut @($desk)).Count -ne 0) { throw 'A correct shortcut was rewritten' }
+''')

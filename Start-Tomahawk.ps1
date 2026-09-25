@@ -237,6 +237,54 @@ function Ensure-DeskPython([string]$LogDir) {
     }
     return $python
 }
+# One desk shortcut: "Daytrade Signal Desk" -> wscript.exe Launch.vbs, on the Desktop
+# and in the Start menu. Other shortcuts that start THIS checkout (older launch
+# scripts, Launch.bat, Start-Tomahawk.ps1, a second copy) are folded into it.
+# Shortcuts for anything else are never touched. Never blocks startup.
+$DeskShortcutName = 'Daytrade Signal Desk'
+$LegacyLaunchers = @('Launch.vbs', 'Launch.bat', 'Start-Tomahawk.ps1', 'run.bat', 'force_restart.ps1',
+    'install_and_restart.ps1', 'restart_signal_desk.ps1')
+function Test-DeskShortcutTarget([string]$Text) {
+    if (-not $Text) { return $false }
+    $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    foreach ($name in $LegacyLaunchers) {
+        if ($Text.IndexOf((Join-Path $rootFull $name), [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+    }
+    return $false
+}
+function Repair-DeskShortcut([string[]]$Folders = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
+    $vbs = Join-Path $Root 'Launch.vbs'
+    if (-not (Test-Path -LiteralPath $vbs)) { return @() }
+    $shell = New-Object -ComObject WScript.Shell
+    $icon = Join-Path $Root 'static\desk.ico'
+    $changes = @()
+    foreach ($folder in $Folders) {
+        if (-not $folder -or -not (Test-Path -LiteralPath $folder)) { continue }
+        $canonical = Join-Path $folder "$DeskShortcutName.lnk"
+        foreach ($file in @(Get-ChildItem -LiteralPath $folder -Filter '*.lnk' -File -ErrorAction SilentlyContinue)) {
+            if ($file.FullName -ieq $canonical) { continue }
+            $link = $shell.CreateShortcut($file.FullName)
+            if ((Test-DeskShortcutTarget $link.TargetPath) -or (Test-DeskShortcutTarget $link.Arguments)) {
+                Remove-Item -LiteralPath $file.FullName -Force
+                $changes += "Replaced shortcut '$($file.BaseName)' with '$DeskShortcutName'."
+            }
+        }
+        $link = $shell.CreateShortcut($canonical)
+        $target = Join-Path $env:WINDIR 'System32\wscript.exe'
+        $arguments = '"' + $vbs + '"'
+        if ($link.TargetPath -ine $target -or $link.Arguments -ne $arguments -or $link.WorkingDirectory -ine $Root) {
+            $existed = Test-Path -LiteralPath $canonical
+            $link.TargetPath = $target
+            $link.Arguments = $arguments
+            $link.WorkingDirectory = $Root
+            $link.Description = 'Start or open the Tomahawk trading desk'
+            if (Test-Path -LiteralPath $icon) { $link.IconLocation = "$icon,0" }
+            $link.Save()
+            $changes += $(if ($existed) { "Pointed '$DeskShortcutName' at Launch.vbs." } else { "Added the '$DeskShortcutName' shortcut." })
+        }
+    }
+    return $changes
+}
 function Invoke-DeskLauncher {
     $port = [int](Get-LaunchSetting 'TOMAHAWK_PORT' '5056')
     if ($port -lt 1 -or $port -gt 65535) { throw 'TOMAHAWK_PORT is invalid.' }
@@ -248,6 +296,10 @@ function Invoke-DeskLauncher {
     try {
         try { $owned = $mutex.WaitOne(60000) } catch [Threading.AbandonedMutexException] { $owned = $true }
         if (-not $owned) { throw 'Another launch is still starting the desk. Wait a moment and reopen the shortcut.' }
+        if (-not $NoDialogs) {
+            # Your own launches keep one correct desk shortcut; headless runs never touch shortcuts.
+            try { Repair-DeskShortcut | ForEach-Object { Write-Output $_ } } catch { Write-Output "Shortcut check skipped: $($_.Exception.Message)" }
+        }
         # A desk started before an update keeps serving the old code; offer to restart it.
         $updateNote = $null
         $health = Get-DeskHealth $url $port

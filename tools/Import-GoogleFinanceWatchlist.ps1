@@ -1,5 +1,6 @@
 $ErrorActionPreference = "Stop"
-$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Replaces the desk watchlist with data\google_finance_watchlist.txt (desk must be running).
+$Root = Split-Path -Parent $PSScriptRoot
 $py = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path $py)) { $py = "python" }
 & $py -c @"
