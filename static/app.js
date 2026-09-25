@@ -4193,20 +4193,22 @@
     }
     const stale = buzz.stale ? " · may be outdated" : "";
     const fromCache = buzz.from_cache ? " · from cache" : "";
-    const authMode = buzz.auth_mode || (buzz.reddit_auth && buzz.reddit_auth.mode) || "";
+    const auth = buzz.reddit_auth || {};
+    const authMode = auth.mode || buzz.auth_mode || "";
     let authBit = "";
     if (authMode) {
       const am = String(authMode).toLowerCase();
-      if (am.includes("oauth")) authBit = " · Reddit login (OAuth)";
+      if (auth.message) authBit = ` · ${auth.message}`;
+      else if (am.includes("oauth")) authBit = " · Reddit login (OAuth)";
       else if (am.includes("public")) authBit = " · public feed (may be blocked)";
       else authBit = ` · ${authMode}`;
     }
     if (meta) {
-      meta.textContent = `Last refresh: ${when}${stale}${fromCache}${authBit}`;
+      meta.textContent = `Last refresh: ${when}${stale}${fromCache}${buzz.refreshing ? ' · refreshing in background' : ''}${authBit}`;
       meta.title = "When Reddit mention data was last refreshed (research only)";
     }
     if (errEl) {
-      const errs = buzz.errors || [];
+      const errs = auth.state === 'needs_credentials' ? [] : [...new Set(buzz.errors || [])];
       errEl.textContent = errs.length ? errs.slice(0, 4).join(" | ") : "";
     }
     const liveNote = $("#buzz-live-chat-note");
@@ -4248,7 +4250,7 @@
     }
     const rows = buzz.tickers || buzz.top || [];
     if (!rows.length) {
-      list.innerHTML = `<div class="empty">${buzz.stale ? "Buzz is warming up — check back shortly." : "No ticker mentions yet. Reddit may be blocking public feeds; a login helps when configured."}</div>`;
+      list.innerHTML = `<div class="empty">${escapeHtml(auth.state === 'needs_credentials' ? auth.message : buzz.refreshing ? "Refreshing source data in the background." : "No current ticker mentions from the connected sources.")}</div>`;
       return;
     }
     const hotCut = rows[0] && (rows[0].weighted_mentions || rows[0].mentions || 0);

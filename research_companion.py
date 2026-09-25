@@ -89,8 +89,11 @@ def historical_observation(symbol, bars, source, now):
 
 def memory_summary(events):
     groups = desk_workbench.calibration(events)
-    qualified = research_learning.train(events)["qualified_samples"]
+    trained = research_learning.train(events)
+    qualified = trained["qualified_samples"]
     return {"observations": len(events), "reviewed_outcomes": qualified, "groups": groups,
+            "capacity": 5000, "excluded_outcomes": trained["excluded"], "evidence_hash": trained["evidence_hash"],
+            "active_groups": sum(bool(w["active_for_ranking"]) for w in trained["weights"]),
             "note": "No qualified scored outcomes yet. I can collect evidence, but I cannot infer an edge." if not qualified else
                     "Past outcomes train research-ranking parameters. They do not establish profitability or fine-tune the language model."}
 
@@ -127,6 +130,7 @@ class Companion:
         self.stop = threading.Event()
         self._threads = {}
         self.scheduler_errors = {}
+        self._memory_cache = None
         self.paper = PaperWorkday(desk)
         self.trades = TradeJournal(desk)
         from agent_review import AgentReview
@@ -151,7 +155,31 @@ class Companion:
 
     def events(self):
         raw = self.desk._load_json(self.desk.DECISIONS_PATH, {})
-        return (raw.get("events", []) if isinstance(raw, dict) else raw)[-500:]
+        events = raw.get("events", []) if isinstance(raw, dict) else raw
+        if not isinstance(events, list) or any(not isinstance(e, dict) for e in events):
+            raise ValueError("Research memory is unreadable; preserve it for recovery")
+        return events[:5000]  # DecisionRing stores newest first.
+
+    def memory_status(self):
+        """Reuse the same evidence summary between polls; corrections invalidate it."""
+        path = self.desk.DECISIONS_PATH
+        if str(path.resolve()) in self.desk._CORRUPT_PATHS:
+            return {"observations": 0, "reviewed_outcomes": 0, "groups": [], "available": False,
+                    "note": "Research memory needs recovery. Existing records have been preserved."}
+        try:
+            stat = path.stat()
+            key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+        except FileNotFoundError:
+            key = (str(path.resolve()), None, 0)
+        cached = self._memory_cache
+        if cached and cached[0] == key and 0 <= time.monotonic() - cached[1] < 30:
+            return copy.deepcopy(cached[2])
+        value = dict(memory_summary(self.events()), available=True)
+        if str(path.resolve()) in self.desk._CORRUPT_PATHS:
+            return {"observations": 0, "reviewed_outcomes": 0, "groups": [], "available": False,
+                    "note": "Research memory needs recovery. Existing records have been preserved."}
+        self._memory_cache = (key, time.monotonic(), copy.deepcopy(value))
+        return value
 
     def status(self):
         with self.lock:
@@ -162,7 +190,7 @@ class Companion:
                     "busy": self.busy, "error": self.last_error, "market_open": paper_loop.is_rth(now),
                     "scheduler_errors": dict(self.scheduler_errors),
                     "next_session": next_session(now), "briefs": saved.get("briefs", [])[:30],
-                    "notebook_count": len(saved.get("briefs", [])), "memory": memory_summary(self.events()),
+                    "notebook_count": len(saved.get("briefs", [])), "memory": self.memory_status(),
                     "paper_workday": self.paper.status(), "actual_trades": self.trades.status(),
                     "agent_review": self.review.status(),
                     "execution_settings": {k: cfg.get(k) for k in ("mode", "session_active", "kill_switch", "rth_only", "risk_preset", "live_agent")},
@@ -323,6 +351,8 @@ class Companion:
                 self.busy = False
 
     def start(self):
+        if self.stop.is_set():
+            return  # An explicit stop is not a crashed worker.
         def loop():
             while not self.stop.wait(30):
                 # Optional feeds/reviews cannot starve the daily notebook.

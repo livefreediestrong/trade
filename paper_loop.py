@@ -29,7 +29,7 @@ NY_TZ = ZoneInfo("America/New_York") if ZoneInfo else None
 RTH_OPEN = dtime(9, 30)
 RTH_CLOSE = dtime(16, 0)
 
-DECISIONS_MAX = 500
+DECISIONS_MAX = 5000
 MIN_LOOP_INTERVAL_SEC = 30
 DEFAULT_LOOP_INTERVAL_SEC = 60
 
@@ -278,9 +278,11 @@ class DecisionRing:
         self._lock = threading.RLock()
         self._seq = 0
         self._events: list[dict[str, Any]] = []
+        self._load_error = None
         self._load()
 
     def _load(self) -> None:
+        self._load_error = None
         if not self.path.exists():
             self._events = []
             self._seq = 0
@@ -288,17 +290,21 @@ class DecisionRing:
         try:
             import json
 
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            raw = json.loads(self.path.read_text(encoding="utf-8-sig"))
             if isinstance(raw, dict):
+                if not isinstance(raw.get("events", []), list):
+                    raise ValueError("Invalid event list")
                 self._events = list(raw.get("events") or [])
                 self._seq = int(raw.get("seq") or 0)
             elif isinstance(raw, list):
                 self._events = list(raw)
                 self._seq = max((int(e.get("seq") or 0) for e in self._events), default=0)
             else:
-                self._events = []
-                self._seq = 0
+                raise ValueError("Invalid research memory")
+            if any(not isinstance(e, dict) for e in self._events):
+                raise ValueError("Invalid research event")
         except Exception:
+            self._load_error = "Research memory is unreadable; preserved for recovery"
             # Fail closed: backup corrupt file; do not silent-overwrite with empty
             try:
                 bak = self.path.with_suffix(self.path.suffix + ".corrupt.bak")
@@ -312,14 +318,19 @@ class DecisionRing:
     def _persist(self) -> None:
         import json
 
+        if self._load_error:
+            raise ValueError(self._load_error)
+
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         payload = {"seq": self._seq, "events": self._events}
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.write_text(json.dumps(payload, separators=(",", ":"), allow_nan=False), encoding="utf-8")
         tmp.replace(self.path)
 
     def append(self, event: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
+            if self._load_error:
+                raise ValueError(self._load_error)
             import copy
             import json
             self._seq += 1

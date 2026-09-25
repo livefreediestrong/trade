@@ -77,7 +77,7 @@
     txt('moss-next',last?.next_step || 'Start with the cost calculator, or ask me to review completed market sessions.');
     txt('moss-greeting',`${s.notebook_count} notebook entries · ${s.memory.reviewed_outcomes} reviewed outcomes`);
     txt('moss-learning',s.memory.note+' '+s.learning);
-    txt('moss-memory-count',`${s.memory.observations} observations · ${s.memory.reviewed_outcomes} scored`);
+    txt('moss-memory-count',s.memory.available === false ? 'Memory needs recovery · records preserved' : `${s.memory.observations} observations · ${s.memory.reviewed_outcomes} qualified outcomes${s.memory.excluded_outcomes != null ? ` · ${s.memory.excluded_outcomes} excluded` : ''}${s.memory.capacity ? ` · ${s.memory.capacity.toLocaleString()}-record capacity` : ''}`);
     txt('moss-schedule',s.schedule + (s.next_session ? ` Next session opportunity: ${new Date(s.next_session).toLocaleString()}.` : ''));
     if($('moss-research'))$('moss-research').disabled=s.busy;
     if($('moss-history')){

@@ -5473,6 +5473,7 @@ def _bg_loop() -> None:
 
 
 _bg_thread: threading.Thread | None = None
+_worker_start_lock = threading.RLock()
 
 _INSTANCE_LOCK_PATH = Path(os.environ.get("TOMAHAWK_INSTANCE_LOCK", str(DATA_DIR / "tomahawk.pid")))
 _INSTANCE_LOCK_FD: int | None = None
@@ -5552,11 +5553,16 @@ def release_instance_lock() -> None:
             pass
 
 
-def start_bg() -> None:
+def _start_scan_worker() -> None:
     global _bg_thread
-    if not (_bg_thread and _bg_thread.is_alive()):
-        _bg_thread = threading.Thread(target=_bg_loop, name="signal-scan", daemon=True)
-        _bg_thread.start()
+    with _worker_start_lock:
+        if not _bg_stop.is_set() and not (_bg_thread and _bg_thread.is_alive()):
+            _bg_thread = threading.Thread(target=_bg_loop, name="signal-scan", daemon=True)
+            _bg_thread.start()
+
+
+def start_bg() -> None:
+    _start_scan_worker()
     ensure_paper_loop_started()
 
 
@@ -8874,11 +8880,18 @@ def api_buzz():
     cfg = load_config()
     watchlist = list(cfg.get("watchlist") or DEFAULT_WATCHLIST)
     focus_liquid = str(cfg.get("watchlist_focus") or "liquid").lower() == "liquid"
-    # Network I/O outside _lock
+    # Serve cached evidence immediately; slow social providers run in one worker.
     try:
-        payload = buzz_sources.fetch_ticker_buzz(
-            watchlist, force=force, focus_liquid=focus_liquid
-        )
+        payload = buzz_sources.get_cached_buzz()
+        expected_key = buzz_sources._buzz_cache_key(watchlist, focus_liquid)
+        if payload and payload.get("cache_key") != expected_key:
+            payload = None
+        refreshing = False
+        if force or not payload or payload.get("stale"):
+            refreshing = buzz_sources.kick_background_refresh(watchlist, focus_liquid=focus_liquid)
+        payload = dict(payload or {"ok": True, "tickers": [], "top": [], "watchlist_hits": [],
+                                  "megathreads": [], "errors": [], "stale": True, "cached_at": None})
+        payload["refreshing"] = refreshing or buzz_sources._refresh_inflight
     except Exception as e:  # noqa: BLE001
         payload = {
             "ok": False,
@@ -8896,8 +8909,8 @@ def api_buzz():
     try:
         payload = dict(payload)
         payload["reddit_auth"] = buzz_sources.reddit_auth_status()
-        if not payload.get("auth_mode"):
-            payload["auth_mode"] = (payload.get("reddit_auth") or {}).get("mode") or "none"
+        payload["auth_mode"] = payload["reddit_auth"].get("mode") or "none"
+        payload["reddit_degraded"] = payload["reddit_auth"].get("state") in ("needs_credentials", "cooldown", "error")
     except Exception:
         payload = dict(payload)
         payload.setdefault("reddit_auth", {"configured": False, "mode": "none"})
@@ -9085,11 +9098,12 @@ def api_health():
         providers = {"error": str(exc)[:120], "configured": {}}
     return jsonify(
         {
-            "ok": not _CORRUPT_PATHS,
+            "ok": not _CORRUPT_PATHS and not getattr(_decision_ring, "_load_error", None),
             "app_id": "tomahawk-desk",
             "instance": {"source_root": str(APP_DIR.resolve()), "data_root": str(DATA_DIR.resolve())},
             "startup": _startup_status(),
             "code": code_version.status(),
+            "recovery": worker_health(),
             "pid": os.getpid(),
             "banner": BANNER,
             "port": DESK_PORT,
@@ -9110,11 +9124,72 @@ def api_health():
 _SERVING = False
 
 
-def _exit_desk_process() -> None:
+def worker_health():
+    expected = bool(_SERVING)
+    rows = {"signal-scan": bool(_bg_thread and _bg_thread.is_alive())}
+    companion = globals().get("_research_companion")
+    if companion and not companion.stop.is_set():
+        rows.update({name: bool(companion._threads.get(name) and companion._threads[name].is_alive())
+                     for name in ("moss-daily-schedule", "moss-paper-workday", "moss-broker-read-only")})
+    if _bg_stop.is_set():
+        rows.pop("signal-scan", None)
+    return {"expected": expected, "workers": rows,
+            "missing": [name for name, alive in rows.items() if expected and not alive],
+            "memory_error": getattr(_decision_ring, "_load_error", None)}
+
+
+@app.post("/api/desk/recover")
+def api_desk_recover():
+    body = request.get_json(silent=True) or {}
+    if not _is_loopback_request():
+        return jsonify(ok=False, error="Recovery is local-only"), 403
+    if not _SERVING or not isinstance(body, dict) or body.get("expected_pid") != os.getpid():
+        return jsonify(ok=False, error="Recovery requires the current serving process"), 409
+    before = worker_health()
+    if _CORRUPT_PATHS or before["memory_error"]:
+        return jsonify(ok=False, error="Stored evidence needs recovery; no automatic reset performed"), 409
+    with _worker_start_lock:
+        if "signal-scan" in before["missing"]:
+            _start_scan_worker()
+        if any(name.startswith("moss-") for name in before["missing"]):
+            _research_companion.start()
+    after = worker_health()
+    repaired = [name for name in before["missing"] if name not in after["missing"]]
+    if repaired:
+        append_journal("workers_recovered", {"workers": repaired})
+    return jsonify(ok=not after["missing"], repaired=repaired, recovery=after)
+
+
+def _automatic_restart_error():
+    """No automatic process restart while a session or broker exposure needs supervision."""
+    if load_config().get("session_active"):
+        return "Active trading session; update restart deferred"
+    if _CORRUPT_PATHS or getattr(_decision_ring, "_load_error", None):
+        return "Stored evidence needs recovery; restart cannot repair it"
+    if _live_agent.cycle_lock.locked():
+        return "Agent cycle in progress; restart deferred"
+    if _broker_is_configured():
+        try:
+            book = _broker_book_cached()
+            import broker_router
+            orders = broker_router.get_open_orders()
+            if not isinstance(book, dict) or not book.get("ok") or book.get("risk_ready") is not True or not isinstance(book.get("positions"), list):
+                return "Broker state unavailable; automatic restart deferred"
+            if book["positions"] or not orders.get("ok") or not isinstance(orders.get("orders"), list) or orders["orders"]:
+                return "Broker positions or orders are present or unverified; automatic restart deferred"
+        except Exception:
+            return "Broker state unavailable; automatic restart deferred"
+    return None
+
+
+def _exit_desk_process(automatic=False) -> None:
     """Stop the desk once no ledger write is in progress; the launcher restarts it."""
     time.sleep(0.8)  # let the HTTP response reach the launcher
     # _BROKER_SUBMIT_LOCK: no broker submission is in flight; _lock: no ledger write.
     with _BROKER_SUBMIT_LOCK, _lock:
+        if automatic and _automatic_restart_error():
+            append_journal("app_stop_cancelled", {"reason": "Automatic restart conditions changed"})
+            return
         pending = load_ledger().get("pending_broker_orders") or []
         if pending:  # an order started after the request was accepted
             append_journal("app_stop_cancelled", {"reason": "broker order unresolved", "pending": len(pending)})
@@ -9134,11 +9209,19 @@ def api_desk_shutdown():
         return jsonify(ok=False, error="Only this computer can restart the desk"), 403
     if not _SERVING:
         return jsonify(ok=False, error="This process is not the running desk server"), 409
+    automatic = body.get("automatic") is True
+    if automatic:
+        if body.get("expected_pid") != os.getpid():
+            return jsonify(ok=False, error="Process changed; check health again"), 409
+        error = _automatic_restart_error()
+        if error:
+            return jsonify(ok=False, error=error, deferred=True), 409
     with _lock:
         pending = load_ledger().get("pending_broker_orders") or []
     if pending:
         return jsonify(ok=False, error=f"{len(pending)} broker order(s) still unresolved; restart after reconciliation"), 409
-    threading.Thread(target=_exit_desk_process, name="desk-shutdown", daemon=True).start()
+    target = (lambda: _exit_desk_process(automatic=True)) if automatic else _exit_desk_process
+    threading.Thread(target=target, name="desk-shutdown", daemon=True).start()
     return jsonify(ok=True, stopping=True, pid=os.getpid())
 
 
