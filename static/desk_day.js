@@ -41,8 +41,8 @@
   fill('dd-notes',(woman.reasoning||[]).map(n=>sourceRow(el('li',n.text,'dd-note is-'+n.level),'note',n.key)),'Nothing to flag right now.');
   fill('dd-chores',(woman.chores||[]).map(c=>{const li=sourceRow(el('li',null,'dd-chore is-'+c.state),'chore',c.key);li.append(el('span',CHORE[c.state]||'·','dd-mark'),el('strong',c.label),el('small',c.detail));return li;}),'');
   const ev=d.events||{};
-  fill('dd-events',(ev.upcoming||[]).map(e=>{const li=el('li',null,'dd-event is-'+e.impact);li.append(el('span',e.impact,'dd-impact'),' ',link(e.when||e.title,e.url));if(e.guard)li.append(el('small',' · Fox pauses new entries '+e.guard));return li;}),'No medium or high impact events in the next 36 hours.');
-  const bad=Object.entries((ev.status||{}).sources||{}).filter(([,s])=>!s.ok).map(([k,s])=>k+' ('+(s.error||'unavailable')+')');
+  fill('dd-events',(ev.upcoming||[]).map(e=>{const li=el('li',null,'dd-event is-'+e.impact);li.append(el('span',e.impact,'dd-impact'),' ',link(e.when||e.title,e.url));if(e.guard)li.append(el('small',' · Fox pauses new entries '+e.guard));return li;}),'No medium or high impact events in available sources for the next 36 hours.');
+  const bad=Object.entries((ev.status||{}).sources||{}).filter(([,s])=>!s.ok).map(([k,s])=>k+' ('+(s.fallback?s.fallback+'; ':'')+(s.error||'unavailable')+')');
   set('dd-events-note',(ev.guard_enabled?'Event pause is on.':'Event pause is off (Settings).')+(bad.length?' Unavailable: '+bad.join(', ')+'.':''));
   const w=d.wsb||{};
   const rows=(w.top||[]).slice(0,6).map(r=>{const tr=el('tr');const lean=r.bull_share==null?'—':r.bull_share>=.5?Math.round(r.bull_share*100)+'% bull':Math.round((1-r.bull_share)*100)+'% bear';

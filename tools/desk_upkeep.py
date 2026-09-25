@@ -314,11 +314,23 @@ def update_tasks(problems: list[str]) -> None:
         pass
 
 
+def verified_backup() -> dict:
+    """The running app captures JSON under its own lock and uses SQLite online backup."""
+    req = urllib.request.Request(f"http://127.0.0.1:{PORT}/api/backups", data=b"{}",
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        result = json.load(resp)
+    if not result.get("ok"):
+        raise ValueError(result.get("error") or "Backup verification failed")
+    return result
+
+
 def daily(with_tests: bool = True) -> dict:
     started = time.time()
     report = {"at": now().isoformat(), "rules": "never touches config, orders, sessions or broker"}
     steps = [("archived", archive_root_clutter), ("pruned", prune_archive), ("logs", rotate_logs),
-             ("caches_removed", clean_caches), ("sqlite", sqlite_maintenance), ("data_usage_mb", data_usage)]
+             ("caches_removed", clean_caches), ("sqlite", sqlite_maintenance),
+             ("backup", verified_backup), ("data_usage_mb", data_usage)]
     for name, fn in steps:
         try:
             report[name] = fn()
@@ -331,6 +343,9 @@ def daily(with_tests: bool = True) -> dict:
         "automation": (h.get("loop") or {}).get("automation_health")}
     report["tests"] = run_tests() if with_tests else {"skipped": "--no-tests"}
     problems = []
+    for name, _ in steps:
+        if isinstance(report.get(name), dict) and report[name].get("error"):
+            problems.append(f"{name}: {report[name]['error']}")
     if h is None:
         problems.append("desk unreachable at the daily check")
     elif h.get("corrupt_files"):
@@ -338,6 +353,8 @@ def daily(with_tests: bool = True) -> dict:
     if report["tests"].get("ok") is False:
         problems.append("tests: " + str(report["tests"].get("summary")))
     for name, row in (report.get("sqlite") or {}).items():
+        if isinstance(row, dict) and row.get("error"):
+            problems.append(f"{name}: {row['error']}")
         if isinstance(row, dict) and row.get("quick_check") not in (None, "ok"):
             problems.append(f"{name} integrity: {row['quick_check']}")
     report["problems"] = problems

@@ -19,6 +19,8 @@ trading; the static FOMC dates in macro_calendar still apply offline.
 from __future__ import annotations
 
 import json
+import math
+import html
 import os
 import re
 import threading
@@ -39,6 +41,7 @@ PRESIDENT_ICS_URL = ("https://calendar.google.com/calendar/ical/"
 UA = "TomahawkDesk/1.0 (local research desk; calendar reader)"
 MAX_BYTES = 4 * 1024 * 1024
 REFRESH_SEC = 3 * 3600
+RETRY_SEC = 15 * 60
 KEEP_PAST_HOURS = 6
 KEEP_AHEAD_DAYS = 21
 IMPACTS = ("high", "medium", "low")
@@ -52,7 +55,7 @@ _data_dir: Path | None = None
 # --- parsing ------------------------------------------------------------------
 
 def _clean(text: Any, limit: int = 200) -> str:
-    raw = re.sub(r"<[^>]+>", " ", str(text or ""))
+    raw = re.sub(r"<[^>]+>", " ", html.unescape(str(text or "")))
     return " ".join(raw.split())[:limit]
 
 
@@ -77,6 +80,8 @@ _FED_CHAIR = re.compile(r"(?<!Vice )\bChair(?:man|woman)?\b")
 def _fed_clock(text: str) -> dtime | None:
     match = _FED_TIME.search(text or "")
     if not match:
+        return None
+    if not 1 <= int(match.group(1)) <= 12 or not 0 <= int(match.group(2)) <= 59:
         return None
     hour, minute = int(match.group(1)) % 12, int(match.group(2))
     if match.group(3).lower() == "p":
@@ -182,8 +187,8 @@ def _ics_time(params: str, value: str, default_tz: ZoneInfo) -> tuple[datetime, 
         else:
             try:
                 zone = ZoneInfo(name)
-            except Exception:  # noqa: BLE001 - unknown zone names use the feed default
-                zone = default_tz
+            except Exception:  # An explicit but unknown timezone cannot be guessed.
+                return None
     return naive.replace(tzinfo=zone), False
 
 
@@ -351,7 +356,40 @@ def _source_bls() -> list[dict[str, Any]]:
         impact, kind = classify_bls(row.get("summary") or "")
         out.append(_event("bls", row.get("summary") or "BLS release", row["start"], impact=impact, kind=kind,
                           all_day=row.get("all_day", False), url="https://www.bls.gov/schedule/news_release/"))
+    if not out:
+        raise ValueError("BLS returned no calendar entries")
     return out
+
+
+def bls_offline_schedule(now):
+    """Dated official schedule snapshot, used only when BLS and its cache are unavailable.
+
+    Verified 2026-09-25 at https://www.bls.gov/schedule/2026/.
+    Partial coverage: selected releases through October; never label this a live feed.
+    """
+    if now.astimezone(ET).date() > date(2026, 10, 31):
+        return []
+    schedule = [
+        ("2026-09-25 10:00", "Employee Benefits in the United States"),
+        ("2026-09-29 10:00", "Job Openings and Labor Turnover Survey"),
+        ("2026-09-30 10:00", "Metropolitan Area Employment and Unemployment"),
+        ("2026-10-02 08:30", "Employment Situation"),
+        ("2026-10-14 08:30", "Consumer Price Index"),
+        ("2026-10-14 08:30", "Real Earnings"),
+        ("2026-10-15 08:30", "Producer Price Index"),
+        ("2026-10-16 08:30", "U.S. Import and Export Price Indexes"),
+        ("2026-10-20 10:00", "State Employment and Unemployment"),
+        ("2026-10-21 10:00", "Usual Weekly Earnings of Wage and Salary Workers"),
+        ("2026-10-28 10:00", "Metropolitan Area Employment and Unemployment"),
+        ("2026-10-28 10:00", "Quarterly Data Series on Business Employment Dynamics"),
+        ("2026-10-29 10:00", "Consumer Expenditures"),
+        ("2026-10-30 08:30", "Employment Cost Index"),
+    ]
+    return [dict(_event("bls", title, datetime.strptime(stamp, "%Y-%m-%d %H:%M").replace(tzinfo=ET),
+                        impact=classify_bls(title)[0], kind=classify_bls(title)[1],
+                        detail="Official schedule saved Sep 25; feed unavailable. Dates may change.",
+                        url="https://www.bls.gov/schedule/2026/"), schedule_snapshot=True,
+                 verified_on="2026-09-25") for stamp, title in schedule]
 
 
 def _source_ics(url: str, source: str) -> list[dict[str, Any]]:
@@ -383,7 +421,9 @@ def _window_filter(rows: list[dict[str, Any]], now: datetime) -> list[dict[str, 
     for row in rows:
         try:
             start = datetime.fromisoformat(row["start"])
-        except (KeyError, TypeError, ValueError):
+            if start.tzinfo is None or row.get("impact") not in IMPACTS or not row.get("id"):
+                continue
+        except (KeyError, TypeError, ValueError, AttributeError):
             continue
         key = (row.get("kind"), row["start"][:16]) if str(row.get("kind") or "").startswith("fomc") else row.get("id")
         if lo <= start <= hi and key not in seen:
@@ -406,7 +446,7 @@ def refresh(now: datetime | None = None) -> dict[str, Any]:
             jobs[f"calendar_{i + 1}"] = (lambda u=url: _source_ics(u, "calendar"))
         with _lock:
             previous = {k: list(v) for k, v in (_state.get("by_source") or {}).items()}
-            sources = dict(_state.get("sources") or {})
+            sources = {}  # Disabled sources must not survive as permanent error badges.
         by_source: dict[str, list[dict[str, Any]]] = {}
         with ThreadPoolExecutor(max_workers=4, thread_name_prefix="market-events") as pool:
             futures = {name: pool.submit(fn) for name, fn in jobs.items()}
@@ -417,7 +457,10 @@ def refresh(now: datetime | None = None) -> dict[str, Any]:
                     sources[name] = {"ok": True, "error": None, "count": len(rows), "checked_at": now.isoformat()}
                 except Exception as exc:  # noqa: BLE001 - keep the last good rows for this source
                     by_source[name] = previous.get(name, [])
+                    if name == "bls" and not _window_filter(by_source[name], now):
+                        by_source[name] = bls_offline_schedule(now)
                     sources[name] = {"ok": False, "error": _short_error(exc), "count": len(by_source[name]),
+                                     "fallback": "dated schedule" if any(r.get("schedule_snapshot") for r in by_source[name]) else "last good feed" if by_source[name] else None,
                                      "checked_at": now.isoformat()}
         with _lock:
             _state.update(by_source=by_source, sources=sources, at=time.time(), loaded=True)
@@ -453,8 +496,17 @@ def _load_cache() -> None:
     except (OSError, ValueError):
         data = None  # a bad optional cache is ignored, never a trading-state error
     if isinstance(data, dict) and isinstance(data.get("by_source"), dict):
+        try:
+            at = float(data.get("at") or 0)
+            if not math.isfinite(at) or at < 0 or at > time.time() + 60:
+                at = 0
+            groups = {k: [r for r in v if isinstance(r, dict)] for k, v in data["by_source"].items() if isinstance(v, list)}
+            sources = data.get("sources") if isinstance(data.get("sources"), dict) else {}
+            sources = {k: v for k, v in sources.items() if isinstance(v, dict)}
+        except (TypeError, ValueError):
+            return
         with _lock:
-            _state.update(by_source=data["by_source"], sources=data.get("sources") or {}, at=float(data.get("at") or 0))
+            _state.update(by_source=groups, sources=sources, at=at)
 
 
 def _kick_refresh() -> None:
@@ -470,7 +522,7 @@ def events(cfg: dict[str, Any] | None = None, now: datetime | None = None) -> li
     now = now or datetime.now(timezone.utc)
     _load_cache()
     with _lock:
-        stale = time.time() - float(_state.get("at") or 0) > REFRESH_SEC
+        stale = time.time() - float(_state.get("at") or 0) > (RETRY_SEC if any(not s.get("ok") for s in (_state.get("sources") or {}).values()) else REFRESH_SEC)
         rows = [r for group in (_state.get("by_source") or {}).values() for r in group]
     if stale:
         _kick_refresh()
@@ -567,6 +619,7 @@ def start_background() -> None:
                 refresh()
             except Exception:  # noqa: BLE001 - calendar problems never stop the desk
                 pass
-            time.sleep(REFRESH_SEC)
+            failed = any(not s.get("ok") for s in status()["sources"].values())
+            time.sleep(RETRY_SEC if failed else REFRESH_SEC)
 
     threading.Thread(target=loop, name="market-events", daemon=True).start()

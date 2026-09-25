@@ -1751,7 +1751,9 @@
       const ls = String(s.llm_side).toLowerCase();
       bits.push(`<span class="badge badge-llm" title="Brain lean (Buy/Sell/Hold) — research only">Brain ${escapeHtml(ls)}</span>`);
     }
-    if (s.llm_error) {
+    if (s.data_error || s.llm_error === 'stale_or_unverified_market_data') {
+      bits.push('<span class="badge badge-watch" title="Waiting for a fresh quote; no brain decision was requested">Waiting for market data</span>');
+    } else if (s.llm_error) {
       bits.push(`<span class="badge badge-avoid" title="${escapeHtml(s.llm_error)}">Brain error</span>`);
     }
     const rflags = s.research_flags || (s.research_flag ? [s.research_flag] : []);

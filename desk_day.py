@@ -170,9 +170,9 @@ def chores(desk, now: datetime, events_today: list[dict[str, Any]], wsb: dict[st
     bad = [name for name, row in (status.get("sources") or {}).items() if not row.get("ok")]
     high_today = [e for e in events_today if e.get("impact") == "high"]
     detail = (f"{len(events_today)} scheduled event(s) today" + (f", {len(high_today)} high impact" if high_today else "")
-              if events_today else "No medium or high impact events scheduled today")
+              if events_today else "No medium or high impact events in available sources today")
     if bad:
-        detail += f" · unavailable: {', '.join(bad)} (FOMC dates still known)"
+        detail += f" · unavailable: {', '.join(bad)} (saved dates may still be shown)"
     elif not status.get("refreshed_at"):
         detail += " · reading the Fed, BLS and White House calendars"
     out.append(_chore("calendar", "Check the calendar",
@@ -216,6 +216,13 @@ def chores(desk, now: datetime, events_today: list[dict[str, Any]], wsb: dict[st
                           ("; ".join(map(str, problems))[:160]) if problems else f"Clean · ran {_ago(upkeep.get('at'), now)}"))
     else:
         out.append(_chore("upkeep", "Nightly upkeep", "off", "No upkeep report yet (the Windows task writes it after the close)"))
+    if getattr(desk, "DATA_DIR", None):
+        import desk_backups
+        backup = desk_backups.status(desk)
+        out.append(_chore("backup", "Verify local backups", "working" if backup.get("busy") else
+                          "done" if backup.get("ok") and not backup.get("stale") and not backup.get("last_error") else "attention",
+                          backup.get("last_error") or (f"State snapshot verified {_ago(backup.get('verified_at'), now)}" if backup.get("ok")
+                           else backup.get("error") or "No verified state snapshot yet")))
     corrupt = list(getattr(desk, "_CORRUPT_PATHS", []) or [])
     out.append(_chore("ledgers", "Keep the ledgers readable", "attention" if corrupt else "done",
                       f"Needs repair: {', '.join(map(str, corrupt))[:160]}" if corrupt else "All desk files readable"))

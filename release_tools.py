@@ -14,12 +14,14 @@ import zipfile
 
 VERSION = "source-release-v1"
 FOLDERS = {"static", "templates", "tools", "tests", "docs"}
-EXTENSIONS = {".py", ".js", ".cjs", ".css", ".html", ".md", ".ps1", ".cmd", ".bat", ".vbs", ".png", ".svg", ".ico", ".txt", ".ttf", ".woff2"}
+EXTENSIONS = {".py", ".js", ".cjs", ".css", ".html", ".md", ".ps1", ".cmd", ".bat", ".vbs", ".png", ".webp", ".jpg", ".jpeg", ".svg", ".ico", ".txt", ".ttf", ".woff2"}
 ROOT_FILES = {"README.md", "requirements.txt", "Launch.vbs", "Launch.bat", "Start-Tomahawk.ps1",
               ".env.example", ".gitignore"}
 
 
 def allowed(name):
+    if not isinstance(name, str) or not name or name in (".", ".."):
+        return False
     path = Path(name)
     if name in {".env.example", ".gitignore"}:
         return True
@@ -43,7 +45,7 @@ def source_files(root):
 
 
 def manifest(root):
-    root = Path(root)
+    root = Path(root).resolve()
     files = {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in source_files(root)}
     digest = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
     return {"version": VERSION, "sha256": digest, "file_count": len(files), "files": files,
@@ -51,15 +53,24 @@ def manifest(root):
 
 
 def pack(root, output):
-    root, output = Path(root), Path(output)
-    info = manifest(root)
+    root, output = Path(root).resolve(), Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    # Exclusive creation prevents overwriting a known-good release.
-    with zipfile.ZipFile(output, "x", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("release-manifest.json", json.dumps(info, indent=2))
-        for name in info["files"]:
-            archive.write(root/name, name)
-    return info
+    # Hash exactly the bytes archived, validate before publishing, never overwrite.
+    with tempfile.TemporaryDirectory(dir=output.parent) as staging:
+        temp = Path(staging)/"release.zip"
+        files = {}
+        with zipfile.ZipFile(temp, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in source_files(root):
+                name, content = path.relative_to(root).as_posix(), path.read_bytes()
+                files[name] = hashlib.sha256(content).hexdigest()
+                archive.writestr(name, content)
+            info = {"version": VERSION, "files": files, "file_count": len(files),
+                    "sha256": hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest(),
+                    "data_policy": "Source only. Credentials and trading state excluded."}
+            archive.writestr("release-manifest.json", json.dumps(info, indent=2))
+        verify(temp)
+        os.link(temp, output)  # Atomic exclusive publication on the same filesystem.
+        return info
 
 
 def verify(archive_path):
@@ -71,6 +82,8 @@ def verify(archive_path):
             raise ValueError("Unexpectedly large source archive")
         info = json.loads(archive.read("release-manifest.json"))
         files = info.get("files", {})
+        if not isinstance(files, dict) or info.get("file_count") != len(files):
+            raise ValueError("Invalid source manifest")
         if set(names) != set(files)|{"release-manifest.json"} or info.get("version") != VERSION:
             raise ValueError("Archive membership/version mismatch")
         digest = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
@@ -172,6 +185,7 @@ def restore(archive_path, root, *, apply=False, port=None, host=None):
         backup = root/"releases"/("before-recovery-"+manifest(root)["sha256"][:16]+".zip")
         if not backup.exists():
             pack(root, backup)
+        verify(backup)
         with zipfile.ZipFile(archive_path) as archive:
             # Validate everything above before replacing any file.
             for name in info["files"]:

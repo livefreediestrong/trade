@@ -11,6 +11,8 @@ import json
 import math
 import os
 import re
+import copy
+import random
 from pathlib import Path
 from typing import Any, Optional
 
@@ -295,7 +297,35 @@ def gemini_thinking_level(model: str) -> str | None:
     return level
 
 
-def gemini_generate(
+def gemini_generate(prompt: str, **kwargs) -> str:
+    """Expose the latest transport result, without confusing historical signals with health."""
+    cfg = kwargs.get("cfg") or load_llm_config()
+    model = cfg.get("model") or DEFAULT_MODEL
+    try:
+        answer = _gemini_generate(prompt, **kwargs)
+    except Exception as exc:
+        with _BRAIN_HEALTH_LOCK:
+            _BRAIN_HEALTH[model] = {"ok": False, "at": _time.time(),
+                                    "error": redact_secrets(str(exc), cfg.get("api_key") or "")[:300]}
+        raise
+    with _BRAIN_HEALTH_LOCK:
+        _BRAIN_HEALTH[model] = {"ok": True, "at": _time.time(), "error": None}
+    return answer
+
+
+_BRAIN_HEALTH_LOCK = _threading.Lock()
+_BRAIN_HEALTH: dict[str, dict] = {}
+
+
+def brain_health(model):
+    with _BRAIN_HEALTH_LOCK:
+        row = dict(_BRAIN_HEALTH.get(model) or {})
+    age = max(0, _time.time() - row["at"]) if row else None
+    return {**row, "age_sec": age, "state": "unobserved" if not row else
+            "stale" if age > 900 else "healthy" if row["ok"] else "unavailable"}
+
+
+def _gemini_generate(
     prompt: str,
     *,
     system: Optional[str] = None,
@@ -312,7 +342,6 @@ def gemini_generate(
 
     _CALL_COST.last = 0.0
     _CALL_COST.last_model = None
-    _GEMINI_BUDGET.acquire()
 
     model = cfg.get("model") or DEFAULT_MODEL
     url = f"{GEMINI_API_BASE}/{model}:generateContent"
@@ -336,40 +365,50 @@ def gemini_generate(
 
     try:
         timeout = float(timeout_sec) if timeout_sec is not None else 45.0
-        if timeout <= 0:
+        if not math.isfinite(timeout) or timeout <= 0:
             timeout = 45.0
     except (TypeError, ValueError):
         timeout = 45.0
 
-    try:
-        # Key goes in a header, never the URL: requests' error text includes the URL,
-        # and that text flows into signals/journal/UI.
-        r = requests.post(
-            url,
-            json=body,
-            headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
-            timeout=timeout,
-        )
-    except requests.Timeout as exc:
-        raise RuntimeError("llm_timeout") from exc
-    except requests.RequestException as exc:
-        raise RuntimeError(f"gemini_request_failed: {redact_secrets(str(exc), api_key)}") from exc
-
-    if r.status_code != 200:
-        # Do not include request URL (has key) or full body secrets
-        detail = ""
+    deadline = _time.monotonic() + timeout
+    for attempt in range(3):
+        remaining = deadline - _time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("llm_timeout")
+        _GEMINI_BUDGET.acquire()  # Every HTTP attempt consumes the persistent budget.
+        try:
+            r = requests.post(url, json=copy.deepcopy(body),
+                              headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+                              timeout=remaining)
+        except requests.Timeout as exc:
+            raise RuntimeError("llm_timeout") from exc
+        except requests.RequestException as exc:
+            raise RuntimeError(f"gemini_request_failed: {redact_secrets(str(exc), api_key)}") from exc
+        if r.status_code == 200:
+            break
         try:
             err = r.json()
             detail = (err.get("error") or {}).get("message") or str(err)[:200]
         except Exception:
             detail = (r.text or "")[:200]
-        thinking = (body.get("generationConfig") or {}).get("thinkingConfig")
-        if r.status_code == 400 and thinking and "think" in detail.lower():
-            # This model refuses the thinking setting: remember that, and ask again without it.
+        error = f"gemini_http_{r.status_code}: {redact_secrets(str(detail), api_key)}"
+        thinking = body["generationConfig"].get("thinkingConfig")
+        if attempt < 2 and r.status_code == 400 and thinking and "think" in str(detail).lower():
             _NO_THINKING_LEVEL.add(model)
-            return gemini_generate(prompt, system=system, json_mode=json_mode, cfg=cfg,
-                                   timeout_sec=timeout_sec, response_schema=response_schema)
-        raise RuntimeError(f"gemini_http_{r.status_code}: {redact_secrets(detail, api_key)}")
+            body["generationConfig"].pop("thinkingConfig")
+            continue  # Same deadline, no recursive timeout reset.
+        if attempt >= 2 or r.status_code not in (408, 429, 500, 502, 503, 504):
+            raise RuntimeError(error)
+        delay = (2 ** attempt) + random.uniform(0, .25)
+        try:
+            retry_after = float((getattr(r, "headers", {}) or {}).get("Retry-After", 0))
+            if math.isfinite(retry_after):
+                delay = max(delay, retry_after)
+        except (TypeError, ValueError):
+            pass
+        if delay + 1 >= deadline - _time.monotonic():
+            raise RuntimeError(error)
+        _time.sleep(delay)
 
     try:
         data = r.json()
@@ -393,7 +432,7 @@ def gemini_generate(
     if not candidates:
         # blocked / empty
         feedback = data.get("promptFeedback") or {}
-        raise RuntimeError(f"gemini_empty_candidates: {feedback}")
+        raise RuntimeError(f"gemini_empty_candidates: {redact_secrets(str(feedback), api_key)}")
 
     candidate = candidates[0] or {}
     if candidate.get("finishReason") != "STOP":
@@ -622,10 +661,10 @@ def trade_thesis_from_analysis(
             "target_idea": "",
             "risks": [],
             "playbook_agree": False,
-            "notes": str(exc)[:300],
+            "notes": redact_secrets(str(exc), cfg.get("api_key") or "")[:300],
             "llm_model": model,
             "llm_raw": "",
-            "error": f"gemini_exception: {exc}"[:200],
+            "error": ("gemini_exception: " + redact_secrets(str(exc), cfg.get("api_key") or ""))[:200],
         }
 
     parsed = _extract_json_object(raw)
@@ -689,9 +728,9 @@ def chat(
     try:
         return gemini_generate(prompt, system=CHAT_SYSTEM, json_mode=False, cfg=cfg)
     except RuntimeError as exc:
-        return f"[error: {exc}]"
+        return f"[error: {redact_secrets(str(exc), cfg.get('api_key') or '')}]"
     except Exception as exc:  # noqa: BLE001
-        return f"[error: gemini_exception: {exc}]"
+        return f"[error: gemini_exception: {redact_secrets(str(exc), cfg.get('api_key') or '')}]"
 
 
 def status_public() -> dict[str, Any]:
@@ -1048,18 +1087,18 @@ def jev_trade_thesis(
             timeout=max(3.0, float(timeout_sec or 12)),
         )
     except requests.Timeout as exc:
-        return _empty_thesis("jev-latest", "llm_timeout", str(exc)[:200])
+        return _empty_thesis("jev-latest", "llm_timeout", redact_secrets(str(exc), key)[:200])
     except requests.RequestException as exc:
-        return _empty_thesis("jev-latest", f"jev_request_failed: {exc}"[:200])
+        return _empty_thesis("jev-latest", ("jev_request_failed: " + redact_secrets(str(exc), key))[:200])
 
     if r.status_code != 200:
-        detail = (r.text or "")[:200]
+        detail = redact_secrets(r.text or "", key)[:200]
         return _empty_thesis("jev-latest", f"jev_http_{r.status_code}: {detail}"[:200])
 
     try:
         data = r.json()
     except Exception as exc:
-        return _empty_thesis("jev-latest", f"jev_bad_json: {exc}"[:200])
+        return _empty_thesis("jev-latest", ("jev_bad_json: " + redact_secrets(str(exc), key))[:200])
 
     import math
     answers = data.get("answers") if isinstance(data, dict) else None
@@ -1749,4 +1788,7 @@ def status_public_extended(cfg: Optional[dict] = None) -> dict[str, Any]:
     elif mode == "claude":
         import claude_brain
         base.update(provider="claude", configured=claude_brain.is_configured(), model=claude_brain.model_name())
+    if mode == "gemini":
+        base["model"] = (cfg or {}).get("llm_model") or base["model"]
+        base["health"] = brain_health(base["model"])
     return base

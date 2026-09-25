@@ -157,10 +157,12 @@ def validate(body):
 def authorization_error(signal, cfg):
     saved = cfg.get("live_agent")
     tagged = signal.get("source") == "live_agent"
-    if not saved and not tagged:
+    if not saved and not tagged and cfg.get("mode") != "auto_live":
         return None
     if not isinstance(saved, dict) or not saved.get("enabled"):
         return "Live agent is paused; enable the saved policy explicitly"
+    if not saved.get("revision") or not saved.get("run_id"):
+        return "Fox authorization is incomplete; explicitly start a saved policy"
     if (cfg.get("mode") != "auto_live" or not cfg.get("session_active") or not tagged or
             signal.get("agent_revision") != saved.get("revision") or
             signal.get("agent_run_id") != saved.get("run_id") or
@@ -409,6 +411,7 @@ class LiveAgent:
                     "phase": self.phase, "message": message, "busy": self.cycle_lock.locked(),
                     "today": raw["days"].get(self.key(cfg), {"research": 0, "orders": 0}),
                     "events": raw["events"][:30], "next_at": raw.get("next_at"),
+                    "reviews": self.current_reviews(raw, cfg), "decision_owner": "Fox",
                     "managed": raw.get("managed") or {},
                     "exit_checks": copy.deepcopy(self.exit_checks),
                     "account_scope": account_scope(cfg.get("broker_identity")),
@@ -422,6 +425,35 @@ class LiveAgent:
                     "eval_note": (
                         f"Live auto-orders + eval: full equity watchlist ({len(eval_syms)} symbols; junk deny-list on)"
                     )}
+
+    def current_reviews(self, raw, cfg):
+        """Actual completed screens only, isolated by account/day; expire after one hour."""
+        now = now_utc()
+        rows = []
+        reviews = raw.get("reviews")
+        for row in reviews if isinstance(reviews, list) else []:
+            if not isinstance(row, dict) or row.get("verdict") not in ("PASS", "WATCH", "AVOID", "UNAVAILABLE"):
+                continue
+            try:
+                age = (now - datetime.fromisoformat(row["at"])).total_seconds()
+                if row.get("scope") == self.key(cfg) and 0 <= age <= 3600:
+                    rows.append({**row, "age_sec": round(age)})
+            except (TypeError, ValueError, KeyError):
+                continue
+        return sorted(rows, key=lambda r: ({"PASS": 0, "WATCH": 1}.get(r["verdict"], 2), -datetime.fromisoformat(r["at"]).timestamp()))[:10]
+
+    def note_review(self, cfg, symbol, signal, notes):
+        row = {"ticker": symbol, "at": now_utc().isoformat(), "scope": self.key(cfg),
+               "verdict": (signal or {}).get("verdict") or notes.get("verdict") or "UNAVAILABLE",
+               "reason": str((signal or {}).get("llm_thesis") or (signal or {}).get("reason") or notes.get("text") or notes.get("error") or "Assessment unavailable")[:500],
+               "side": (signal or {}).get("llm_side") or "hold",
+               "error": (signal or {}).get("data_error") or (signal or {}).get("llm_error") or notes.get("error")}
+        with self.desk._lock:
+            raw = self.load()
+            reviews = raw.get("reviews") if isinstance(raw.get("reviews"), list) else []
+            raw["reviews"] = [row] + [r for r in reviews if isinstance(r, dict) and
+                                     (r.get("ticker"), r.get("scope")) != (symbol, row["scope"])][:99]
+            self.save(raw)
 
     def _track_entry(self, signal, fill, policy):
         """Apply a cumulative confirmed stock fill once, including later reconciliation."""
@@ -851,6 +883,7 @@ class LiveAgent:
         if not authorized():
             self.record("discarded", "Settings or session changed during research")
             return
+        self.note_review(cfg, symbol, signal, notes)
         if not signal:
             # Only an explicit completed WATCH/AVOID screen earns a fast retry.
             # Providers also return None on failures; those retain the durable

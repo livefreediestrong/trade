@@ -817,6 +817,8 @@ def _pending_scan_blocks(signal: dict[str, Any], cfg: dict[str, Any]) -> bool:
 
 def signal_execution_block(signal: dict[str, Any], *, broker: bool = False) -> str | None:
     """Research may be retained without becoming an executable instruction."""
+    if signal.get("data_error") or signal.get("llm_error") == "stale_or_unverified_market_data":
+        return "Market data unavailable: wait for a fresh quote and decision"
     if signal.get("llm_error"):
         return "Brain error: wait for a new decision"
     if signal.get("execution_block"):
@@ -846,7 +848,7 @@ def _signal_ui_projection(signal: dict[str, Any], cfg: dict | None = None) -> di
         "id", "ticker", "side", "status", "ts", "created_at", "expires_at",
         "confidence", "signal_price", "suggested_shares", "reason", "verdict",
         "lateness_label", "entry_quality", "earnings", "rel_vol", "research_flags",
-        "research_flag", "llm_side", "llm_error", "llm_thesis", "citations",
+        "research_flag", "llm_side", "llm_error", "data_error", "llm_thesis", "citations",
         "screener_citations", "gap_pct", "reject_reason", "size_mult_suggested",
         "llm_model", "llm_confidence", "llm_risks", "brain_mode", "routed", "router_reason", "quote",
         "workspace", "source_signal_id", "mode_at_create", "decision_record_id", "execution_block", "manual_order", "origin",
@@ -1970,7 +1972,11 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
         return {"ok": False, "error": error, "abstain": True, "book": None, "broker": None, "gated": True}
 
     manual = sig.get("manual_order")
-    agent_order = sig.get("source") == "live_agent" or (cfg.get("mode") == "auto_live" and cfg.get("live_agent") is not None)
+    agent_order = sig.get("source") == "live_agent" or cfg.get("mode") == "auto_live"
+    if agent_order:
+        error = live_agent.authorization_error(sig, cfg)
+        if error:
+            return blocked(error)
     if manual and (cfg.get("mode") != "live_manual" or not sig.get("review_identity")
                    or sig.get("review_order") != manual.get("order")):
         return blocked("Direct tickets require their exact manual order review")
@@ -2762,7 +2768,8 @@ def _enrich_signal_with_llm(sig: dict[str, Any], analysis: dict, cfg: dict) -> d
     """Attach Gemini thesis fields; blend side/confidence/reason with playbook."""
     if isinstance(analysis.get("quote"), dict) and not analysis["quote"].get("fresh"):
         sig.update(side="hold", confidence=0, abstain=True, llm_side="hold",
-                   llm_error="stale_or_unverified_market_data", llm_thesis="Waiting for a fresh market quote.")
+                   data_error="stale_or_unverified_market_data", llm_error=None,
+                   llm_thesis="Waiting for a fresh market quote; the brain has not been called.")
         sig["citations"] = _screener_citations(analysis)
         return sig
     if not cfg.get("llm_enabled", True) or not cfg.get("llm_on_scan", True):
@@ -5379,7 +5386,7 @@ def _scheduled_scan_config(cfg: dict[str, Any]) -> dict[str, Any] | None:
     """Choose one authorized research owner without borrowing the live session."""
     moss_owns_paper = bool((cfg.get("moss_paper") or {}).get("enabled"))
     if cfg.get("session_active") and cfg.get("mode") in ("live_manual", "auto_live"):
-        if cfg.get("live_agent") is not None:
+        if cfg.get("mode") == "auto_live" or cfg.get("live_agent") is not None:
             return None  # The live agent is the sole scheduled broker owner, even when paused.
         selected = cfg
     elif cfg.get("session_active") and cfg.get("mode") in ("manual", "auto_paper"):
@@ -6433,12 +6440,13 @@ def desk_overview():
 
 
 @app.route("/desk/auto")
+@app.route("/desk/fox")
 def desk_auto():
     return _desk_page(
         "auto",
         "live",
-        "Auto trading",
-        "Real broker account — Moss agent, ready meter, and live ticket. Not paper practice.",
+        "Fox’s workspace",
+        "Fox owns automated trading decisions. Changing Woman brings research, calendar context and care for the desk.",
     )
 
 
@@ -8661,6 +8669,8 @@ def api_llm_chat():
     if _rate_limited("llm_chat", 12):
         return jsonify({"ok": False, "error": "rate limit exceeded; try again shortly"}), 429
     body = request.get_json(force=True, silent=True) or {}
+    if not isinstance(body, dict) or not isinstance(body.get("message", ""), str) or not isinstance(body.get("ticker", ""), str):
+        return jsonify(ok=False, error="Message and optional ticker must be text"), 400
     message = (body.get("message") or "").strip()
     ticker = (body.get("ticker") or "").strip().upper() or None
     if not message:
@@ -8706,6 +8716,9 @@ def api_llm_chat():
             },
         )
     citations = _screener_citations(analysis) if analysis else []
+    if str(reply or "").startswith("[error:"):
+        return jsonify(ok=False, error=reply, reply=reply, ticker=ticker, citations=citations,
+                       llm=_llm_public_status(cfg)), 503
     return jsonify(
         {
             "ok": True,
@@ -8723,6 +8736,8 @@ def api_llm_thesis():
     if _rate_limited("llm_thesis", 12):
         return jsonify({"ok": False, "error": "rate limit exceeded; try again shortly"}), 429
     body = request.get_json(force=True, silent=True) or {}
+    if not isinstance(body, dict) or not isinstance(body.get("ticker", ""), str):
+        return jsonify(ok=False, error="Ticker must be text"), 400
     ticker = (body.get("ticker") or "").strip().upper()
     if not ticker:
         return jsonify({"ok": False, "error": "ticker required"}), 400
@@ -9179,6 +9194,10 @@ market_events.start_background()
 wsb_monitor.register(__import__("sys").modules[__name__])
 import desk_day
 desk_day.register(app, __import__("sys").modules[__name__])
+import desk_backups
+desk_backups.register(app, __import__("sys").modules[__name__])
+import fox_workspace
+fox_workspace.register(app, __import__("sys").modules[__name__])
 
 # Claim the instance before starting any background work.
 if __name__ == "__main__":

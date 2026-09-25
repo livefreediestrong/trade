@@ -1010,6 +1010,7 @@ def get_account() -> dict[str, Any]:
             if daily is None and _recover_initial_pnl(ib, account, _PNL[key]):
                 # Download completion is not P&L evidence. Accept only a real
                 # callback for this request; final lifecycle checks still apply.
+                pnl = _PNL[key]["value"]  # Recovery may have replaced the subscription object.
                 if account in _PNL_UPDATED and _PNL[key].get("day") == _pnl_day():
                     try:
                         daily = _number(pnl.dailyPnL)
