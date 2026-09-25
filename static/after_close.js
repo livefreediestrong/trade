@@ -5,12 +5,12 @@
  const number=n=>typeof n==='number'&&Number.isFinite(n)?n.toFixed(2):'Unavailable';
  const stamp=s=>s?new Date(s).toLocaleString():'Not yet';
  const url=value=>{try{const u=new URL(value);return /^https?:$/.test(u.protocol)&&!u.username&&!u.password?u.href:'';}catch(_){return '';}};
- function sourceRows(e){return [e.outcomes,e.executions,e.coverage,...(e.market||[]),...(e.headlines||[]),...(e.memories||[])].filter(Boolean);}
+ function sourceRows(e){return [e.outcomes,e.executions,e.coverage,...(e.market||[]),...(e.headlines||[]),...(e.documents||[]),...(e.memories||[])].filter(Boolean);}
  function narrative(model,name,prefix){
   const r=model?.result;
   if(!r)return `<article class="nightly-voice"><h3>${name}</h3><p>${esc(model?.note||'Waiting for this review.')}</p></article>`;
   const items=(key,label)=>r[key]?.length?`<h4>${label}</h4><ul>${r[key].map(x=>`<li><p>${esc(x.text)}</p>${x.test?`<p class="nightly-test"><strong>Prospective test:</strong> ${esc(x.test)}</p>`:''}<small>${(x.evidence_ids||[]).map(id=>`<a href="#${prefix}-${encodeURIComponent(id)}">${esc(id)}</a>`).join(' · ')}</small></li>`).join('')}</ul>`:'';
-  return `<article class="nightly-voice"><h3>${name}</h3><small>${esc(model.model)} · AI interpretation</small><p class="nightly-summary">${esc(r.summary)}</p>${items('findings','Interpretation of the evidence')}${items('hypotheses','Ideas to test · unproven')}${items('uncertainties','What remains uncertain')}</article>`;
+  return `<article class="nightly-voice"><h3>${name}</h3><small>${esc(model.model)} · AI interpretation</small><p class="nightly-summary">${esc(r.summary)}</p>${items('challenge','Fox’s challenge')}${items('findings','Interpretation of the evidence')}${items('hypotheses','Ideas to test · unproven')}${items('uncertainties','What remains uncertain')}</article>`;
  }
  function reportHTML(r,prefix){
   if(!r)return '<p>No session review has been saved yet.</p>';
@@ -19,6 +19,7 @@
   return `<p><strong>${esc(r.day)}</strong> · ${esc(r.status)} · saved ${esc(stamp(r.completed_at||r.attempted_at))}</p>
    <div class="nightly-metrics"><article><h3>Today · simulated observations</h3><strong>${t.outcomes} qualified</strong><p>${number(t.mean_net_bps)} bps mean after recorded costs</p><small>${o.today_recorded} recorded observations; unscored or disqualified records excluded.</small></article><article><h3>Prior observed sessions</h3><strong>${p.outcomes} qualified · ${p.session_days} days</strong><p>${number(p.mean_net_bps)} bps mean after recorded costs</p><small>Up to 20 earlier observed sessions. Today's data excluded.</small></article></div>
    <p class="nightly-verdict"><strong>${esc(o.verdict.title)}</strong> ${esc(o.verdict.text)}</p>
+   <p class="hint-line keep-visible">Local calculation: simulated observation returns are not cash P&amp;L. A zero count in retained broker records does not prove zero account returns. Costs here are recorded assumptions unless measured execution evidence is available.</p>
    <div class="nightly-voices">${narrative(r.models?.changing_woman,'Changing Woman · evidence & context',prefix)}${narrative(r.models?.fox,'Fox · challenge & next tests',prefix)}</div>
    <details class="nightly-evidence"><summary>Inspect sources, calculations & memory (${sourceRows(e).length} records)</summary><p>Snapshot ${esc(stamp(e.collected_at))}. Outcomes available through ${esc(stamp(e.outcome_cutoff))}. ${esc(e.coverage.news)}</p>
    ${sourceRows(e).map(s=>`<article id="${prefix}-${encodeURIComponent(s.id)}"><h4>${esc(s.label)}</h4>${s.url&&url(s.url)?`<p><a href="${esc(url(s.url))}" target="_blank" rel="noopener noreferrer">Read source</a> · ${esc(s.source)} · ${esc(stamp(s.published_at))}</p><p>${esc(s.context)}</p>`:`<p>${esc(s.note||s.learning||'Saved evidence')}</p>`}<details><summary>Recorded details</summary><pre>${esc(JSON.stringify(s,null,2))}</pre></details></article>`).join('')}

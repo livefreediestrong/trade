@@ -31,9 +31,11 @@ unknown failed-call charges can differ from estimates. No risk/account policy is
 written by this feature.
 
 Online context is limited to up to 24 fresh headlines from the existing publisher
-feeds, plus 120 daily bars for at most six symbols (SPY, QQQ, and active observed or
-watchlist names). It does not retrieve full articles, perform general web search,
-or include blocked Reddit data. Stale/future headlines are excluded; publication
+feeds, up to four accessible official-release excerpts (5,000 characters each),
+plus 120 daily bars for at most six symbols (SPY, QQQ, and active observed or
+watchlist names). Release links must be approved official HTTPS hosts; redirects,
+access barriers and oversized/slow responses are not followed or bypassed.
+It does not perform general web search or include blocked Reddit data. Stale/future headlines are excluded; publication
 after the reviewed close is labeled. Price series stop at the reviewed session.
 
 The next review receives the previous five reports' Fox hypotheses as unproven
@@ -45,7 +47,14 @@ later reviews, not silently rewritten into an old report.
 Read the report in Fox's workspace or Research. Source links expand the evidence
 section. Model text is escaped; returned citation IDs must exist in the supplied
 snapshot. Valid citations do not independently verify AI prose. Broker blockers
-and reconciliation cues retain precedence over nightly avatar activity.
+and reconciliation cues retain precedence over nightly avatar activity. Fox must
+provide a distinct cited challenge, and proposed tests remain exploratory across
+at least five future sessions and 30 nonoverlapping observations.
+
+The first real request revealed provider-schema incompatibility. The provider
+schema now contains only structural constraints; bounded text, valid citation IDs
+and required skeptical challenges are validated locally. Known rejected requests
+were retained in the commissioning report's revision history during repair.
 
 Validation: `python -m pytest tests/test_after_close_review.py tests/test_companion.py
 tests/test_companion_research_view.py tests/test_brain_repairs.py

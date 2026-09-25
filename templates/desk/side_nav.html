@@ -10,6 +10,7 @@
   {% elif desk_page == 'auto' %}
     <span class="nav-caption">FOX’S WORKSPACE</span>
     <a href="#fox-workspace">Fox now &amp; backups</a>
+    {% if config.get('COMPANION_AVAILABLE') %}<a href="#nightly-review">After-close learning</a>{% endif %}
     <a href="#fox-reviews">Top ten under review</a>
     <a href="#fox-calendar-days">Seven-day calendar</a>
     <a href="#market-today">Market today</a>
@@ -29,6 +30,7 @@
   {% elif desk_page == 'research' %}
     <span class="nav-caption">RESEARCH</span>
     <a href="#desk-research">Records</a>
+    {% if config.get('COMPANION_AVAILABLE') %}<a href="#nightly-review">After-close learning</a>{% endif %}
     {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}<a href="#research-studio">Studio</a><a href="/desk/research#stocks-on-sale">On sale</a>{% endif %}
     {% if config.get('COMPANION_AVAILABLE') %}<a href="#agent-research">Moss brief</a>{% endif %}
   {% elif desk_page == 'ticket' %}

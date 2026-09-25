@@ -142,6 +142,14 @@ def test_model_citations_and_prospective_test_required():
     with pytest.raises(ValueError): night.validate_narrative(json.dumps(good), {"outcomes"})
 
 
+def test_fox_must_supply_distinct_cited_challenge():
+    raw = {"summary": "Collecting", "findings": [], "hypotheses": [], "uncertainties": [], "challenge": []}
+    with pytest.raises(ValueError, match="challenge"):
+        night.validate_narrative(json.dumps(raw), {"outcomes"}, "fox")
+    raw["challenge"] = [{"text": "The sample does not measure the proposed friction threshold", "evidence_ids": ["outcomes"]}]
+    assert night.validate_narrative(json.dumps(raw), {"outcomes"}, "fox") == raw
+
+
 def test_gemini_sanitized_payload_budget_disable_and_output_limit(service, monkeypatch):
     s, cfg, _ = service
     evidence = s.collect(DAY, NOW)
@@ -152,6 +160,8 @@ def test_gemini_sanitized_payload_budget_disable_and_output_limit(service, monke
     def generate(prompt, **kw):
         assert "SECRET" not in prompt and "account_id" not in prompt and "qualified_event_ids" not in prompt
         assert kw["max_output_tokens"] == 4096
+        assert 'maxLength' not in json.dumps(kw['response_schema'])
+        assert 'enum' not in json.dumps(kw['response_schema'])
         assert llm_trader.current_cost_scope() == "after_close"
         called.append(prompt)
         return json.dumps({"summary": "Limited evidence", "findings": [], "hypotheses": [], "uncertainties": []})
