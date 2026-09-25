@@ -121,7 +121,8 @@ def _pnl_update(pnl):
             subscription["callbacks"] = subscription.get("callbacks", 0) + 1
             subscription["day"] = _pnl_day()
             _PNL_WATCH.update(ui_status=None, soft_reconnect_count=0, pending_soft_reconnect=False,
-                              pending_reason=None, last_error_code=None)
+                              pending_reason=None, last_error_code=None,
+                              last_scheduled_refresh_at=time.monotonic())
 
 
 def _server_error(req_id, code, message, *args):
@@ -659,8 +660,7 @@ def _recover_initial_pnl(ib, account, subscription):
     elif "account_download" not in recovery and now - recovery["positions_at"] >= 15:
         stage = "account_download"
         method = getattr(ib, "reqAccountUpdates", None)
-        raw_method = getattr(getattr(ib, "client", None), "reqAccountUpdates", None)
-        if not callable(method) or not callable(raw_method):
+        if not callable(method):
             recovery[stage] = "unsupported"
             return False
     if stage is None:
@@ -671,8 +671,9 @@ def _recover_initial_pnl(ib, account, subscription):
         if stage == "positions":
             method()
         else:
-            raw_method(False, account)
-            ib.sleep(0.1)
+            # Re-request the download without stopping a healthy account feed.
+            # Gateway's exported trace shows STOP_UPDATE itself emits 2100;
+            # treating that self-generated warning as failure replaced P&L again.
             if _SERVER_UNAVAILABLE or _RESYNC_REQUIRED or not ib.isConnected():
                 raise ConnectionError("Gateway connection changed during account refresh")
             method(account)
@@ -811,6 +812,13 @@ def refresh_broker_pnl(*, soft_reconnect: bool = True) -> dict[str, Any]:
     """
     actions: list[str] = []
     try:
+        if _SERVER_UNAVAILABLE and _CLIENT is not None and _CLIENT.isConnected():
+            # 1100 is upstream of the still-open API socket. Give Gateway time
+            # to report 1101/1102 instead of canceling retained subscriptions.
+            return {"ok": False, "risk_ready": False, "account": {},
+                    "error": "Waiting for IBKR server connectivity to recover",
+                    "refresh": {"ok": False, "held": True, "actions": [],
+                                "gateway_restarted": False, "soft_reconnect": soft_reconnect}}
         if soft_reconnect:
             actions.extend(_arm_soft_reconnect("manual_soft_reconnect"))
             # Rebuild the API socket before reading the account. Required so
@@ -1866,6 +1874,7 @@ def pnl_watch_snapshot() -> dict[str, Any]:
 def maybe_scheduled_soft_refresh(*, interval_minutes: float, auto_live: bool, risk_ready: bool) -> dict[str, Any] | None:
     """Optional soft refresh while auto_live and not risk_ready. Never invents Ready."""
     if not auto_live or risk_ready:
+        _PNL_WATCH["last_scheduled_refresh_at"] = None
         return None
     try:
         minutes = float(interval_minutes)
@@ -1874,6 +1883,9 @@ def maybe_scheduled_soft_refresh(*, interval_minutes: float, auto_live: bool, ri
     if minutes <= 0:
         return None
     now = time.monotonic()
+    if _SERVER_UNAVAILABLE:
+        _PNL_WATCH["last_scheduled_refresh_at"] = now
+        return None
     last = float(_PNL_WATCH.get("last_scheduled_refresh_at") or 0.0)
     # First observation only arms the timer — do not soft-reconnect until the
     # interval elapses. Immediate soft reconnect on startup races the initial
@@ -1881,6 +1893,9 @@ def maybe_scheduled_soft_refresh(*, interval_minutes: float, auto_live: bool, ri
     if not last:
         _PNL_WATCH["last_scheduled_refresh_at"] = now
         return None
+    # Automatic subscription recovery and this timer share one reconnect clock.
+    # Otherwise an overdue timer can immediately undo a newly opened socket.
+    last = max(last, float(_PNL_WATCH.get("last_soft_reconnect_at") or 0.0))
     if (now - last) < minutes * 60.0:
         return None
     if now < _SOFT_RECONNECT_AFTER:

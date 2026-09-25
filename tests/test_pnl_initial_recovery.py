@@ -36,12 +36,12 @@ def test_refresh_follows_subscription_and_each_stage_runs_once(refresh):
     refresh.clock[0] += 1.1
     result = refresh.account()
     assert_blocked(result)
-    assert refresh.calls[-2:] == [("raw_account", False, "TEST"), ("account", "TEST")]
+    assert refresh.calls[-1:] == [("account", "TEST")]
     assert result["pnl_diagnostics"]["initial_recovery"] == {
         "positions": "completed", "account_download": "completed"}
     for _ in range(3):
         assert_blocked(refresh.account())
-    assert len(refresh.calls) == 4
+    assert len(refresh.calls) == 3
     assert not broker._PNL_UPDATED  # Completed downloads never invent zero P&L.
 
 
@@ -137,3 +137,59 @@ def test_unsupported_refresh_methods_are_skipped(stream):
     assert_blocked(result)
     assert result["pnl_diagnostics"]["initial_recovery"] == {
         "positions": "unsupported", "account_download": "unsupported"}
+
+
+def test_account_refresh_does_not_create_its_own_2100_recovery(refresh):
+    def raw(subscribed, account):
+        if not subscribed:
+            broker._server_error(-1, 2100, "API client has been unsubscribed from account data")
+    refresh.fake.client.reqAccountUpdates = raw
+    assert_blocked(refresh.account())
+    original = broker._PNL[(id(refresh.fake), "TEST")]["value"]
+    refresh.clock[0] += 16
+    assert_blocked(refresh.account())
+    assert not broker._ACCOUNT_UNSUBSCRIBED
+    assert not broker._PNL_WATCH.get("pending_resubscribe")
+    assert refresh.canceled == []
+    assert broker._PNL[(id(refresh.fake), "TEST")]["value"] is original
+    refresh.callback(-3.5)
+    assert refresh.account()["account"]["day_pnl"] == -3.5
+
+
+@pytest.mark.parametrize("soft", [False, True])
+def test_refresh_during_1100_preserves_socket_and_stays_blocked(refresh, soft):
+    assert_blocked(refresh.account())
+    refresh.callback(-5.)
+    assert refresh.account()["risk_ready"]
+    original = broker._PNL[(id(refresh.fake), "TEST")]["value"]
+    broker._server_error(-1, 1100, "upstream connection lost")
+    result = broker.refresh_broker_pnl.__wrapped__(soft_reconnect=soft)
+    assert_blocked(result)
+    assert result["refresh"]["held"] and result["refresh"]["actions"] == []
+    assert broker._CLIENT is refresh.fake and refresh.canceled == []
+    assert broker._PNL[(id(refresh.fake), "TEST")]["value"] is original
+    broker._server_error(-1, 1102, "data maintained")
+    assert_blocked(refresh.account())  # Restored connection is not a new P&L sample.
+    refresh.callback(-8.)
+    assert refresh.account()["account"]["day_pnl"] == -8.
+
+
+def test_overdue_scheduler_waits_through_upstream_recovery(refresh, monkeypatch):
+    calls = []
+    monkeypatch.setattr(broker, "refresh_broker_pnl", lambda **kw: calls.append(kw) or {"ok": False})
+    broker._PNL_WATCH["last_scheduled_refresh_at"] = 1.
+    refresh.clock[0] = 600.
+    broker._server_error(-1, 1100, "upstream connection lost")
+    kwargs = dict(interval_minutes=5, auto_live=True, risk_ready=False)
+    assert broker.maybe_scheduled_soft_refresh(**kwargs) is None
+    broker._server_error(-1, 1102, "data maintained")
+    refresh.clock[0] += 2
+    assert broker.maybe_scheduled_soft_refresh(**kwargs) is None
+    assert calls == []
+    # A different recovery path just reconnected; do not immediately bounce it.
+    broker._PNL_WATCH["last_soft_reconnect_at"] = 895.
+    refresh.clock[0] = 901.
+    assert broker.maybe_scheduled_soft_refresh(**kwargs) is None
+    refresh.clock[0] = 1196.
+    assert broker.maybe_scheduled_soft_refresh(**kwargs) == {"ok": False}
+    assert calls == [{"soft_reconnect": True}]

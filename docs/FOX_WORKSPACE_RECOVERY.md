@@ -1,5 +1,9 @@
 # Fox workspace and recovery
 
+The opening trading summary distinguishes the saved On/Off switch from current operating readiness. Connection, Daily P&L and the selected AI configuration remain visible when the market is closed. The summary links to existing controls without activating or pausing anything. It shows actual saved agent limits and flags billion-dollar values for review; it never changes them. Every order still uses the existing execution checks.
+
+The summary reads the existing workspace endpoint, rejects stale/future timestamps, accounts for broker-cache age and clears its current-state claims after 30 seconds or a failed read. The update is frontend-only and uses Flask's existing template auto-reload. Validation: `node tests/test_fox_summary.cjs`, existing agent UI tests, and a real browser read-only check; no real orders are test cases.
+
 `/desk/fox` is Fox's workspace; `/desk/auto` remains a compatible address. Fox is the sole automatic broker decision owner. An enabled saved policy with a current revision, activation ID, account identity and active session is required. Changing Woman supplies context and monitors desk chores. Account checks, current quotes, pending-order reconciliation, model abstention and existing risk limits still apply to every order. Manual tickets retain their existing explicit review.
 
 The top-ten list contains actual completed agent assessments, one per symbol for the current account and Eastern trading day. Entries expire after one hour. PASS sorts before WATCH, then other assessments, with newest first in each group. Fewer than ten results is normal, especially after installation or while paused. This is research history, not ten buy recommendations; no extra model calls are made to fill the list.
@@ -31,3 +35,7 @@ There is deliberately no state-restore endpoint: any recovery requires stopping 
 ## Broker recovery
 
 After an account/P&L resubscription the adapter reads the replacement P&L object and still requires its real current-day callback. A recovered transport or account balance cannot substitute for Daily P&L. Mocked transport tests exercise this replacement path; a real missing Gateway callback still blocks new exposure.
+
+The September 25 Gateway export showed a real zero Daily P&L callback at 17:08:22 ET, upstream error 1100 at 17:14:15, client cancellation/disconnection before the 1102 recovery at 17:14:17, and no further Daily P&L responses through 17:47. Later 2100 warnings immediately followed the desk's own STOP_UPDATE account requests. This proves the warning was self-generated in those cases; it does not establish why Gateway did not emit P&L for later subscriptions.
+
+Initial account refresh now requests a new download without first stopping updates. Explicit refresh is held while the upstream server is unavailable but the API socket remains open. The scheduled refresh timer resets on genuine P&L callbacks, waits through an upstream outage, and shares the latest reconnect time with automatic recovery. The original actual-callback, account, current-day and transport checks remain required. Regression tests exercise the exported event ordering without connecting to a broker: `tests/test_pnl_initial_recovery.py`, `tests/test_pnl_stream_safety.py`, `tests/test_ibkr_pnl.py`, and `tests/test_ibkr_connection.py`. These backend changes require a desk restart. Reference: [IBKR message codes](https://interactivebrokers.github.io/tws-api/message_codes.html).
