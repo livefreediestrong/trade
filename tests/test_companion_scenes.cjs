@@ -40,7 +40,8 @@ function harness(){
  return {nodes,prefs,events,doc,timers,outbound,advance,open,modal};
 }
 const h=harness();h.open();assert.equal(h.modal.open,true);assert.equal(h.nodes['moss-preview-fox'].dataset.prop,'chart');
-h.advance(5000);assert.match(h.nodes['moss-preview-story'].textContent,/checks the evidence/);
+let propWrites=0;const propNode=h.nodes['moss-preview-fox-prop'],setProp=propNode.setAttribute;propNode.setAttribute=function(k,v){propWrites++;setProp.call(this,k,v);};
+h.advance(5000);assert.match(h.nodes['moss-preview-story'].textContent,/checks the evidence/);assert.equal(propWrites,0,'frame ticks do not reassign the SVG reference and refetch its asset');
 h.nodes['moss-preview-pause'].click();const frozen=h.nodes['moss-preview-fox'].dataset.frame;h.advance(8000);assert.equal(h.nodes['moss-preview-fox'].dataset.frame,frozen);assert.equal(h.timers.size,0);
 h.nodes['moss-preview-pause'].click();h.advance(13000);assert.match(h.nodes['moss-preview-story'].textContent,/Scene finished/);assert.equal(h.timers.size,0);
 for(const mode of P.MODES){h.nodes['moss-preview-scene'].value=mode;h.nodes['moss-preview-scene'].change();assert.ok(h.nodes['moss-preview-story'].textContent);h.advance(1000);}

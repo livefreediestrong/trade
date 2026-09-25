@@ -164,7 +164,7 @@
    if(caption)caption.textContent=sceneFrame?.label||action.label;
    el.dataset.speaking=String(speaking);el.dataset.expression=sceneFrame?.expression||(i?'composed':action.key==='researching'?'curious':'attentive');
    const prop=scenes?.propFor(i,action,day)||'',propNode=$(i?'moss-woman-prop':'moss-fox-prop');
-   el.dataset.prop=prop;if(propNode)propNode.setAttribute('href','/static/companion-props.svg#'+prop);
+   if(propNode&&prop&&el.dataset.prop!==prop)propNode.setAttribute('href','/static/companion-props.svg#'+prop);el.dataset.prop=prop;
    if(thought){
     const info=scenes?.thoughtFor(i,{day,action,news:showingNews()?news:null,trade:foxEvent,unavailable:dayUnavailable});
     thought.textContent=info?.text||action.mark;thought.hidden=quiet||(!info&&!action.mark);

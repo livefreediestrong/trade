@@ -39,7 +39,7 @@
    frames[i]=scenes.paintPose(el,pose,still,frames[i]);
    el.dataset.action=action.key;el.dataset.expression=performancePose?.expression||(i?'composed':mode==='research'?'curious':'attentive');el.dataset.speaking=String(i===(mode==='thinking'||mode==='explaining'?1:0));
    el.style.width=el.style.height=({compact:112,comfortable:144,large:168})[prefs.size]+'px';
-   const prop=scenes.propFor(i,action,model.day);el.dataset.prop=prop;$(i?'moss-preview-woman-prop':'moss-preview-fox-prop').setAttribute('href','/static/companion-props.svg#'+prop);
+   const prop=scenes.propFor(i,action,model.day);if(prop&&el.dataset.prop!==prop)$(i?'moss-preview-woman-prop':'moss-preview-fox-prop').setAttribute('href','/static/companion-props.svg#'+prop);el.dataset.prop=prop;
    $(i?'moss-preview-woman-caption':'moss-preview-fox-caption').textContent=performancePose?.label||action.label;
    el.setAttribute('aria-label',(i?'Changing Woman':'Fox')+' · example · '+(performancePose?.label||action.label));
   });
