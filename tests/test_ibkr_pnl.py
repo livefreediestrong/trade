@@ -658,3 +658,15 @@ def test_reused_pid_is_not_mistaken_for_gateway():
     assert broker._tasklist_gateway_matches(chrome, 5150, "ibgateway.exe") == []
     ours = '"ibgwlauncher.exe","5150","Console","1","1 K","Running","u","0:0:1","N/A"\n'
     assert broker._tasklist_gateway_matches(ours, 5150, "ibgwlauncher.exe") == ["ibgwlauncher.exe"]
+
+
+def test_gateway_socket_errors_read_plainly(monkeypatch):
+    import broker_ibkr
+
+    monkeypatch.setenv("IB_GATEWAY_HOST", "127.0.0.1")
+    monkeypatch.setenv("IB_GATEWAY_PORT", "4001")
+    refused = broker_ibkr.friendly_connection_error("[WinError 1225] The remote computer refused the network connection")
+    assert "WinError" not in refused and "127.0.0.1:4001" in refused and "Start IB Gateway" in refused
+    assert "did not answer" in broker_ibkr.friendly_connection_error("TimeoutError()  timed out")
+    assert broker_ibkr.friendly_connection_error("Set IBKR_ACCOUNT to select exactly one managed account") == \
+        "Set IBKR_ACCOUNT to select exactly one managed account"

@@ -8,10 +8,11 @@ for(const width of [270,300])for(const height of [600,650,1000]){
  for(const p of [g.fox,g.woman])assert.ok(p.x>=0&&p.x+g.size<=width&&p.y-g.size>=0&&p.y<=height);
  assert.ok(g.fox.y<g.woman.y-g.size,'top and bottom remain distinct');
 }
-function harness({width=300,height=1000,reduced=false,saved={}}={}){
+function harness({width=300,height=1000,reduced=false,saved={},without=[]}={}){
  let now=0,serial=0,dialog=null;const nodes={},events={},timers=new Map(),storage=new Map([['moss_appearance_v1',JSON.stringify(saved)]]);
  for(const id of ['moss-fox','moss-woman','moss-motion','moss-avatar','moss-motion-note','moss-speech','moss-speech-enabled','moss-speech-text','moss-speech-link','moss-destination','moss-speech-dismiss','sidebar-companions','moss-sidebar-stage','moss-trails','moss-canyon-far','moss-canyon-near','moss-sand','moss-cacti'])
   nodes[id]={id,style:{setProperty(k,v){this[k]=v;}},dataset:{},hidden:false,value:'',checked:false,attrs:{},setAttribute(k,v){this.attrs[k]=v;},contains:()=>false,addEventListener(k,f){this[k]=f;}};
+ for(const id of without)delete nodes[id];
  const sections={'desk-overview':{top:100,bottom:800},'desk-live':{top:2000,bottom:2800},'desk-options':{top:3000,bottom:3800}};
  nodes['moss-sidebar-stage'].getBoundingClientRect=()=>({width,height});
  const doc={documentElement:{dataset:{}},hidden:false,activeElement:null,getElementById:id=>sections[id]?{getBoundingClientRect:()=>sections[id]}:nodes[id],querySelector:()=>dialog,addEventListener(k,f){events[k]=f;}};
@@ -101,5 +102,11 @@ assert.equal(h.nodes['moss-fox'].attrs['aria-label'],'Fox, your broker agent · 
 h=harness();h.events['desk:day']({detail:{fox:{state:'off',headline:'Fox is off duty.'},woman:{reasoning:[]}}});h.advance(1000);assert.equal(h.nodes['moss-speech'].dataset.topic,'guide','off duty keeps section guidance');
 h=harness();h.events['desk:attention']({detail:{quiet:true}});h.events['desk:day']({detail:daySnap});assert.notEqual(h.nodes['moss-speech'].dataset.topic,'trade','quiet desk stays quiet');
 h=harness({saved:{habitatVersion:3,avatar:'woman'}});h.events['desk:day']({detail:daySnap});assert.notEqual(h.nodes['moss-speech'].dataset.topic,'trade','trades belong to Fox');
+// Pages without the Paper page's appearance controls still seat both companions.
+h=harness({without:['moss-motion','moss-avatar','moss-speech-enabled','moss-motion-note']});h.advance(1000);
+assert.ok(h.positions().every(t=>/translate3d/.test(t||'')),'both companions placed without the settings controls');
+assert.notEqual(h.positions()[0],h.positions()[1],'Fox and Changing Woman sit apart');
+h=harness({saved:{habitatVersion:3,avatar:'fox'},without:['moss-motion','moss-avatar','moss-speech-enabled','moss-motion-note']});h.advance(1000);
+assert.equal(h.nodes['moss-woman'].hidden,true,'a saved companion choice applies on every page');
 console.log('Desk day: Fox announces each trade once, Changing Woman raises cautions after him, day narration alternates, quiet and hidden companions stay silent passed.');
 console.log('Cozy perches: stationary top/bottom through task changes, occasional expressions, pause/dock/reduced motion, dismissal, preferences migration, hidden/narrow lifecycle, and no animation loop or network actions passed.');

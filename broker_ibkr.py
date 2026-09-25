@@ -182,7 +182,7 @@ def _api_worker():
                 try:
                     _CLIENT.sleep(0.05)
                 except Exception as exc:
-                    _CONNECTION.update(connected=False, error=str(exc)[:200])
+                    _CONNECTION.update(connected=False, error=friendly_connection_error(str(exc))[:240])
                     _VERIFIED.clear()
     finally:
         if _CLIENT is not None:
@@ -266,6 +266,7 @@ def _ib():
                 "Another desk/process holds this id — stop the other connection "
                 "or set IB_CLIENT_ID to a free id. Gateway was left alone."
             )
+        message = friendly_connection_error(message)
         _CONNECTION.update(connected=False, error=message[:240])
         # A dashboard refresh asks for several broker snapshots. One Gateway
         # outage must not queue a fresh five-second connection for each one.
@@ -291,6 +292,21 @@ def _live() -> bool:
 
 def is_configured() -> bool:
     return os.environ.get("BROKER_PROVIDER", "alpaca").strip().lower() == "ibkr"
+
+
+def friendly_connection_error(message: str) -> str:
+    """Plain words for socket failures (e.g. "[WinError 1225] The remote computer refused
+    the network connection"); other messages are returned unchanged."""
+    text = str(message or "")
+    low = text.lower()
+    endpoint = _settings()["endpoint"]
+    if any(k in low for k in ("1225", "10061", "refused", "errno 111", "connectionrefused")):
+        return (f"IB Gateway is not accepting connections on {endpoint}. Start IB Gateway and sign in, "
+                "or check its API port under Configure > Settings > API.")
+    if any(k in low for k in ("timed out", "timeout", "10060")):
+        return (f"IB Gateway did not answer on {endpoint} in time. It may still be starting or waiting "
+                "for sign-in; if it stays like this, check that its API is enabled.")
+    return text
 
 
 def _settings() -> dict[str, Any]:
@@ -333,7 +349,7 @@ def verify_execution_context() -> dict[str, Any]:
             return {"ok": True, "identity": _identity(ib)}
     except Exception as exc:
         _VERIFIED.clear()
-        return {"ok": False, "error": str(exc)[:200]}
+        return {"ok": False, "error": friendly_connection_error(str(exc))[:240]}
 
 
 def paper_mode() -> bool | None:

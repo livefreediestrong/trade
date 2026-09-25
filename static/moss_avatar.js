@@ -16,8 +16,10 @@
  }
  if(typeof module==='object'&&module.exports){module.exports={perchLayout,activityForSky,buzzNote};return;}
  const $=id=>document.getElementById(id),stage=$('moss-sidebar-stage'),panel=$('sidebar-companions');
- const control=$('moss-motion'),choice=$('moss-avatar'),speech=$('moss-speech-enabled'),bubble=$('moss-speech');
- if(!stage||!control||!choice||!bubble)return;
+ // The appearance controls live only on the Paper page; elsewhere the saved choices apply.
+ const stand=(value,checked)=>({value,checked,addEventListener(){}});
+ const control=$('moss-motion')||stand('cozy'),choice=$('moss-avatar')||stand('both'),speech=$('moss-speech-enabled')||stand('',true),bubble=$('moss-speech');
+ if(!stage||!bubble)return;
  const actors=[$('moss-fox'),$('moss-woman')],reduced=matchMedia('(prefers-reduced-motion: reduce)');
  const frames=[null,null];
  const stops=[
@@ -120,7 +122,8 @@
  }
  function apply(){
   actors[0].hidden=control.value==='hide'||choice.value==='woman';actors[1].hidden=control.value==='hide'||choice.value==='fox';panel.hidden=control.value==='hide';
-  $('moss-motion-note').textContent=quiet?'Quiet desk: companions rest; trading continues.':reduced.matches?'Reduced motion: still poses.':'Fox is your broker agent and reports his trades. Changing Woman keeps the chores and reasons with him; she follows the sky: dawn water, daytime fiber work, dusk food sorting, night rest. Typing and dialogs pause motion.';
+  const motionNote=$('moss-motion-note');
+  if(motionNote)motionNote.textContent=quiet?'Quiet desk: companions rest; trading continues.':reduced.matches?'Reduced motion: still poses.':'Fox is your broker agent and reports his trades. Changing Woman keeps the chores and reasons with him; she follows the sky: dawn water, daytime fiber work, dusk food sorting, night rest. Typing and dialogs pause motion.';
   tick();
  }
  function save(){persist();dismissed='';apply();}

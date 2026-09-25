@@ -110,9 +110,9 @@ def test_gateway_outage_backs_off_between_dashboard_reads(monkeypatch):
     monkeypatch.setattr(broker.time, 'monotonic', lambda: clock[0])
     monkeypatch.setitem(sys.modules, 'ib_insync', NS(IB=Client))
     monkeypatch.setenv('IB_CLIENT_ID', '37')
-    with pytest.raises(ConnectionError, match='synchronization timed out'): broker._ib()
+    with pytest.raises(ConnectionError, match='IB Gateway did not answer'): broker._ib()
     for _ in range(5):
-        with pytest.raises(ConnectionError, match='synchronization timed out'): broker._ib()
+        with pytest.raises(ConnectionError, match='IB Gateway did not answer'): broker._ib()
     assert attempts == [37]
     clock[0] = 106.
     with pytest.raises(ConnectionError): broker._ib()
