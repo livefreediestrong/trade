@@ -6,6 +6,8 @@ composite. Prefer yfinance, then data_sources.get_daily_with_fallback.
 """
 from __future__ import annotations
 
+import threading
+import time
 from datetime import datetime, timedelta
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
@@ -155,7 +157,37 @@ def first_hour_volumes(intraday):
     return out
 
 
+# Slow-moving inputs shared across screens: sector ETF history (one fetch serves
+# every stock in that sector) and the next earnings date. Failures are not cached.
+SECTOR_CACHE_SEC = 300
+EARNINGS_CACHE_SEC = 6 * 3600
+_CACHE_LOCK = threading.Lock()
+_SECTOR_CACHE: dict[str, tuple[float, Any]] = {}
+_EARNINGS_CACHE: dict[str, tuple[float, Any, Any]] = {}
+
+
 def _fetch_earnings(ticker: str, yf_ticker, info: dict | None = None):
+    key = ticker.upper()
+    with _CACHE_LOCK:
+        hit = _EARNINGS_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < EARNINGS_CACHE_SEC:
+        earnings = dict(hit[1])
+        try:  # days_away counts from today even when cached across midnight
+            days_away = (datetime.strptime(str(earnings.get("date"))[:10], "%Y-%m-%d").date()
+                         - datetime.utcnow().date()).days
+        except (TypeError, ValueError):
+            days_away = -1
+        if days_away >= 0:  # a report that has passed is looked up again
+            earnings.update(days_away=days_away, is_soon=days_away <= 7)
+            return earnings, hit[2]
+    earnings, source = _fetch_earnings_uncached(ticker, yf_ticker, info)
+    if earnings is not None:
+        with _CACHE_LOCK:
+            _EARNINGS_CACHE[key] = (time.monotonic(), dict(earnings), source)
+    return earnings, source
+
+
+def _fetch_earnings_uncached(ticker: str, yf_ticker, info: dict | None = None):
     # Funds and indices have no company earnings calendar. Reuse metadata already
     # fetched by the scan; don't make another failing quoteSummary request.
     fund_symbols = {"SPY", "QQQ", "QQQM", "DIA", "IWM", "VTI", "VOO", *SECTOR_ETF.values()}
@@ -211,6 +243,18 @@ def _fetch_earnings(ticker: str, yf_ticker, info: dict | None = None):
 
 
 def _sector_daily(etf: str):
+    with _CACHE_LOCK:
+        hit = _SECTOR_CACHE.get(etf)
+    if hit and time.monotonic() - hit[0] < SECTOR_CACHE_SEC:
+        return hit[1].copy()
+    df = _sector_daily_uncached(etf)
+    if df is not None and not df.empty:
+        with _CACHE_LOCK:
+            _SECTOR_CACHE[etf] = (time.monotonic(), df.copy())
+    return df
+
+
+def _sector_daily_uncached(etf: str):
     try:
         import yfinance as yf
 

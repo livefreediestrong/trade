@@ -280,6 +280,21 @@ def gemini_budget_status() -> dict:
     return _GEMINI_BUDGET.status()
 
 
+_NO_THINKING_LEVEL: set[str] = set()
+
+
+def gemini_thinking_level(model: str) -> str | None:
+    """GEMINI_THINKING_LEVEL for JSON research calls (default low; "default" or empty
+    leaves the model's own setting). Only Gemini 3 models take a thinking level."""
+    raw = os.environ.get("GEMINI_THINKING_LEVEL")
+    level = ("low" if raw is None else raw).strip().lower()
+    if level in ("", "default", "off") or model in _NO_THINKING_LEVEL:
+        return None
+    if level not in ("minimal", "low", "medium", "high") or not str(model).startswith("gemini-3"):
+        return None
+    return level
+
+
 def gemini_generate(
     prompt: str,
     *,
@@ -312,6 +327,10 @@ def gemini_generate(
         }
         if response_schema is not None:
             body["generationConfig"]["responseJsonSchema"] = response_schema
+        level = gemini_thinking_level(model)
+        if level:
+            # Short structured answers: thinking tokens are billed as output.
+            body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": level}
     else:
         body["generationConfig"] = {"temperature": 0.5}
 
@@ -344,6 +363,12 @@ def gemini_generate(
             detail = (err.get("error") or {}).get("message") or str(err)[:200]
         except Exception:
             detail = (r.text or "")[:200]
+        thinking = (body.get("generationConfig") or {}).get("thinkingConfig")
+        if r.status_code == 400 and thinking and "think" in detail.lower():
+            # This model refuses the thinking setting: remember that, and ask again without it.
+            _NO_THINKING_LEVEL.add(model)
+            return gemini_generate(prompt, system=system, json_mode=json_mode, cfg=cfg,
+                                   timeout_sec=timeout_sec, response_schema=response_schema)
         raise RuntimeError(f"gemini_http_{r.status_code}: {redact_secrets(detail, api_key)}")
 
     try:
@@ -409,7 +434,7 @@ def _analysis_context_blob(analysis: dict) -> str:
     ]
     slim = {k: analysis.get(k) for k in keep_keys if k in analysis}
     try:
-        return json.dumps(slim, default=str, indent=2)
+        return json.dumps(slim, default=str, separators=(",", ":"))  # compact: fewer input tokens
     except Exception:
         return str(slim)
 
@@ -852,6 +877,14 @@ def shadow_auditor_enabled() -> bool:
     return v not in ("0", "false", "off", "no")
 
 
+def shadow_auditor_uses_model() -> bool:
+    """A second (paid) model call checks the thesis only when its answer can act:
+    SHADOW_GATE=1, or SHADOW_AUDITOR=gemini to record it anyway. Otherwise the
+    observe-only audit uses the free keyword check."""
+    v = (os.environ.get("SHADOW_AUDITOR", "1") or "1").strip().lower()
+    return v == "gemini" or shadow_gate_enabled()
+
+
 def shadow_gate_enabled() -> bool:
     v = (os.environ.get("SHADOW_GATE", "0") or "0").strip().lower()
     return v in ("1", "true", "on", "yes")
@@ -1145,7 +1178,7 @@ def shadow_audit_decision(
         return h
 
     llm_cfg = load_llm_config()
-    if llm_cfg.get("configured") and llm_cfg.get("api_key"):
+    if llm_cfg.get("configured") and llm_cfg.get("api_key") and shadow_auditor_uses_model():
         ticker = ((analysis or {}).get("ticker") or "?").upper()
         prompt = (
             f"Side claimed: {s}\nThesis: {thesis}\nTicker: {ticker}\n"
@@ -1561,21 +1594,21 @@ def should_route_cheap(analysis: Optional[dict] = None, cfg: Optional[dict] = No
     """Cheap brain router: mock for junk tape instead of Gemini.
 
     Route when (rel_vol weak AND range extreme) OR verdict AVOID.
-    Never route to mock under live broker modes: mock research cannot
-    execute live (signal_execution_block), so routing would only burn
-    research quota and block auto_live orders.
+    Under live broker modes only AVOID routes: mock research cannot execute
+    live (signal_execution_block), and AVOID can never reach the broker either,
+    so paying for its thesis buys nothing. Tradeable verdicts keep the real brain.
     """
     if not brain_router_enabled():
         return False, "router_off"
     cfg = cfg or {}
-    desk_mode = str(cfg.get("mode") or "").strip().lower()
-    if desk_mode in ("auto_live", "live_manual"):
-        return False, "live_mode_no_mock"
     mode = resolve_brain_mode(cfg)
     if mode != "gemini":
         return False, f"mode_{mode}"
     analysis = analysis or {}
     verdict = str(analysis.get("verdict") or "").upper()
+    desk_mode = str(cfg.get("mode") or "").strip().lower()
+    if desk_mode in ("auto_live", "live_manual"):
+        return (True, "verdict_avoid") if verdict == "AVOID" else (False, "live_mode_no_mock")
     vol = analysis.get("volume") or {}
     entry = analysis.get("entry_quality") or {}
     try:

@@ -2876,8 +2876,15 @@ def generate_scan_signal(
     force: bool = False,
     ticker: str | None = None,
     still_authorized: Callable[[], bool] | None = None,
+    pass_only: bool = False,
+    notes: dict | None = None,
 ) -> dict | None:
-    """Scan watchlist with volume-screener rules; emit first eligible buy signal."""
+    """Scan watchlist with volume-screener rules; emit first eligible buy signal.
+
+    ``pass_only`` (the live agent): return only PASS setups, so no model call is
+    spent on a WATCH/AVOID idea the caller can never trade. ``notes`` receives the
+    best non-PASS verdict and its text for the caller's status line.
+    """
     from screener_logic import analyze_ticker
 
     cfg = cfg or load_config()
@@ -3016,6 +3023,11 @@ def generate_scan_signal(
                 best_rank = rank
                 best_watch = analysis
 
+    if best_watch is not None and pass_only:
+        if notes is not None:
+            notes.update(ticker=best_watch.get("ticker"), verdict=best_watch.get("verdict"),
+                         text=best_watch.get("verdict_text"))
+        return None
     if best_watch is not None:
         if still_authorized is not None and not still_authorized():
             return None

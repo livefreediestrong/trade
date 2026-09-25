@@ -40,6 +40,7 @@ DEFAULTS = {
 # Fields added after policies were first saved; older saved policies get these defaults.
 _ADDED_FIELDS = ("protective_exits", "breakeven_after_r", "max_hold_min", "flatten_before_close_min")
 
+SCREEN_GAP_SEC = 30  # after a screen with no PASS (no model call), the next symbol comes up this soon
 # Bad/delisted/unquotable symbols: skip for a while instead of blocking forever.
 _QUOTE_SKIP: dict[str, dict] = {}
 _QUOTE_SKIP_AFTER = 2  # consecutive quote failures before temporary deny
@@ -581,6 +582,16 @@ class LiveAgent:
         raw["attempts"][signal["id"]] = {"key": key, "revision": signal["agent_revision"]}
         self.save(raw)
 
+    def _refund_screen(self, cfg, policy):
+        """A screen that found no PASS made no model call: it does not use up the
+        daily research allowance, and the next symbol comes up sooner."""
+        with self.desk._lock:
+            raw = self.load()
+            today = raw["days"].setdefault(self.key(cfg), {"research": 0, "orders": 0})
+            today["research"] = max(0, int(today.get("research") or 0) - 1)
+            raw["next_at"] = (now_utc()+timedelta(seconds=min(SCREEN_GAP_SEC, policy["interval_sec"]))).isoformat()
+            self.save(raw)
+
     def tick(self):
         if not self.cycle_lock.acquire(blocking=False):
             return
@@ -682,16 +693,24 @@ class LiveAgent:
             return self.desk.load_config() == cfg and paper_loop.is_rth(now_utc())
         self.phase, self.message = "researching", "Evaluating "+symbol+" (live-order eligible · full universe)"
         scope = getattr(self.desk.llm_trader, "cost_scope", None)
+        notes = {}
+        # Only PASS setups can become agent orders, so only they reach the paid brain.
         if callable(scope):
             with scope("live_agent"):
-                signal = self.desk.generate_scan_signal(cfg, ticker=symbol, force=False, still_authorized=authorized)
+                signal = self.desk.generate_scan_signal(cfg, ticker=symbol, force=False, still_authorized=authorized,
+                                                        pass_only=True, notes=notes)
         else:
-            signal = self.desk.generate_scan_signal(cfg, ticker=symbol, force=False, still_authorized=authorized)
+            signal = self.desk.generate_scan_signal(cfg, ticker=symbol, force=False, still_authorized=authorized,
+                                                    pass_only=True, notes=notes)
         if not authorized():
             self.record("discarded", "Settings or session changed during research")
             return
         if not signal:
-            self.record("no_setup", "No qualifying setup for "+symbol)
+            self._refund_screen(cfg, policy)
+            why = ""
+            if notes.get("verdict"):
+                why = f" ({notes['verdict']}: {str(notes.get('text') or '').strip()[:160]})".replace(": )", ")")
+            self.record("no_setup", "No qualifying setup for "+symbol+why)
             return
         signal.update(source="live_agent", workspace="live", agent_revision=saved["revision"],
                       agent_run_id=saved.get("run_id"),

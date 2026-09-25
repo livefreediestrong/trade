@@ -224,7 +224,9 @@ def test_failed_and_empty_scans_consume_one_interval(live, monkeypatch, fails):
     monkeypatch.setattr(desk, "generate_scan_signal", scan)
     live.service.tick(); live.service.tick(); agent.LiveAgent(desk).tick()
     assert live.calls == ["TEST"] and not live.sent
-    assert live.service.status()["today"]["research"] == 1
+    # A provider failure uses up the cycle; a screen with no PASS made no model
+    # call, so it is refunded and the next symbol comes up after SCREEN_GAP_SEC.
+    assert live.service.status()["today"]["research"] == (1 if fails else 0)
 
 
 def test_partial_limit_fill_remains_tracked_and_cannot_repeat(live, monkeypatch):
@@ -266,9 +268,23 @@ def test_start_requires_genuine_daily_pnl(live, monkeypatch):
 
 def test_research_cap_and_model_call_revocation(live, monkeypatch):
     cfg = desk.load_config(); cfg["live_agent"]["policy"]["max_research_per_day"] = 1; desk.save_config(cfg)
-    monkeypatch.setattr(desk, "generate_scan_signal", lambda *a, **k: None)
     live.service.tick(); run_again(live)
-    assert live.service.phase == "daily_limit" and not live.sent
+    assert live.service.phase == "daily_limit" and len(live.sent) == 1
+
+
+def test_screen_without_pass_is_free_and_quick(live, monkeypatch):
+    seen = []
+    def scan(cfg, **kw):
+        seen.append(kw)
+        kw["notes"].update(verdict="WATCH", text="Entry blocked: execution quality is poor.")
+    monkeypatch.setattr(desk, "generate_scan_signal", scan)
+    live.service.tick()
+    assert seen[0]["pass_only"] is True
+    assert live.service.phase == "no_setup" and "WATCH: Entry blocked" in live.service.message
+    raw = live.service.load()
+    assert raw["days"][live.service.key(desk.load_config())]["research"] == 0
+    wait = (datetime.fromisoformat(raw["next_at"]) - agent.now_utc()).total_seconds()
+    assert 0 < wait <= agent.SCREEN_GAP_SEC
 
 
 def test_short_cover_and_no_new_short_entry(live, monkeypatch):

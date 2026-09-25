@@ -65,6 +65,7 @@ def test_bad_audits_stay_unknown(monkeypatch):
     monkeypatch.setenv("ADVISORY_SOFT_SIZE", "1")
     assert llm._advisory_size_mult(scores, "UNKNOWN") == 0
     monkeypatch.setattr(llm, "shadow_auditor_enabled", lambda: True)
+    monkeypatch.setenv("SHADOW_AUDITOR", "gemini")
     monkeypatch.setattr(llm, "load_llm_config", lambda: {"configured": True, "api_key": "fixture"})
     monkeypatch.setattr(llm, "gemini_generate", lambda *a, **k: "{}")
     assert llm.shadow_audit_decision("buy", "higher")["coherent"] is None
