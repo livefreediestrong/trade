@@ -15,6 +15,9 @@
  const serious=/\b(dead|deaths?|killed|fatal|war|attacks?|shooting|suicide|abuse|assault|victims?|disaster|earthquake|hurricane|layoffs?|laying off|job cuts|fraud|scam|bankrupt|threats?|threatens?|destroy|bombs?|bombing|missiles?|refugees|military)\b/i;
  function newsQuip(row,now=Date.now()){
   if(!row||row.fresh!==true||typeof row.title!=='string'||!row.title.trim()||typeof row.source!=='string'||!row.source.trim())return null;
+  // Keep advice-column stories in the source list, but do not turn them into
+  // unsolicited trading commentary. This is relevance, not an execution filter.
+  if(/\b(my (husband|wife|boyfriend|girlfriend)|how (do|can|should) (i|we)|dear (abby|moneyist)|our (marriage|wedding)|my (in-laws|mother-in-law|father-in-law))\b/i.test(row.title))return null;
   const stamp=Number(row.published_ts)*1000,checked=Number(row.checked_at)*1000;
   if(!Number.isFinite(stamp)||!Number.isFinite(checked)||stamp>now||checked>now||now-stamp>MAX_AGE||now-checked>900000||/mock|demo|synthetic/i.test(row.source))return null;
   let url;try{url=new URL(row.url);if(!['https:','http:'].includes(url.protocol)||url.username||url.password)return null;}catch(_){return null;}

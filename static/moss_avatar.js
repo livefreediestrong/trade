@@ -111,7 +111,7 @@
   const readingMs=Math.min(32000,Math.max(18000,String($('moss-speech-text').textContent||'').length*65));
   // Keep a complete thought readable. New order/risk/status changes remain immediate.
   if(key!==messageKey&&messageKey&&!custom&&!isTrade&&!isBuzz&&!isNote&&!isNews&&!critical&&state===messageState&&
-     (bubble.dataset.topic!=='news'||showingNews())&&
+     (bubble.dataset.topic!=='news'||(news&&Date.now()-news.checkedAt<=900000&&Date.now()-news.publishedTs<=36*3600000))&&
      (interacting()||now-messageSince<readingMs)&&!bubble.hidden)return;
   if(key!==messageKey){
    messageSince=now;messageState=state;messageKey=key;$('moss-speech-text').textContent=text;

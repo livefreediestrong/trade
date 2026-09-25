@@ -8,4 +8,6 @@ for(const patch of [{fresh:false},{published_ts:NaN},{published_ts:(now+1)/1000}
 for(const title of ['Company announces layoffs','Workers killed in plant explosion','Fraud charges announced','Hurricane strikes coast'])assert.match(newsQuip({...row,title},now).text,/care, not a punchline/);
 assert.match(newsQuip({...row,title:'Trade truce announced'},now).text,/Diplomacy|negotiations/);
 assert.match(newsQuip({...row,title:'Oil market update'},now).text,/Energy|energy/);
+for(const title of ['My husband and I have friends who spend. How do we keep up?','How should I manage my inheritance?','Dear Moneyist: our wedding plans'])assert.equal(newsQuip({...row,title},now),null,'personal advice remains in the feed, not trading speech');
+assert.match(newsQuip({...row,title:'Company earnings guidance raised'},now).next,/company release/);
 console.log('News quips: provenance, deterministic voice, topic matching, serious-story tone, missing/future/stale timestamps and unsafe links passed.');
