@@ -41,7 +41,7 @@
     snapshot=s;
     window.dispatchEvent(new CustomEvent('moss:review',{detail:s}));
     const schedulerIssue=Object.values(s.scheduler_errors||{}).join(' ');
-    const issue=s.error||s.paper_workday?.error||schedulerIssue;
+    const issue=s.error||s.paper_workday?.error||s.after_close?.error||schedulerIssue;
     window.dispatchEvent(new CustomEvent('moss:state',{detail:{busy:!!(s.busy||s.paper_workday?.busy),error:!!issue,marketOpen:!!s.market_open}}));
     const w=s.paper_workday, j=s.actual_trades;
     if(w){
@@ -105,7 +105,7 @@
   async function refresh() {
     if(!pageActive || document.hidden || fetching) return;
     fetching=true;const startedAt=Date.now();
-    try { render(await api('/api/companion'),startedAt); } catch(e) { txt('moss-status','Notebook unavailable'); txt('moss-insight',e.message); window.dispatchEvent(new CustomEvent('moss:state',{detail:{error:true}}));window.dispatchEvent(new CustomEvent('moss:workday',{detail:{error:true,startedAt}})); }
+    try { render(await api('/api/companion'),startedAt); } catch(e) { txt('moss-status','Notebook unavailable'); txt('moss-insight',e.message); window.dispatchEvent(new CustomEvent('moss:state',{detail:{error:true,unavailable:true}}));window.dispatchEvent(new CustomEvent('moss:workday',{detail:{error:true,startedAt}})); }
     finally { fetching=false; clearTimeout(pollTimer); if(pageActive&&!document.hidden) pollTimer=setTimeout(refresh,busyBefore?5000:15000); }
   }
   $('moss-research')?.addEventListener('click',e=>task(e.currentTarget,'moss-insight',async()=>{await api('/api/companion/research',{}); await refresh();}));

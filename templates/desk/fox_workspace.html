@@ -5,6 +5,7 @@
   <p class="fox-authority">Your authorized session, account and risk limits govern every order.</p></div>
  </div>
  <p id="fox-update" role="status">Reading Fox’s workspace…</p>
+ {% if config.get('COMPANION_AVAILABLE') %}{% include "desk/after_close.html" %}{% endif %}
  <div class="fox-health-grid">
   <article><h3>Fox now</h3><p id="fox-current">Awaiting current agent state</p></article>
   <article><h3>Research brain</h3><p id="fox-brain">Awaiting provider status</p></article>

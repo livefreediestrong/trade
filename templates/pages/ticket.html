@@ -25,6 +25,7 @@
       document.documentElement.setAttribute("data-theme", t);
     })();
   </script>
+  <link rel="stylesheet" href="/static/after_close.css?v=nightly-20260925-1" />
 </head>
 {% include "desk/header.html" %}
 {% include "desk/top_nav.html" %}
@@ -56,7 +57,7 @@
   <script src="/static/live_ticket.js?v=review10-20260924-1"></script>
   <script src="/static/desk_attention.js?v=autonomous-20260925-1"></script>
   {% if config.get('COMPANION_AVAILABLE') %}<script src="/static/paper_workday_ui.js?v=automation-20260925-1"></script>{% endif %}
-  {% if config.get('COMPANION_AVAILABLE') %}<script src="/static/news_quips.js?v=expressions-20260925-3"></script><script src="/static/companion_scenes.js?v=expressions-20260925-3"></script><script src="/static/moss_avatar.js?v=expressions-20260925-3"></script><script src="/static/companion.js?v=reliability-20260925-1"></script><script src="/static/news_desk.js?v=autonomous-20260925-1"></script>{% endif %}
+  {% if config.get('COMPANION_AVAILABLE') %}<script src="/static/news_quips.js?v=expressions-20260925-3"></script><script src="/static/companion_scenes.js?v=nightly-20260925-1"></script><script src="/static/moss_avatar.js?v=nightly-20260925-1"></script><script src="/static/after_close.js?v=nightly-20260925-1"></script><script src="/static/companion.js?v=nightly-20260925-1"></script><script src="/static/news_desk.js?v=autonomous-20260925-1"></script>{% endif %}
   <script src="/static/app.js?v=reliability-20260925-2"></script>
   <script src="/static/market_today.js?v=tidy-20260924-1"></script>
   {% if config.get('OPTIONS_AVAILABLE') %}<script src="/static/options.js?v=modules-20260924-2"></script>{% endif %}

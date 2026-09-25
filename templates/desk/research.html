@@ -2,6 +2,7 @@
 <div class="section-heading"><h2 id="desk-research-title">Research</h2><p>Recorded by Moss · inspect details and run optional investigations here</p></div>
 {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}{% include "desk/scanner_link.html" %}{% endif %}
 <div class="section-grid">
+{% if config.get('COMPANION_AVAILABLE') %}{% include "desk/after_close.html" %}{% endif %}
 {% include "desk/market_watch.html" %}
 {% if config.get('COMPANION_AVAILABLE') %}{% include "desk/news_sources.html" %}{% endif %}
 {% if config.get('MARKETS_AVAILABLE') %}{% include "desk/market_operations.html" %}{% endif %}

@@ -8,6 +8,7 @@
  const chore=d=>(d?.woman?.chores||[]).find(c=>c.state==='attention')||(d?.woman?.chores||[]).find(c=>c.state==='working');
  function sceneFor(day,now=Date.now()){
   if(!day)return null;
+  if(day.after_close?.busy&&!['blocked','reconciling'].includes(day.fox?.state))return {key:'nightly:'+day.after_close.day,kind:'research'};
   const note=caution(day);
   if(note)return {key:'caution:'+note.key+'|'+day.fox?.state,kind:'caution',partnered:['watching','researching','holding'].includes(day.fox?.state)};
   if(day.fox?.state==='researching')return {key:'research:'+day.fox.ticker,kind:'research'};
@@ -47,6 +48,7 @@
  function thoughtFor(actor,{day,action,news,trade,unavailable}={}){
   if(unavailable)return {text:'Status unavailable',detail:'The latest desk status could not be read.',href:'/desk/auto#desk-health'};
   if(!day)return {text:'Reading desk status',detail:'Waiting for current desk information.',href:'/desk/overview#desk-day'};
+  if(day.after_close?.busy&&!['blocked','reconciling'].includes(day.fox?.state))return {text:'Review the session with us',detail:'Comparing dated observations, prior sessions and public source context.',href:'/desk/fox#nightly-review'};
   if(!actor){
    if(action.key==='order-update'&&trade?.id)return {text:'Read the order update',detail:trade.text,href:source('move',trade.id)};
    const last=day.fox?.recent?.[0];

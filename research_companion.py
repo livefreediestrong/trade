@@ -137,6 +137,8 @@ class Companion:
         self.review = AgentReview(desk, self)
         from companion_news import HeadlineDesk
         self.news = HeadlineDesk(desk)
+        from after_close_review import AfterCloseReview
+        self.after_close = AfterCloseReview(desk, self)
 
     @property
     def path(self):
@@ -193,6 +195,7 @@ class Companion:
                     "notebook_count": len(saved.get("briefs", [])), "memory": self.memory_status(),
                     "paper_workday": self.paper.status(), "actual_trades": self.trades.status(),
                     "agent_review": self.review.status(),
+                    "after_close": self.after_close.status(now),
                     "execution_settings": {k: cfg.get(k) for k in ("mode", "session_active", "kill_switch", "rth_only", "risk_preset", "live_agent")},
                     "live_automation": "not_armed", "desk_execution_mode": cfg.get("mode"),
                     "schedule": "Once per market session while the app is running; weekends and exchange holidays skipped. Missed days are not fabricated.",
@@ -357,6 +360,7 @@ class Companion:
             while not self.stop.wait(30):
                 # Optional feeds/reviews cannot starve the daily notebook.
                 for name, job in (("news", self.news.refresh), ("review", self.review.tick),
+                                  ("after_close", self.after_close.tick),
                                   ("notebook", lambda: self.run(scheduled=True))):
                     try:
                         job()
@@ -409,6 +413,16 @@ def register(app, desk):
     def headlines():
         service.news.refresh()
         return jsonify(service.news.snapshot())
+
+    @bp.get("/api/companion/after-close/<day>")
+    def after_close_report(day):
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            raise ValueError("Use YYYY-MM-DD")
+        with service.after_close.lock:
+            report = service.after_close.load()["reports"].get(day)
+        if report is None:
+            return jsonify(ok=False, error="No nightly report for this session"), 404
+        return jsonify(ok=True, report=report)
 
     @bp.post("/api/companion/research")
     def research():

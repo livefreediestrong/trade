@@ -333,6 +333,7 @@ def _gemini_generate(
     cfg: Optional[dict] = None,
     timeout_sec: float = 45,
     response_schema: Optional[dict] = None,
+    max_output_tokens: Optional[int] = None,
 ) -> str:
     """Call Gemini generateContent REST. Raises RuntimeError on hard failures."""
     cfg = cfg or load_llm_config()
@@ -362,6 +363,11 @@ def _gemini_generate(
             body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": level}
     else:
         body["generationConfig"] = {"temperature": 0.5}
+
+    if max_output_tokens is not None:
+        if isinstance(max_output_tokens, bool) or not isinstance(max_output_tokens, int) or not 1 <= max_output_tokens <= 8192:
+            raise ValueError("invalid_max_output_tokens")
+        body["generationConfig"]["maxOutputTokens"] = max_output_tokens
 
     try:
         timeout = float(timeout_sec) if timeout_sec is not None else 45.0

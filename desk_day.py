@@ -406,12 +406,25 @@ def snapshot(desk, now: datetime | None = None) -> dict[str, Any]:
                    + [c for c in woman["chores"] if c["state"] == "working"])
     woman["headline"] = (f"Changing Woman is on it: {open_chores[0]['label'].lower()} — {open_chores[0]['detail']}"
                          if open_chores else "Changing Woman has the chores done and is reading along with Fox.")
+    nightly = {}
+    companion = getattr(desk, "_research_companion", None)
+    if companion and getattr(companion, "after_close", None):
+        state = companion.after_close.status(now)
+        latest = state.get("latest") or {}
+        nightly = {"busy": state.get("busy", False), "phase": state.get("phase"), "day": latest.get("day"),
+                   "status": latest.get("status"), "error": state.get("error"), "completed_at": latest.get("completed_at")}
+        for role in ("changing_woman", "fox"):
+            model = (latest.get("models") or {}).get(role) or {}
+            nightly[role] = (model.get("result") or {}).get("summary") if model.get("status") == "complete" else None
+        # Preserve broker state and alerts; nightly presentation is a separate activity.
+        if state.get("busy"):
+            woman["chores"].insert(0, _chore("after_close", "After-close review", "working", "Comparing the session with retained history and dated public sources."))
     for row in upcoming:
         guard = market_events.guard_window(row, cfg) if cfg.get("event_guard_enabled", True) else None
         row["when"] = market_events.describe(row, now)
         row["guard"] = (f"{market_events.clock_et(guard[0])}–{market_events.clock_et(guard[1])}" if guard else None)
     return {
-        "ok": True, "as_of": now.isoformat(), "fox": fox, "woman": woman, "research": research_view(desk, now),
+        "ok": True, "as_of": now.isoformat(), "fox": fox, "woman": woman, "research": research_view(desk, now), "after_close": nightly,
         "events": {"upcoming": upcoming[:10], "active_window": window, "status": market_events.status(),
                    "guard_enabled": bool(cfg.get("event_guard_enabled", True))},
         "wsb": {k: wsb.get(k) for k in ("configured", "fresh", "threads", "top", "error", "comments_read",
