@@ -116,7 +116,12 @@
   const isTrade=showingFoxEvent(),isNightly=!isTrade&&!custom&&!dayUnavailable&&!['blocked','reconciling'].includes(day?.fox?.state)&&(nightly?.busy||recentNightly);
   const isBuzz=!isTrade&&!isNightly&&showingBuzz(),isNote=!isTrade&&!isNightly&&!isBuzz&&showingNote(),isNews=!isTrade&&!isNightly&&!isBuzz&&!isNote&&showingNews();
   const isDay=!isTrade&&!isBuzz&&!isNote&&!isNews&&dayMode();
-  const alternate=actors[1].hidden?0:actors[0].hidden?1:parseInt(day?.context?.event_id?.slice(-2)||'0',16)%2;
+  // Evidence, not a clock, picks the day narrator. While Fox is idle Changing Woman keeps the
+  // chores and source commentary going instead of repeating his idle headline. A saved nightly
+  // review holds both roles' summaries, so those take turns.
+  const foxIdle=['off','resting','done','waiting'].includes(day?.fox?.state);
+  const alternate=actors[1].hidden?0:actors[0].hidden?1:isNightly?Math.floor(performance.now()/45000)%2:
+   foxIdle?1:parseInt(day?.context?.event_id?.slice(-2)||'0',16)%2;
   const speaker=isTrade||isBuzz?0:isNote||isNews?1:isNightly||isDay?alternate:!actors[1].hidden&&(actors[0].hidden||stops.indexOf(stop)%2===0)?1:0;
   const dayText=isDay?(day.context?.blockers?.length?day.context.quality.execution.detail:speaker?womanLine():day.fox.headline):'';
   const nightlyText=nightly?.busy?'The nightly worker is running. Completed findings and each reviewer’s status appear in the shared investigation.':nightlySummary(nightly?.[speaker?'changing_woman':'fox']||'The local session evidence is saved. Inspect the report for AI availability and remaining gaps.');

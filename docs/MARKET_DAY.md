@@ -50,7 +50,7 @@ The companions only read. Fox trades only through the agent's normal gates, and 
 | Source | What | Impact |
 | --- | --- | --- |
 | [Federal Reserve calendar](https://www.federalreserve.gov/newsevents/calendar.htm) (`/json/calendar.json`) | FOMC statement (2:00 p.m. on the last meeting day), press conference, minutes; speeches and testimony with times; Beige Book | High: FOMC statement and press conference, anything by the Chair. Medium: other governors, minutes, Beige Book. Low: statistical releases |
-| [BLS release calendar](https://www.bls.gov/schedule/news_release/) (`bls.ics`, Eastern times) | CPI, Employment Situation, PPI, JOLTS, ECI, productivity, import prices… | High: CPI, jobs report. Medium: PPI, JOLTS, ECI, productivity, import prices |
+| [BLS release calendar](https://www.bls.gov/schedule/news_release/) (`bls.ics`, Eastern times; needs `BLS_USER_AGENT` with a contact email, because [BLS blocks unidentified bots](https://www.bls.gov/bls/pss.htm)) | CPI, Employment Situation, PPI, JOLTS, ECI, productivity, import prices… | High: CPI, jobs report. Medium: PPI, JOLTS, ECI, productivity, import prices |
 | President's public schedule (iCalendar; default: Roll Call Factba.se's public White House calendar; `PRESIDENT_SCHEDULE_ICS`) | Addresses, press conferences, remarks, signings | High: address to the nation, State of the Union, joint session, press conference, economic or trade announcements. Medium: remarks, speeches, executive orders. Low: meetings, briefings, travel |
 | Your events (Settings → Entry & profit guards) | Anything announced elsewhere, e.g. a scheduled address | Your choice |
 | `MARKET_EVENTS_ICS` | Up to six more iCalendar feeds | Medium |

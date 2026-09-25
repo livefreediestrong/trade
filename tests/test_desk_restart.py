@@ -1,6 +1,8 @@
 """A running desk detects updated code on disk and stops only when it is safe to restart."""
 from __future__ import annotations
 
+import os
+
 import pytest
 
 import app as desk
@@ -19,7 +21,11 @@ def test_fingerprint_changes_when_source_changes(tmp_path, monkeypatch):
     first = code_version.fingerprint(tmp_path)
     (tmp_path / "data" / "state.py").write_text("still ignored", encoding="utf-8")
     assert code_version.fingerprint(tmp_path) == first
-    (tmp_path / "static" / "ui.js").write_text("let a=2;", encoding="utf-8")
+    ui = tmp_path / "static" / "ui.js"
+    before = ui.stat().st_mtime_ns
+    ui.write_text("let a=2;", encoding="utf-8")
+    # Same-size writes inside one filesystem clock tick keep the old mtime on Windows.
+    os.utime(ui, ns=(before + 1_000_000_000, before + 1_000_000_000))
     assert code_version.fingerprint(tmp_path) != first
 
 

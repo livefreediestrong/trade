@@ -47,6 +47,7 @@ def test_optional_scheduled_failure_does_not_skip_daily_notebook(isolated, monke
     class Stop:
         def __init__(self): self.ticks = iter([False, True])
         def wait(self, _): return next(self.ticks)
+        def is_set(self): return False
     monkeypatch.setattr(companion.threading, "Thread", Thread)
     monkeypatch.setattr(service.news, "refresh", fail)
     monkeypatch.setattr(service.review, "tick", lambda: calls.append("review"))

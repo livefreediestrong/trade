@@ -207,3 +207,27 @@ def test_describe_is_portable():
                     kind="fomc_press_conference")
     assert me.describe(row, datetime(2026, 9, 16, 9, 0, tzinfo=ET)) == "FOMC Press Conference (2:30 PM ET)"
     assert me.describe(row, datetime(2026, 9, 15, 9, 0, tzinfo=ET)) == "FOMC Press Conference (Wed Sep 16, 2:30 PM ET)"
+
+
+def test_bls_uses_owner_contact_and_explains_403(monkeypatch):
+    calls = []
+
+    def fake_fetch(url, user_agent=me.UA):
+        calls.append(user_agent)
+        if "@" not in user_agent:
+            raise ValueError("HTTP 403")
+        return BLS
+
+    monkeypatch.setattr(me, "_fetch", fake_fetch)
+    monkeypatch.delenv("BLS_USER_AGENT", raising=False)
+    try:
+        me._source_bls()
+    except ValueError as exc:
+        assert "BLS_USER_AGENT" in str(exc)
+    else:
+        raise AssertionError("403 without a contact must fail")
+    monkeypatch.setenv("BLS_USER_AGENT", "no contact here")
+    assert me.bls_user_agent() == ""
+    monkeypatch.setenv("BLS_USER_AGENT", "nadzeel-desk/1.0 (owner@example.com)")
+    rows = me._source_bls()
+    assert rows and calls[-1] == "nadzeel-desk/1.0 (owner@example.com)"

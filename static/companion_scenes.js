@@ -19,17 +19,12 @@
  }
  function scenePose(scene,actor,elapsed,frequency,still){
   if(!scene||still)return null;
-  // Micro-movement decorates the current task; a clock never invents a handoff.
-  if(scene.kind==='research')return {sheet:actor?'woman':'fox',row:2,frame:1,label:actor?'Reading available evidence':'Evaluating the recorded setup',expression:actor?'thoughtful':'curious'};
+  // Micro-movement decorates the current task; a clock never invents a handoff. The
+  // caption stays the action's own label (e.g. "Researching NVDA").
+  if(scene.kind==='research')return {sheet:actor?'woman':'fox',row:2,frame:Math.floor(elapsed/1200)%4,label:null,expression:actor?'thoughtful':'curious'};
   const t=scene.kind==='pass'?elapsed:elapsed%(PERIOD[frequency]||PERIOD.balanced);
   if(t>=16000)return null;
-  const beat=Math.floor(t/4000),frame=Math.floor(t/1200)%4;
-  if(scene.kind==='research')return actor?
-   [{sheet:'gesture',row:0,frame:0,label:'Listening to Fox',expression:'attentive'},
-    {sheet:'woman',row:2,frame,label:'Checking the evidence',expression:'thoughtful'},
-    {sheet:'woman',row:2,frame:3,label:'Thinking it through',expression:'thoughtful'},
-    {sheet:'woman',row:2,frame,label:'Reading along',expression:'composed'}][beat]:
-   {sheet:'fox',row:beat===2?0:2,frame:beat===2?1:frame,label:beat===2?'Listening to Changing Woman':null,expression:beat===2?'listening':'curious'};
+  const beat=Math.floor(t/4000);
   if(scene.kind==='caution')return actor?
    [{sheet:'woman',row:2,frame:3,expression:'thoughtful'},
     {sheet:'gesture',row:0,frame:1,expression:'raised-brow'},

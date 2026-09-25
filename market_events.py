@@ -5,7 +5,9 @@ Sources (all public, no key):
 - Federal Reserve calendar JSON: FOMC statements, press conferences and minutes, speeches
   and testimony with times (https://www.federalreserve.gov/newsevents/calendar.htm).
 - BLS release calendar (iCalendar): CPI, Employment Situation, PPI, JOLTS... at their
-  Eastern release times (https://www.bls.gov/schedule/news_release/).
+  Eastern release times (https://www.bls.gov/schedule/news_release/). BLS blocks readers
+  whose User-Agent has no owner contact (https://www.bls.gov/bls/pss.htm), so the feed
+  needs BLS_USER_AGENT with a contact email; without it the dated schedule is used.
 - The President's public schedule as iCalendar. Default: Roll Call Factba.se's public
   Google Calendar of the White House schedule; set PRESIDENT_SCHEDULE_ICS to another feed,
   or "off". MARKET_EVENTS_ICS adds more feeds (comma-separated).
@@ -40,6 +42,10 @@ PRESIDENT_ICS_URL = ("https://calendar.google.com/calendar/ical/"
                      "cantymedia.com_62fqfmv1eejqs9hntbr6hof5kc%40group.calendar.google.com/public/basic.ics")
 UA = "TomahawkDesk/1.0 (local research desk; calendar reader)"
 MAX_BYTES = 4 * 1024 * 1024
+# Public Google calendars (the default White House feed) return their whole history: about
+# 11 MB after roughly 15 seconds of server-side generation (measured 2026-09-25).
+LARGE_ICS_MAX_BYTES = 24 * 1024 * 1024
+LARGE_ICS_READ_TIMEOUT = 45
 REFRESH_SEC = 3 * 3600
 RETRY_SEC = 15 * 60
 KEEP_PAST_HOURS = 6
@@ -318,14 +324,23 @@ def static_fomc(today: date) -> list[dict[str, Any]]:
 
 # --- fetching and caching -------------------------------------------------------
 
-def _fetch(url: str) -> bytes:
-    response = requests.get(url, timeout=12, headers={"User-Agent": UA, "Accept": "*/*"})
-    if response.status_code != 200:
-        raise ValueError(f"HTTP {response.status_code}")
-    body = response.content or b""
-    if len(body) > MAX_BYTES:
-        raise ValueError("feed too large")
-    return body
+def bls_user_agent() -> str:
+    """Owner-set BLS identity; BLS only serves bots that say how to contact their owner."""
+    value = " ".join((os.environ.get("BLS_USER_AGENT") or "").split())[:200]
+    return value if "@" in value else ""
+
+
+def _fetch(url: str, user_agent: str = UA, *, max_bytes: int = MAX_BYTES, read_timeout: float = 12) -> bytes:
+    with requests.get(url, timeout=(10, read_timeout), stream=True,
+                      headers={"User-Agent": user_agent, "Accept": "*/*"}) as response:
+        if response.status_code != 200:
+            raise ValueError(f"HTTP {response.status_code}")
+        body = bytearray()
+        for chunk in response.iter_content(65536):
+            body.extend(chunk)
+            if len(body) > max_bytes:
+                raise ValueError("feed too large")
+    return bytes(body)
 
 
 def _short_error(exc: BaseException) -> str:
@@ -351,8 +366,15 @@ def _source_fed() -> list[dict[str, Any]]:
 
 
 def _source_bls() -> list[dict[str, Any]]:
+    contact = bls_user_agent()
+    try:
+        body = _fetch(BLS_ICS_URL, contact or UA)
+    except ValueError as exc:
+        if str(exc) == "HTTP 403" and not contact:
+            raise ValueError("BLS blocks readers without a contact email; set BLS_USER_AGENT in .env") from exc
+        raise
     out = []
-    for row in parse_ics(_fetch(BLS_ICS_URL)):
+    for row in parse_ics(body):
         impact, kind = classify_bls(row.get("summary") or "")
         out.append(_event("bls", row.get("summary") or "BLS release", row["start"], impact=impact, kind=kind,
                           all_day=row.get("all_day", False), url="https://www.bls.gov/schedule/news_release/"))
@@ -392,9 +414,14 @@ def bls_offline_schedule(now):
                  verified_on="2026-09-25") for stamp, title in schedule]
 
 
-def _source_ics(url: str, source: str) -> list[dict[str, Any]]:
+def _source_ics(url: str, source: str, now: datetime | None = None) -> list[dict[str, Any]]:
+    """Rows inside the kept window only; full-history calendars would bloat the cache."""
+    now = now or datetime.now(timezone.utc)
+    lo, hi = now - timedelta(hours=KEEP_PAST_HOURS + 24), now + timedelta(days=KEEP_AHEAD_DAYS)
     out = []
-    for row in parse_ics(_fetch(url)):
+    for row in parse_ics(_fetch(url, max_bytes=LARGE_ICS_MAX_BYTES, read_timeout=LARGE_ICS_READ_TIMEOUT)):
+        if not lo <= row["start"] <= hi:
+            continue
         title = row.get("summary") or "Scheduled event"
         detail = f"{row.get('description') or ''} {row.get('location') or ''}"
         if source == "president":
@@ -441,9 +468,9 @@ def refresh(now: datetime | None = None) -> dict[str, Any]:
     try:
         jobs: dict[str, Any] = {"fed": _source_fed, "bls": _source_bls}
         for i, url in enumerate(_president_urls()):
-            jobs["president" if i == 0 else f"president_{i}"] = (lambda u=url: _source_ics(u, "president"))
+            jobs["president" if i == 0 else f"president_{i}"] = (lambda u=url: _source_ics(u, "president", now))
         for i, url in enumerate(_extra_urls()):
-            jobs[f"calendar_{i + 1}"] = (lambda u=url: _source_ics(u, "calendar"))
+            jobs[f"calendar_{i + 1}"] = (lambda u=url: _source_ics(u, "calendar", now))
         with _lock:
             previous = {k: list(v) for k, v in (_state.get("by_source") or {}).items()}
             sources = {}  # Disabled sources must not survive as permanent error badges.

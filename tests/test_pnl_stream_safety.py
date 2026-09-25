@@ -17,7 +17,8 @@ def stream(monkeypatch):
     fake = NS(
         pnlEvent=object(),
         isConnected=lambda: connected[0],
-        reqCurrentTime=lambda: datetime(2026, 9, 23, 18, tzinfo=timezone.utc),
+        # Broker time must track the local clock; a skew over 5 s blocks new risk.
+        reqCurrentTime=lambda: datetime.now(timezone.utc),
         accountSummary=lambda account: [
             NS(account=account, currency="USD", tag=tag, value=value)
             for tag, value in {
@@ -166,7 +167,7 @@ def test_outage_during_successful_api_pulse_cannot_grant_readiness(stream, loss_
 
     def pulse_with_outage():
         broker._server_error(-1, loss_code, "upstream loss during heartbeat")
-        return datetime(2026, 9, 23, 18, tzinfo=timezone.utc)
+        return datetime.now(timezone.utc)
 
     stream.fake.reqCurrentTime = pulse_with_outage
     assert_blocked(stream.account())
@@ -181,7 +182,7 @@ def test_unavailable_callback_during_api_pulse_revokes_prior_number(stream, valu
 
     def pulse_with_invalid_pnl():
         stream.callback(value)
-        return datetime(2026, 9, 23, 18, tzinfo=timezone.utc)
+        return datetime.now(timezone.utc)
 
     stream.fake.reqCurrentTime = pulse_with_invalid_pnl
     assert_blocked(stream.account())
@@ -195,7 +196,7 @@ def test_new_loss_callback_during_api_pulse_returns_latest_loss(stream):
 
     def pulse_with_larger_loss():
         stream.callback(-55.0)
-        return datetime(2026, 9, 23, 18, tzinfo=timezone.utc)
+        return datetime.now(timezone.utc)
 
     stream.fake.reqCurrentTime = pulse_with_larger_loss
     result = stream.account()
@@ -214,7 +215,7 @@ def test_subscription_replaced_during_api_pulse_cannot_validate_old_object(strea
         replacement["value"] = NS(account="TEST", modelCode="", dailyPnL=-55.0)
         broker._PNL[key] = replacement
         broker._pnl_update(replacement["value"])
-        return datetime(2026, 9, 23, 18, tzinfo=timezone.utc)
+        return datetime.now(timezone.utc)
 
     stream.fake.reqCurrentTime = pulse_with_replacement
     assert_blocked(stream.account())
@@ -230,7 +231,7 @@ def test_account_reset_during_api_pulse_cannot_restore_old_validity(stream):
         stream.ready("false")
         stream.callback(0.0)
         stream.ready("true")
-        return datetime(2026, 9, 23, 18, tzinfo=timezone.utc)
+        return datetime.now(timezone.utc)
 
     stream.fake.reqCurrentTime = pulse_with_reset
     assert_blocked(stream.account())
