@@ -1,12 +1,12 @@
 <details class="bx-advanced" id="bx-advanced-agent" open data-workspace-only="live">
-  <summary>Advanced · Fox broker agent &amp; policy <span class="bx-adv-hint">start / pause · budgets · auto options</span></summary>
+  <summary>Fox broker agent · status &amp; controls <span class="bx-adv-hint">connection · positions · start / pause</span></summary>
   <div class="bx-advanced-body">
 <section class="panel workbench-wide live-command" id="live-automation" aria-labelledby="live-automation-title">
  <div class="panel-head"><div><p class="eyebrow">Primary workspace · actual broker</p><h2 id="live-automation-title">Fox broker agent &amp; policy</h2></div><span class="pill" id="live-auto-state">Awaiting verified status</span></div>
  <p id="live-auto-next" role="status">Checking mode, connection and account risk data.</p>
  <div class="live-auto-facts"><article><span>Execution</span><strong id="live-auto-mode">Unknown</strong><small id="live-auto-session">Session unknown</small></article><article><span>Connection &amp; risk</span><strong id="live-auto-broker">Unverified</strong><small id="live-auto-pnl">Daily P&amp;L unknown</small></article><article><span>Configured broker limits</span><strong id="live-auto-limits">Loading</strong><small id="live-auto-limit-note">These are the actual desk settings, separate from rehearsal.</small></article></div>
  <ul id="live-auto-blockers" class="live-auto-blockers"></ul>
- <div class="agent-links"><a href="#desk-health" data-guide-jump="desk-health">Connection &amp; account checks</a><a href="#session-toolbar" data-guide-jump="session-toolbar">Session controls</a><a href="#live-execution-settings" data-guide-jump="live-execution-settings">Manual activation settings</a><a href="#automation-plan" data-guide-jump="automation-plan">Rehearsal plan</a><a href="/manual-live-enablement" target="_blank" rel="noopener">Exact activation reference ↗</a></div>
+ <div class="agent-links"><a href="/desk/settings#desk-health">Connection &amp; account checks</a><a href="#session-toolbar" data-guide-jump="session-toolbar">Session controls</a><a href="/desk/settings#live-execution-settings">Execution settings</a><a href="/desk/paper#automation-plan">Rehearsal plan</a><a href="/manual-live-enablement" target="_blank" rel="noopener">Activation reference ↗</a></div>
  <p class="hint-line keep-visible live-capability">Fox now has a separate broker-agent policy below with whole-share Market / DAY limit orders. The notebook rehearsal remains separate. Saving the agent policy replaces legacy scheduled broker scans and leaves the agent paused.</p>
  {% include 'desk/live_agent.html' %}
 </section>

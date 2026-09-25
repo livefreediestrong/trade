@@ -176,6 +176,20 @@
 #live-agent .compact-form input[type=radio],#live-agent .compact-form input[type=checkbox]{display:inline-block;width:16px;height:16px;min-height:16px;margin:0;flex:0 0 16px}
 #la-exits>.chk{flex-basis:100%}
 #live-agent-history{max-height:180px;overflow:auto;font-size:12px;padding-left:22px}
+#live-agent .live-agent-checks{padding:12px 12px 12px 30px;border-left:3px solid var(--accent);background:var(--panel);font-size:13px;line-height:1.6}
+#live-agent .live-agent-checks:empty{display:none}
+#live-agent .live-agent-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin:14px 0}
+#live-agent .live-agent-actions label{flex:1 1 210px;min-width:0}
+#live-agent .live-agent-actions button{min-height:42px}
+#live-agent .live-agent-policy{border:1px solid var(--border);border-radius:8px;padding:12px;margin:16px 0}
+#live-agent .live-agent-policy>summary{cursor:pointer;font-weight:600;line-height:1.6}
+#live-agent .live-agent-policy[open]>summary{margin-bottom:14px}
+#live-agent .live-agent-positions{border-top:1px solid var(--border);margin-top:16px;padding-top:8px}
+#live-agent-position-list{list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:10px}
+#live-agent-position-list li{border:1px solid var(--border);border-radius:8px;padding:12px;overflow-wrap:anywhere}
+#live-agent-position-list p{font-size:12px;line-height:1.6;margin:6px 0}
+#live-agent fieldset .chk{white-space:normal}
+#live-agent-draft{font-size:13px;line-height:1.6}
 #live-agent .live-agent-budget{border:1px solid var(--border);border-radius:8px;padding:12px;margin:12px 0;font-size:12px;overflow-wrap:anywhere}
 #live-agent-budget-list{padding-left:18px;margin:8px 0;max-height:220px;overflow:auto}
 #live-agent-budget-list:empty{display:none}

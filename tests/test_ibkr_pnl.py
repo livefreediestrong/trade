@@ -618,12 +618,31 @@ def test_autolaunch_switch_turns_every_launch_off(monkeypatch, tmp_path):
 
 
 def test_another_process_holding_the_launch_lock_wins(monkeypatch, tmp_path):
+    import threading
+    import uuid
     launched = []
     _gateway_env(monkeypatch, tmp_path, launched)
     monkeypatch.setattr(broker, "_running_gateway_processes", lambda: [])
-    (tmp_path / "gateway_launch.lock").write_text("")
-    result = broker.ensure_gateway(launch_if_down=True)
-    assert not launched and "right now" in result["note"]
+    # Windows uses a named mutex, not the development-only file lock. A distinct
+    # thread must own it because a Windows mutex is recursive for its owner.
+    monkeypatch.setattr(broker, "GATEWAY_MUTEX_NAME", "Local\\TomahawkTest-" + uuid.uuid4().hex)
+    acquired, release = threading.Event(), threading.Event()
+    ownership = []
+    def hold():
+        with broker._CrossProcessLock() as held:
+            ownership.append(held)
+            acquired.set()
+            release.wait(10)
+    worker = threading.Thread(target=hold)
+    worker.start()
+    try:
+        assert acquired.wait(5) and ownership == [True]
+        result = broker.ensure_gateway(launch_if_down=True)
+        assert not launched and "right now" in result["note"]
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive()
 
 
 def test_unattended_checks_are_throttled(monkeypatch, tmp_path):

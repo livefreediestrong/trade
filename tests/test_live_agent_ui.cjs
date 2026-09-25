@@ -8,18 +8,18 @@ function harness(){
   return value?{set checked(on){if(on)kind=value;}}:{value:kind};
  };
  vm.runInNewContext(fs.readFileSync('static/live_agent.js','utf8'),{
-  document:{hidden:false,getElementById:node,createElement:()=>({}),addEventListener(n,f){listeners[n]=f;}},
-  window:{addEventListener(){}},Date:class extends Date{static now(){return clock}},
+  document:{hidden:false,getElementById:node,createElement:()=>({replaceChildren(...children){this.children=children;}}),addEventListener(n,f){listeners[n]=f;}},
+  window:{addEventListener(n,f){listeners[n]=f;}},Date:class extends Date{static now(){return clock}},
   AbortController,setTimeout:(f,ms)=>{if(ms===10000)timers.push(f);return timers.length;},clearTimeout(){},
   fetch:(url,options)=>new Promise((resolve,reject)=>requests.push({url,options,resolve,reject}))
  });
- const policy={symbols:['TEST'],interval_sec:120,order_type:'limit',max_order_usd:100,max_daily_loss_usd:20,max_orders_per_day:3,max_research_per_day:100,model_budget_usd:5,limit_offset_bps:5,min_confidence:.6,max_quote_age_sec:30};
+ const policy={symbols:['TEST'],interval_sec:120,order_type:'limit',max_order_usd:100,max_daily_loss_usd:20,max_orders_per_day:3,max_research_per_day:100,model_budget_usd:5,limit_offset_bps:5,min_confidence:.6,max_quote_age_sec:30,protective_exits:true,breakeven_after_r:1,max_hold_min:0,flatten_before_close_min:10};
  const state=(extra={})=>({ok:true,configured:true,enabled:false,policy,revision:'rev1',identity:{broker:'ibkr',account_id:'TEST1234',paper_mode:false},message:'Paused',today:{research:1,orders:0},events:[],...extra});
  const reply=async(i,s,ok=true)=>{requests[i].resolve({ok,json:async()=>s});for(let n=0;n<8;n++)await Promise.resolve();};
  const ack=value=>{node('live-agent-confirm').value=value;node('live-agent-confirm').handlers.input();};
  const poll=async()=>{timers.at(-1)();await Promise.resolve();};
  const click=id=>node(id).handlers.click();
- return {node,requests,state,reply,ack,poll,click,advance:ms=>{clock+=ms},edit:()=>node('live-agent-form').handlers.input(),save:()=>node('live-agent-form').handlers.submit({preventDefault(){}})};
+ return {node,requests,state,reply,ack,poll,click,desk:s=>listeners['desk:state']({detail:s}),advance:ms=>{clock+=ms},edit:()=>node('live-agent-form').handlers.input(),save:()=>node('live-agent-form').handlers.submit({preventDefault(){}})};
 }
 (async()=>{
  const h=harness();assert.equal(h.requests.length,1);assert.equal(h.requests[0].url,'/api/live-agent');
@@ -81,6 +81,21 @@ function harness(){
  const failure=harness();await failure.reply(0,failure.state());failure.click('live-agent-budget-check');failure.requests[1].reject(Error('Provider unavailable'));await flush();
  assert.match(failure.node('live-agent-budget-list').children[0].textContent,/Provider unavailable/);
  assert.equal(failure.node('live-agent-budget-check').disabled,false);
+ const options=harness(),ao={enabled:true,strategies:['put_credit','short_put'],max_contracts:3,allow_naked_short:false,dte_min:21,dte_max:70,max_quote_age_sec:8,prefer_otm_pct:2,spread_width_pct:4,every_n_stock_cycles:3};
+ await options.reply(0,options.state({auto_options:ao}));options.node('la-interval_sec').value='180';options.edit();
+ await options.poll();await options.reply(1,options.state({auto_options:{...ao,dte_min:7},revision:'other-window'}));
+ options.save();const saved=JSON.parse(options.requests[2].options.body);
+ assert.deepEqual(saved.auto_options,ao);assert.equal(saved.revision,'rev1'); // Polls never replace the draft's hidden settings.
+ const empty=harness();await empty.reply(0,empty.state());
+ for(const strategy of ['long_call','long_put'])empty.node('la-ao-'+strategy).checked=false;
+ empty.edit();empty.save();assert.equal(empty.requests.length,1);assert.match(empty.node('live-agent-result').textContent,/at least one/);
+ const monitor=harness(),scope={broker:'ibkr',account_id:'TEST1234',paper_mode:false};
+ await monitor.reply(0,monitor.state({enabled:true,session_active:true,mode:'auto_live',market_open:false,account_scope:scope,managed:{TEST:{shares:2,entry:100,stop:99,target:102,account_scope:{account_id:'TEST1234',paper_mode:false,broker:'ibkr'}}}}));
+ monitor.desk({broker:{connected:false},broker_book:{ok:false,risk_ready:false}});
+ assert.equal(monitor.node('bx-agent-chip').textContent,'Connection needed');
+ assert.doesNotMatch(monitor.node('live-agent-managed').textContent,/Protecting/);
+ assert.match(monitor.node('live-agent-position-list').children[0].children[2].textContent,/Connection required/);
+ monitor.advance(26000);await monitor.poll();assert.equal(monitor.node('bx-agent-chip').textContent,'Status unavailable');
  console.log('Live agent UI: no automatic activation, exact account confirmation, duplicate suppression, dirty drafts, stale status, account changes and uncertain-request handling passed.');
  console.log('Budget check: real quotes, zero/positive whole-share sizing, stale/future/mock rejection, draft races, errors and bounded read-only requests passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});
