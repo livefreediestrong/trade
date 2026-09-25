@@ -7,6 +7,14 @@
   return {width,height,size,fox:{x:18,y:height<650?194:224},woman:{x:width-size-18,y:height-12}};
  }
  function activityForSky(sky){return ({dawn:{row:0,key:'water',label:'Preparing water'},day:{row:1,key:'weave',label:'Working plant fibers'},dusk:{row:2,key:'gathered-food',label:'Sorting gathered food'},night:{row:3,key:'rest',label:'Resting'}})[sky]||{row:3,key:'rest',label:'Resting'};}
+ function nightlySummary(value){
+  const text=String(value||'').replace(/\s+/g,' ').trim();
+  if(text.length<=240)return text;
+  const first=text.match(/^.*?[.!?](?=\s|$)/)?.[0];
+  if(first&&first.length<=240)return first;
+  const cut=text.slice(0,237),space=cut.lastIndexOf(' ');
+  return (space>0?cut.slice(0,space):cut)+'…';
+ }
  // Poses describe observed work, never infer a fill, profit or a new trading decision.
  function companionAction(actor,{day,sky,cue='',speaking=false,unavailable=false}={}){
   const action=(key,label,sheet,row,mark='',sequence=[0,1,2,3,2,1])=>({key,label,sheet,row,mark,sequence,speaking});
@@ -54,7 +62,7 @@
   if(/mock|demo|simulat/i.test(source))return '';
   return ticker+' · '+(source||'Social feed')+' activity rose. Attention, not a buy signal.';
  }
- if(typeof module==='object'&&module.exports){module.exports={perchLayout,activityForSky,buzzNote,companionAction,actionPose};return;}
+ if(typeof module==='object'&&module.exports){module.exports={perchLayout,activityForSky,buzzNote,companionAction,actionPose,nightlySummary};return;}
  const $=id=>document.getElementById(id),stage=$('moss-sidebar-stage'),panel=$('sidebar-companions');
  // Both companions work autonomously. Retired character/motion choices cannot hide them.
  const stand=(value,checked)=>({value,checked,addEventListener(){}});
@@ -110,7 +118,7 @@
   const alternate=actors[1].hidden?0:actors[0].hidden?1:Math.floor(performance.now()/45000)%2;
   const speaker=isTrade||isBuzz?0:isNote||isNews?1:isNightly||isDay?alternate:!actors[1].hidden&&(actors[0].hidden||stops.indexOf(stop)%2===0)?1:0;
   const dayText=isDay?(speaker?womanLine():day.fox.headline):'';
-  const nightlyText=nightly?.busy?(speaker?'I am gathering dated evidence and comparing the session with our earlier observations.':'I am reviewing the evidence with Changing Woman. Any new idea still needs a prospective test.'):String(nightly?.[speaker?'changing_woman':'fox']||'The local session evidence is saved. Inspect the report for AI availability and remaining gaps.').slice(0,340);
+  const nightlyText=nightly?.busy?(speaker?'I am gathering dated evidence and comparing the session with our earlier observations.':'I am reviewing the evidence with Changing Woman. Any new idea still needs a prospective test.'):nightlySummary(nightly?.[speaker?'changing_woman':'fox']||'The local session evidence is saved. Inspect the report for AI availability and remaining gaps.');
   const text=dayUnavailable?'Current desk information is unavailable. I will wait for a fresh update before describing activity.':isTrade?foxEvent.text:isNightly?nightlyText:isBuzz?buzz:isNote?note.text:isNews?news.text:(isDay&&dayText)?dayText:custom||stop[speaker?3:2];
   const isSources=!isNightly&&isDay&&speaker===1&&!!day?.research&&!((day.woman?.reasoning||[]).some(n=>n.level==='block'||n.level==='caution'));
   const toDay=isTrade||isNote||(isDay&&!!dayText),target=isNightly?'nightly-review':isBuzz?'buzz-panel':isNews?news.url:isSources?'companion-news':toDay?'desk-day':stop[0],key=speaker+'|'+target+'|'+text;
@@ -123,13 +131,13 @@
   if(key!==messageKey){
    messageSince=now;messageState=state;messageKey=key;$('moss-speech-text').textContent=text;
    const brief=scenes?.briefFor(speaker,day)||{};
-   if($('moss-speech-principle'))$('moss-speech-principle').textContent=isNews?'Read the facts. Test the implication.':isTrade?'Record first. Reconcile next.':brief.principle||'Evidence before conviction.';
-   if($('moss-speech-next')){$('moss-speech-next').textContent=isNews?(news.next||'Check the original source and what would disprove the thesis.'):isTrade?'This is the recorded broker update; the ledger determines what actually filled.':isBuzz?'Attention is a research lead. It does not establish an edge.':brief.next||'';}
+   if($('moss-speech-principle'))$('moss-speech-principle').textContent=isNightly?(speaker?'Check the evidence.':'Challenge the conclusion.'):isNews?'Read the facts. Test the implication.':isTrade?'Record first. Reconcile next.':brief.principle||'Evidence before conviction.';
+   if($('moss-speech-next')){$('moss-speech-next').textContent=isNightly?'Read the cited report and its proposed tests. These ideas remain unproven.':isNews?(news.next||'Check the original source and what would disprove the thesis.'):isTrade?'This is the recorded broker update; the ledger determines what actually filled.':isBuzz?'Attention is a research lead. It does not establish an edge.':brief.next||'';}
    if($('moss-speech-meta'))$('moss-speech-meta').textContent=isNightly?('Nightly review · '+nightly.day+' · '+(nightly.busy?'in progress':'AI interpretation / saved evidence')):isNews?'App-written research lens · source below':day?.as_of?'Desk update · '+new Date(day.as_of).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'})+' ET':'App-written desk guidance';
-   const page={'desk-overview':'overview','desk-day':'overview','moss-desk':'paper','desk-paper':'paper','desk-options':'paper','desk-research':'research','research-studio':'research','buzz-panel':'research','companion-news':'research','desk-settings':'settings'}[target]||'auto';
+   const page={'nightly-review':'fox','desk-overview':'overview','desk-day':'overview','moss-desk':'paper','desk-paper':'paper','desk-options':'paper','desk-research':'research','research-studio':'research','buzz-panel':'research','companion-news':'research','desk-settings':'settings'}[target]||'auto';
    const a=$('moss-speech-link');a.href=isNews?news.url:($(target)?'':'/desk/'+page)+'#'+target;a.target=isNews?'_blank':'_self';a.rel=isNews?'noopener noreferrer':'';
    a.textContent=isNightly?'Read the nightly review':isBuzz?'Inspect buzz':isNews?news.source+' · '+new Date(news.publishedAt).toLocaleString()+' ↗':isSources?'Inspect source coverage':toDay?'Today at the desk':'Go to this section';
-   $('moss-destination').textContent=isTrade?'Fox · broker agent':isBuzz?'Fox · Market buzz':isNote?'Changing Woman · thinking it through':isNews?'Changing Woman · News commentary':
+   $('moss-destination').textContent=isNightly?(speaker?'Changing Woman':'Fox')+' · Nightly review':isTrade?'Fox · broker agent':isBuzz?'Fox · Market buzz':isNote?'Changing Woman · thinking it through':isNews?'Changing Woman · News commentary':
     toDay?(speaker?'Changing Woman · evidence & context':'Fox · broker agent'):(speaker?'Changing Woman':'Fox')+' · '+stop[1];
    if($('moss-news-headline')){$('moss-news-headline').hidden=!isNews;$('moss-news-headline').textContent=isNews?news.title:'';}
   }

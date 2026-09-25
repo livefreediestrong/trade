@@ -48,7 +48,7 @@
  function thoughtFor(actor,{day,action,news,trade,unavailable}={}){
   if(unavailable)return {text:'Status unavailable',detail:'The latest desk status could not be read.',href:'/desk/auto#desk-health'};
   if(!day)return {text:'Reading desk status',detail:'Waiting for current desk information.',href:'/desk/overview#desk-day'};
-  if(day.after_close?.busy&&!['blocked','reconciling'].includes(day.fox?.state))return {text:'Review the session with us',detail:'Comparing dated observations, prior sessions and public source context.',href:'/desk/fox#nightly-review'};
+  if((day.after_close?.busy||action?.label==='Sharing the nightly review')&&action?.key!=='order-update'&&!['blocked','reconciling'].includes(day.fox?.state))return {text:'Review the session with us',detail:day.after_close?.busy?'Comparing dated observations, prior sessions and public source context.':'Read the saved evidence, AI interpretations and unproven research tests.',href:'/desk/fox#nightly-review'};
   if(!actor){
    if(action.key==='order-update'&&trade?.id)return {text:'Read the order update',detail:trade.text,href:source('move',trade.id)};
    const last=day.fox?.recent?.[0];

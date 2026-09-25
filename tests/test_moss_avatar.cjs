@@ -185,3 +185,18 @@ h.advance(46000);
 assert.equal(h.nodes['moss-woman'].dataset.action,'sourcing','source commentary continues independently of Fox trading activation');
 assert.equal(h.nodes['moss-speech-link'].href,'/desk/research#companion-news');
 assert.equal(companionAction(1,{cue:'sources',day:{research:{fresh_sources:0}}}).key,'sources-unavailable','no fake active research when feeds are missing');
+// Completed review speech must open the real report from pages without its panel.
+h=harness();
+const completedNight={day:'2026-09-25',busy:false,completed_at:new Date().toISOString(),fox:'A dated review. '+ 'Further details '.repeat(30),changing_woman:'We compared current and prior observations.'};
+h.events['desk:day']({detail:{fox:{state:'waiting'},woman:{},after_close:completedNight}});
+assert.equal(h.nodes['moss-speech-text'].textContent,'A dated review.');
+assert.equal(h.nodes['moss-destination'].textContent,'Fox · Nightly review');
+assert.equal(h.nodes['moss-speech-link'].href,'/desk/fox#nightly-review');
+assert.equal(h.nodes['moss-fox-thought'].href,'/desk/fox#nightly-review');
+assert.equal(h.nodes['moss-speech-principle'].textContent,'Challenge the conclusion.');
+assert.match(h.nodes['moss-speech-next'].textContent,/unproven/);
+h.advance(46000);
+assert.equal(h.nodes['moss-destination'].textContent,'Changing Woman · Nightly review');
+assert.equal(h.nodes['moss-speech-principle'].textContent,'Check the evidence.');
+assert.equal(h.nodes['moss-woman-thought'].href,'/desk/fox#nightly-review');
+console.log('Nightly speech: bounded readable text, role labels, cited-report links and matching thoughts passed.');
