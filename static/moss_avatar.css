@@ -78,3 +78,14 @@ body.unified-desk:has(.has-companion-habitat){padding-left:332px}
 .moss-sprite:not([data-still=true])::before,.moss-sprite:not([data-still=true])::after{animation:moss-breathe 12s ease-in-out infinite}
 @keyframes moss-breathe{0%,100%{translate:0 0}50%{translate:0 -1px}}
 @media(prefers-reduced-motion:reduce){.moss-sprite::before,.moss-sprite::after{animation:none!important;transition:none!important}}
+
+/* Only the eye area changes for a brief blink; torso and silhouette stay fixed. */
+.moss-eyelids{position:absolute;inset:0;z-index:1;opacity:0;pointer-events:none;background:url('/static/companion-blink-v1.png') var(--frame-blink,0% 0%)/400% 200% no-repeat;clip-path:inset(32% 18% 43% 22%)}
+.moss-sprite:not([data-still=true]) .moss-eyelids{animation:companion-blink 11s step-end infinite}
+.moss-woman .moss-eyelids{animation-delay:4.3s!important;clip-path:inset(30% 23% 51% 23%)}
+@keyframes companion-blink{0%,96%,98%,100%{opacity:0}96.8%{opacity:1}}
+#moss-speech-pin{position:static;float:right;border:1px solid var(--border);border-radius:6px;background:var(--panel2);color:var(--muted);font:10px/1.6 var(--sans,system-ui);padding:1px 7px;margin:0 20px 4px 4px;cursor:pointer}
+@media(prefers-reduced-motion:reduce){.moss-eyelids{display:none!important}}
+
+.moss-sprite[data-speaking=true]:not([data-still=true])::before,.moss-sprite[data-speaking=true]:not([data-still=true])::after{animation:moss-breathe 12s ease-in-out infinite,moss-small-nod 9s ease-in-out 1}
+@keyframes moss-small-nod{0%,20%,65%,100%{rotate:0deg}38%{rotate:.45deg}50%{rotate:-.2deg}}

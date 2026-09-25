@@ -422,7 +422,8 @@ def register(app, desk):
             report = service.after_close.load()["reports"].get(day)
         if report is None:
             return jsonify(ok=False, error="No nightly report for this session"), 404
-        return jsonify(ok=True, report=report)
+        from narrative_checks import checked_report
+        return jsonify(ok=True, report=checked_report(report))
 
     @bp.post("/api/companion/research")
     def research():

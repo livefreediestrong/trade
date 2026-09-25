@@ -89,6 +89,7 @@
  let frequency=['gentle','balanced','lively'].includes(saved.frequency)?saved.frequency:'balanced',scene=null,sceneSince=0;
  let timer=null,active=true,hovered=false,quiet=document.documentElement.dataset.deskQuiet==='true',lastScroll=-Infinity;
  let stop=stops[0],custom='',customUntil=0,messageKey='',dismissed='',messageSince=-Infinity,messageState='';
+ let pinnedSpeech=null;
  let buzz='',buzzUntil=0,lastBuzzAt=-Infinity;
  let news=null,newsUntil=0,lastNewsAt=-Infinity;
  // Fox is the broker agent; Changing Woman keeps the chores and reasons with him (desk:day).
@@ -115,21 +116,29 @@
   const isTrade=showingFoxEvent(),isNightly=!isTrade&&!custom&&!dayUnavailable&&!['blocked','reconciling'].includes(day?.fox?.state)&&(nightly?.busy||recentNightly);
   const isBuzz=!isTrade&&!isNightly&&showingBuzz(),isNote=!isTrade&&!isNightly&&!isBuzz&&showingNote(),isNews=!isTrade&&!isNightly&&!isBuzz&&!isNote&&showingNews();
   const isDay=!isTrade&&!isBuzz&&!isNote&&!isNews&&dayMode();
-  const alternate=actors[1].hidden?0:actors[0].hidden?1:Math.floor(performance.now()/45000)%2;
+  const alternate=actors[1].hidden?0:actors[0].hidden?1:parseInt(day?.context?.event_id?.slice(-2)||'0',16)%2;
   const speaker=isTrade||isBuzz?0:isNote||isNews?1:isNightly||isDay?alternate:!actors[1].hidden&&(actors[0].hidden||stops.indexOf(stop)%2===0)?1:0;
-  const dayText=isDay?(speaker?womanLine():day.fox.headline):'';
-  const nightlyText=nightly?.busy?(speaker?'I am gathering dated evidence and comparing the session with our earlier observations.':'I am reviewing the evidence with Changing Woman. Any new idea still needs a prospective test.'):nightlySummary(nightly?.[speaker?'changing_woman':'fox']||'The local session evidence is saved. Inspect the report for AI availability and remaining gaps.');
+  const dayText=isDay?(day.context?.blockers?.length?day.context.quality.execution.detail:speaker?womanLine():day.fox.headline):'';
+  const nightlyText=nightly?.busy?'The nightly worker is running. Completed findings and each reviewer’s status appear in the shared investigation.':nightlySummary(nightly?.[speaker?'changing_woman':'fox']||'The local session evidence is saved. Inspect the report for AI availability and remaining gaps.');
   const text=dayUnavailable?'Current desk information is unavailable. I will wait for a fresh update before describing activity.':isTrade?foxEvent.text:isNightly?nightlyText:isBuzz?buzz:isNote?note.text:isNews?news.text:(isDay&&dayText)?dayText:custom||stop[speaker?3:2];
   const isSources=!isNightly&&isDay&&speaker===1&&!!day?.research&&!((day.woman?.reasoning||[]).some(n=>n.level==='block'||n.level==='caution'));
-  const toDay=isTrade||isNote||(isDay&&!!dayText),target=isNightly?'nightly-review':isBuzz?'buzz-panel':isNews?news.url:isSources?'companion-news':toDay?'desk-day':stop[0],key=speaker+'|'+target+'|'+text;
-  const now=performance.now(),state=dayUnavailable?'unavailable':day?.fox?.state||'',critical=dayUnavailable||['blocked','reconciling'].includes(state);
+  const toDay=isTrade||isNote||(isDay&&!!dayText),target=isNightly?'nightly-review':isBuzz?'buzz-panel':isNews?news.url:isSources?'companion-news':toDay?'desk-day':stop[0],key=speaker+'|'+target+'|'+text+'|'+JSON.stringify(day?.context?.blockers||[]);
+  const riskKey=JSON.stringify(day?.context?.blockers||[]);
+  const now=performance.now(),state=dayUnavailable?'unavailable':day?.fox?.state||'',critical=dayUnavailable||['blocked','reconciling'].includes(state)||!!(pinnedSpeech&&day?.context?.blockers?.length&&pinnedSpeech.riskKey!==riskKey);
+  if(pinnedSpeech&&!critical&&!isTrade){
+   $('moss-speech-text').textContent=pinnedSpeech.text;$('moss-destination').textContent=pinnedSpeech.who+' · pinned explanation';
+   $('moss-speech-meta').textContent=pinnedSpeech.meta+' · Current trading checks remain above the page.';
+   $('moss-speech-principle').textContent='Saved explanation';$('moss-speech-next').textContent='Unpin to follow new explanations. Read current checks in the evidence strip.';
+   $('moss-speech-link').href='#companion-context';$('moss-speech-link').textContent='Current checks and history';
+   bubble.dataset.speaker=pinnedSpeech.speaker;bubble.dataset.topic='pinned';bubble.hidden=!speech.checked||control.value==='hide'||quiet||!!dialog();return;
+  }
   const readingMs=Math.min(32000,Math.max(18000,String($('moss-speech-text').textContent||'').length*65));
   // Keep a complete thought readable. New order/risk/status changes remain immediate.
   if(key!==messageKey&&messageKey&&!custom&&!isTrade&&!isBuzz&&!isNote&&!isNews&&!critical&&state===messageState&&
      (bubble.dataset.topic!=='news'||(news&&Date.now()-news.checkedAt<=900000&&Date.now()-news.publishedTs<=36*3600000))&&
      (interacting()||now-messageSince<readingMs)&&!bubble.hidden)return;
   if(key!==messageKey){
-   messageSince=now;messageState=state;messageKey=key;$('moss-speech-text').textContent=text;
+   messageSince=now;messageState=state;messageKey=key;$('moss-speech-text').textContent=critical&&day?.context?.blockers?.length?day.context.quality.execution.detail:text;
    const brief=scenes?.briefFor(speaker,day)||{};
    if($('moss-speech-principle'))$('moss-speech-principle').textContent=isNightly?(speaker?'Check the evidence.':'Challenge the conclusion.'):isNews?'Read the facts. Test the implication.':isTrade?'Record first. Reconcile next.':brief.principle||'Evidence before conviction.';
    if($('moss-speech-next')){$('moss-speech-next').textContent=isNightly?'Read the cited report and its proposed tests. These ideas remain unproven.':isNews?(news.next||'Check the original source and what would disprove the thesis.'):isTrade?'This is the recorded broker update; the ledger determines what actually filled.':isBuzz?'Attention is a research lead. It does not establish an edge.':brief.next||'';}
@@ -207,6 +216,7 @@
    el.dataset.still=String(still||el.hidden||restBeat&&!sceneFrame);el.dataset.frame=String(frame);
    const portrait=scenes?.portraitFor(i,action,sceneFrame,speaking?now-messageSince:elapsed,still)||{row:i,frame:0,expression:'attentive'};
    const faceKey=portrait.row+'|'+portrait.frame,facePosition=(portrait.frame*100/3)+'% '+(portrait.row*100)+'%';
+   el.style.setProperty('--frame-blink',facePosition);
    // Crossfade both transparent layers; never replace both at a sheet boundary.
    el.dataset.expression=portrait.expression;
    if(!frames[i]){
@@ -228,6 +238,7 @@
  function save(){persist();dismissed='';apply();}
  control.addEventListener('change',save);choice.addEventListener('change',save);speech.addEventListener('change',save);
  $('moss-speech-dismiss').addEventListener('click',()=>{dismissed=messageKey;bubble.hidden=true;});
+ $('moss-speech-pin')?.addEventListener('click',()=>{pinnedSpeech=pinnedSpeech?null:{text:$('moss-speech-text').textContent,who:$('moss-destination').textContent,meta:$('moss-speech-meta').textContent,speaker:bubble.dataset.speaker,riskKey:JSON.stringify(day?.context?.blockers||[])};$('moss-speech-pin').textContent=pinnedSpeech?'Unpin':'Pin';$('moss-speech-pin').setAttribute('aria-pressed',String(!!pinnedSpeech));messageKey='';tick();});
  bubble.addEventListener('pointerenter',()=>{hovered=true;tick();});bubble.addEventListener('pointerleave',()=>{hovered=false;tick();});
  window.addEventListener('moss:guide',e=>{const d=e.detail||{},s=stops.find(s=>s[0]===d.target);if(!s||typeof d.text!=='string')return;stop=s;custom=d.text.slice(0,230);customUntil=performance.now()+18000;dismissed='';tick();});
  window.addEventListener('moss:buzz',e=>{

@@ -1,5 +1,6 @@
 """Exercise the real risk/ledger paths with only external broker I/O replaced."""
 import copy
+from datetime import datetime, timezone
 from types import SimpleNamespace as NS
 
 import pytest
@@ -158,7 +159,15 @@ class FakeIB:
     def reqCompletedOrders(self, apiOnly=False): return []
     def reqExecutions(self, filters): return []
     def cancelOrder(self, order): self.canceled.append(order)
-    def qualifyContracts(self, contract): return [contract]
+    def qualifyContracts(self, contract):
+        contract.conId = 42
+        return [contract]
+    def reqMarketDataType(self, kind): pass
+    def reqMktData(self, contract, *args):
+        stamp = datetime.now(timezone.utc)
+        return NS(marketDataType=1, bidSize=10000, askSize=10000,
+                  ticks=[NS(tickType=1, price=99.99, time=stamp), NS(tickType=2, price=100.01, time=stamp)])
+    def cancelMktData(self, contract): pass
     def placeOrder(self, contract, order):
         order.orderId, order.clientId = 42, 37
         trade = NS(order=order, contract=contract, orderStatus=NS(status="Submitted", filled=0, avgFillPrice=0))
@@ -261,7 +270,7 @@ def test_ibkr_order_identity_and_retry_deduplication(gateway):
     order = {"ticker": "AAPL", "side": "buy", "shares": 5, "signal_id": "s1", "broker_identity": identity, "valid_until": deadline(),
              "risk_authorization": {"equity": 100000., "day_pnl": -250., "reducing": False}}
     result = ibkr.place_from_desk_order(order)
-    assert result["ok"] and result["order_id"] == "DU123:37:42"
+    assert result["ok"] and result["order_id"] == "DU123:37:42", result
     assert ibkr.place_from_desk_order(order)["order_id"] == result["order_id"]
     assert len(gateway.trades) == 1 and not gateway.disconnected
 
@@ -292,7 +301,7 @@ def test_ibkr_adapter_through_real_execution_gate(execution, gateway, monkeypatc
     assert result.status_code == 200
     cfg = desk.load_config()
     result = desk.execute_gated_broker_or_paper(execution[1], cfg, source="t", via="t")
-    assert result["ok"] and result["fill"]["broker_reconciled"]
+    assert result["ok"] and result["fill"]["broker_reconciled"], result
     assert result["fill"]["shares"] == 20 and len(gateway.trades) == 1
     gateway.pnl = -2500.
     result = desk.execute_gated_broker_or_paper(dict(execution[1], id="s2"), cfg, source="t", via="t")

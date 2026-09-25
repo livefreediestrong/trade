@@ -478,6 +478,15 @@ def _analysis_context_blob(analysis: dict) -> str:
         "companion_context",
     ]
     slim = {k: analysis.get(k) for k in keep_keys if k in analysis}
+    # The full recall receipt stays in the local decision record. The model
+    # receives the same numeric aggregates and a bounded set of examples, so
+    # growing memory cannot silently multiply the prompt size or model cost.
+    if isinstance(slim.get("learning_context"), dict):
+        memory = dict(slim["learning_context"])
+        rows = memory.get("evidence_rows") or []
+        memory["evidence_rows"] = rows[:12]
+        memory["retained_receipt_count"] = len(rows)
+        slim["learning_context"] = memory
     try:
         return json.dumps(slim, default=str, separators=(",", ":"))  # compact: fewer input tokens
     except Exception:

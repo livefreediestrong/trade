@@ -13,6 +13,7 @@ import data_sources
 import moss_paper
 import moss_policy
 import nightly_sources
+from narrative_checks import checked_report
 import paper_loop
 import research_metrics
 from agent_review import conclusion
@@ -112,7 +113,7 @@ class AfterCloseReview:
         try:
             with self.lock:
                 rows = self.load()["reports"]
-                latest = copy.deepcopy(rows[max(rows)]) if rows else None
+                latest = checked_report(rows[max(rows)]) if rows else None
                 history = [{"day": k, "status": v.get("status"), "completed_at": v.get("completed_at")}
                            for k, v in sorted(rows.items(), reverse=True)]
             return {"busy": self.busy, "phase": self.phase, "error": self.error,

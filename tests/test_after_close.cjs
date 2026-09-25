@@ -24,6 +24,8 @@ assert(clipped.length<=240&&clipped.endsWith('Averylongword…'));
 const stats={outcomes:0,session_days:0,mean_net_bps:null};
 const report={day:'2026-09-25',status:'partial',models:{fox:{model:'<script>evil()</script>',result:{summary:'<img src=x onerror=bad()>',findings:[{text:'Unproven',evidence_ids:['coverage']}],hypotheses:[],uncertainties:[]}}},evidence:{outcomes:{id:'outcomes',today:stats,prior_20_observed_sessions:stats,today_recorded:5,verdict:{title:'More evidence needed',text:'No measured edge'}},market:[],headlines:[{id:'a',label:'Unsafe link',url:'javascript:alert(1)'}],coverage:{id:'coverage',news:'Headlines only'},source_health:[]}};
 const html=R.reportHTML(report,'nightly-review');
+const partial=R.reportHTML({day:'2026-09-25',evidence:{}},'nightly-review');
+assert(partial.includes('Unavailable')&&!partial.includes('undefined'));
 assert(!html.includes('<script>')&&!html.includes('<img'));
 assert(html.includes('&lt;img')&&html.includes('Unavailable bps'));
 assert(!html.includes('href="javascript:'));

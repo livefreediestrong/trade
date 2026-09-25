@@ -201,6 +201,12 @@ def track_record(path: Path, *, ticker: str, verdict: Any, lateness: Any, scope:
         "side_stats": side_stats,
         "confidence_bands": confidence_bands,
         "memory_depth": len(rows),
+        "evidence_rows": [dict({k: r.get(k) for k in (
+            "id", "revision", "ts", "ticker", "setup", "side", "llm_model", "prompt_version",
+            "horizon_min", "scoring_version", "outcome_status", "net_outcome",
+            "outcome_executable_move_bps", "outcome_cost_bps", "input_hash")},
+            recalled_for=[reason for reason, group in (("same setup", same_setup), ("same ticker", same_ticker)) if r in group])
+            for r in {r["id"]: r for r in same_setup + same_ticker if r.get("id")}.values()],
     }
 
 

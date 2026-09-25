@@ -4,9 +4,11 @@ from __future__ import annotations
 import asyncio
 import atexit
 import functools
+import itertools
 import math
 import os
 import queue
+import random
 import re
 import threading
 import time
@@ -21,7 +23,8 @@ from zoneinfo import ZoneInfo
 _API_LOCK = threading.RLock()
 _VERIFIED: dict[str, Any] = {}
 _DEAD = {"cancelled", "canceled", "apicancelled", "inactive"}
-_TASKS = queue.Queue()
+_TASKS = queue.PriorityQueue()
+_TASK_SEQUENCE = itertools.count()
 _WORKER = None
 _WORKER_LOCK = threading.Lock()
 _STOP = threading.Event()
@@ -95,14 +98,24 @@ def _api_responsive(ib):
     if _SERVER_UNAVAILABLE or _RESYNC_REQUIRED or not ib.isConnected():
         return False
     if _API_PULSE.get("client") == id(ib) and time.monotonic() - _API_PULSE["at"] <= 15:
-        return True
+        return not _API_PULSE.get("clock_error")
     try:
-        if ib.reqCurrentTime() is None:
+        sent = datetime.now(timezone.utc)
+        started = time.monotonic()
+        server_time = ib.reqCurrentTime()
+        if server_time is None:
             raise ValueError("Gateway returned no current-time response")
         if _SERVER_UNAVAILABLE or _RESYNC_REQUIRED or not ib.isConnected():
             return False
-        _API_PULSE.update(client=id(ib), at=time.monotonic())
-        return True
+        elapsed = time.monotonic()-started
+        skew = None
+        if isinstance(server_time, datetime) and server_time.tzinfo is not None:
+            # reqCurrentTime is second precision. Exclude the entire measured
+            # round-trip plus one second before identifying clock drift.
+            skew = max(0.0, abs((server_time-sent).total_seconds())-elapsed-1.0)
+        _API_PULSE.update(client=id(ib), at=time.monotonic(), clock_skew_lower_bound_sec=skew,
+                          clock_error="Local clock differs from broker time by more than 5 seconds" if skew is not None and skew > 5 else None)
+        return not _API_PULSE.get("clock_error")
     except Exception:
         _API_PULSE.clear()
         return False
@@ -169,7 +182,7 @@ def _api_worker():
     try:
         while not _STOP.is_set():
             try:
-                fn, args, kwargs, future = _TASKS.get(timeout=0.1)
+                _, _, fn, args, kwargs, future = _TASKS.get(timeout=0.1)
             except queue.Empty:
                 pass
             else:
@@ -191,6 +204,16 @@ def _api_worker():
         asyncio.get_event_loop().close()
 
 
+def _task_priority(name, args, kwargs):
+    if name == "_poll" and (kwargs.get("cancel") or (len(args) > 3 and args[3])):
+        return 0
+    if name in ("place_from_desk_order", "find_order_by_signal", "_poll"):
+        return 1
+    if name in ("get_account", "get_positions", "get_open_orders"):
+        return 2
+    return 3
+
+
 def _on_api_thread(fn):
     @functools.wraps(fn)
     def call(*args, **kwargs):
@@ -203,7 +226,7 @@ def _on_api_thread(fn):
                 _WORKER = threading.Thread(target=_api_worker, name="ibkr-api", daemon=True)
                 _WORKER.start()
         future = Future()
-        _TASKS.put((fn, args, kwargs, future))
+        _TASKS.put((_task_priority(fn.__name__, args, kwargs), next(_TASK_SEQUENCE), fn, args, kwargs, future))
         # Never retry a possibly submitted order when the HTTP caller times out.
         return future.result()
     return call
@@ -469,51 +492,31 @@ def stock_quote(symbol: str) -> dict[str, Any]:
             except Exception:
                 pass
             ticker = ib.reqMktData(contract, "", False, False)
+            observed = {}
+            def capture(updated):
+                _capture_stock_ticks(updated, observed)
+            updates = getattr(ticker, "updateEvent", None)
+            if updates is not None:
+                updates += capture
             try:
-                price = None
-                stamp = None
+                _capture_stock_ticks(ticker, observed)
                 for _ in range(25):
                     ib.sleep(0.15)
-                    for candidate in (ticker.last, ticker.marketPrice(), ticker.close, ticker.bid, ticker.ask):
-                        try:
-                            value = _number(candidate)
-                            if value > 0:
-                                price = value
-                                break
-                        except (ValueError, TypeError):
-                            continue
-                    if price is not None:
-                        # Prefer exchange tick time when present; else receipt time for live stream.
-                        for tick in reversed(list(ticker.ticks or [])):
-                            if getattr(tick, "time", None) is not None and getattr(tick.time, "tzinfo", None):
-                                stamp = tick.time
-                                break
-                        if stamp is None:
-                            stamp = datetime.now(timezone.utc)
+                    _capture_stock_ticks(ticker, observed)
+                    if "bid" in observed and "ask" in observed:
                         break
+                quote = _stock_tick_quote(ticker, observed)
+                price, stamp = quote.get("price"), quote.get("market_time")
                 if price is None or stamp is None:
                     return {"ok": False, "error": "No IBKR trade/quote tick yet", "symbol": symbol,
                             "fresh": False, "identity": identity, "source": "IBKR mkt data"}
-                age = (datetime.now(timezone.utc) - stamp).total_seconds()
-                fresh = -15 <= age <= 120
-                # ib_insync stamps ticks with local *receipt* time. For delayed
-                # (3) / delayed-frozen (4) data the prices are ~15 min behind the
-                # market even though age_sec looks near zero, so callers can
-                # prefer a real-time source. Not a block: delayed stays usable.
-                data_type = getattr(ticker, "marketDataType", None)
-                delayed = data_type in (3, 4)
                 return {
-                    "ok": True, "symbol": symbol, "price": price, "fresh": fresh,
-                    "market_time": stamp.isoformat(), "received_at": datetime.now(timezone.utc).isoformat(),
-                    "age_sec": round(age, 1),
-                    "source": ("IBKR delayed mkt data" if delayed else
-                               "IBKR live mkt data" if data_type in (1, 2) else "IBKR mkt data"),
-                    "delayed": delayed,
-                    "bid": _safe_num(ticker.bid), "ask": _safe_num(ticker.ask),
-                    "last": _safe_num(ticker.last), "market_data_type": data_type,
+                    "ok": True, "symbol": symbol, **quote,
                     "identity": identity, "con_id": int(contract.conId),
                 }
             finally:
+                if updates is not None:
+                    updates -= capture
                 try:
                     ib.cancelMktData(contract)
                 except Exception:
@@ -528,6 +531,64 @@ def _safe_num(v):
         return _number(v)
     except (ValueError, TypeError):
         return None
+
+
+def _capture_stock_ticks(ticker, observed):
+    """Ignore close, volume and cached ticker fields when establishing freshness."""
+    names = {1: "bid", 2: "ask", 4: "last", 66: "bid", 67: "ask", 68: "last"}
+    for tick in list(getattr(ticker, "ticks", None) or []):
+        name = names.get(getattr(tick, "tickType", None))
+        stamp = getattr(tick, "time", None)
+        value = _safe_num(getattr(tick, "price", None))
+        if name and isinstance(stamp, datetime) and stamp.tzinfo and value is not None and value > 0:
+            if name not in observed or stamp >= observed[name][1]:
+                observed[name] = (value, stamp)
+
+
+def _stock_tick_quote(ticker, observed, now=None):
+    now = now or datetime.now(timezone.utc)
+    kind = getattr(ticker, "marketDataType", None)
+    row = {"market_data_type": kind, "delayed": kind in (3, 4), "frozen": kind in (2, 4),
+           "source": {1: "IBKR live mkt data", 2: "IBKR frozen mkt data", 3: "IBKR delayed mkt data",
+                      4: "IBKR delayed frozen mkt data"}.get(kind, "IBKR unknown mkt data"),
+           "time_kind": "local_receipt", "exchange_time": None, "received_at": now.isoformat(),
+           "bid_size": _safe_num(getattr(ticker, "bidSize", None)), "ask_size": _safe_num(getattr(ticker, "askSize", None))}
+    for name in ("bid", "ask", "last"):
+        row[name] = observed.get(name, (None, None))[0]
+        row[name + "_time"] = observed[name][1].isoformat() if name in observed else None
+    if row["bid"] and row["ask"] and row["bid"] <= row["ask"]:
+        price, stamp = (row["bid"]+row["ask"])/2, min(observed["bid"][1], observed["ask"][1])
+    else:
+        price, stamp = observed.get("last", (None, None))
+    age = (now-stamp).total_seconds() if stamp else None
+    row.update(price=price, market_time=stamp.isoformat() if stamp else None, age_sec=round(age, 1) if age is not None else None,
+               fresh=kind in (1, 3) and age is not None and 0 <= age <= 15)
+    return row
+
+
+def _stock_execution_error(quote, order, identity, con_id):
+    if not quote.get("ok") or quote.get("identity") != identity or quote.get("con_id") != con_id:
+        return "Final stock quote or its account/contract identity is unavailable"
+    if not quote.get("fresh") or quote.get("frozen") or quote.get("market_data_type") not in (1, 3):
+        return "Final stock quote is stale, frozen or unverified"
+    # The owner's delayed-stock policy is retained. The timestamp describes the
+    # receipt, never exchange freshness. A delayed book cannot prove live depth.
+    for name in ("bid", "ask"):
+        try:
+            stamp = datetime.fromisoformat(quote[name+"_time"])
+            if stamp.tzinfo is None or not 0 <= (datetime.now(timezone.utc)-stamp).total_seconds() <= 15:
+                raise ValueError()
+        except (ValueError, TypeError, KeyError):
+            return "Final stock bid/ask receipt is missing or older than 15 seconds"
+    bid, ask = _safe_num(quote.get("bid")), _safe_num(quote.get("ask"))
+    if bid is None or ask is None or bid <= 0 or ask < bid:
+        return "Final stock market is one-sided or crossed"
+    if (ask-bid)/((ask+bid)/2)*10000 > 50:
+        return "Final stock spread exceeds the 50 bps execution ceiling"
+    size = _safe_num(quote.get("ask_size" if order.get("side") == "buy" else "bid_size"))
+    if order.get("type", "market") == "market" and (size is None or size < float(order.get("shares") or 0)):
+        return "Market order exceeds verified displayed size; use a reviewed limit order"
+    return None
 
 
 
@@ -770,7 +831,7 @@ def _soft_reconnect_backoff_sec(count: int) -> float:
     """Exponential cooldown between soft reconnects (API only; Gateway untouched)."""
     n = max(1, int(count))
     delay = _SOFT_RECONNECT_BACKOFF_BASE * (2 ** min(n - 1, 4))
-    return float(min(_SOFT_RECONNECT_BACKOFF_MAX, delay))
+    return float(min(_SOFT_RECONNECT_BACKOFF_MAX, delay * random.uniform(1.0, 1.2)))
 
 
 def _arm_soft_reconnect(reason: str):
@@ -1328,6 +1389,8 @@ def _submission_risk_error(ib, order, identity):
         return "Broker equity changed during preflight; request a fresh review"
     if authorization["reducing"]:
         return None  # Deliberate exception for an already verified reducing order.
+    if _API_PULSE.get("clock_error"):
+        return _API_PULSE["clock_error"]
     daily = authorization.get("day_pnl")
     if isinstance(daily, bool) or not isinstance(daily, (int, float)) or not math.isfinite(daily):
         return "Verified daily P&L required before broker submission"
@@ -1721,6 +1784,12 @@ def place_from_desk_order(order: dict[str, Any]) -> dict[str, Any]:
                 else:
                     native = MarketOrder(side.upper(), int(qty), account=identity["account_id"], orderRef=ref)
                 risk_error = _submission_risk_error(ib, order, identity)
+                if not risk_error and not order["risk_authorization"]["reducing"]:
+                    final_quote = stock_quote(contract.symbol)
+                    risk_error = _stock_execution_error(final_quote, order, identity, contract.conId)
+                    # The quote request blocks. Authorization and expiry can
+                    # change while waiting; check again immediately before send.
+                    risk_error = risk_error or submission_window_error(order) or _submission_risk_error(ib, order, identity)
                 if not risk_error:
                     risk_error = _position_intent_error(ib, contract, order, identity)
                 if risk_error:
@@ -1864,6 +1933,9 @@ def pnl_watch_snapshot() -> dict[str, Any]:
         "soft_reconnect_after_monotonic": _SOFT_RECONNECT_AFTER,
         "last_backoff_sec": _PNL_WATCH.get("last_backoff_sec"),
         "last_scheduled_refresh_at": _PNL_WATCH.get("last_scheduled_refresh_at"),
+        "clock_skew_lower_bound_sec": _API_PULSE.get("clock_skew_lower_bound_sec"),
+        "clock_error": _API_PULSE.get("clock_error"),
+        "queued_api_tasks": _TASKS.qsize(),
         "note": (
             "IBKR 2FA / IB Key cannot be disabled. Soft reconnect and re-reqPnL "
             "run first; full Gateway logout still requires human 2FA."

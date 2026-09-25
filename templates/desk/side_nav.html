@@ -10,6 +10,7 @@
   {% elif desk_page == 'auto' %}
     <span class="nav-caption">FOX’S WORKSPACE</span>
     <a href="#fox-workspace">Live trading status</a>
+    <a href="#trading-goals">Goals &amp; milestones</a>
     {% if config.get('COMPANION_AVAILABLE') %}<a href="#nightly-review">After-close learning</a>{% endif %}
     <a href="#fox-reviews">Top ten under review</a>
     <a href="#fox-calendar-days">Seven-day calendar</a>
@@ -24,6 +25,7 @@
   {% elif desk_page == 'paper' %}
     <span class="nav-caption">PAPER PRACTICE</span>
     <a href="#desk-paper">Paper status</a>
+    <a href="#trading-goals">Goals &amp; milestones</a>
     <a href="#paper-research-title">Start / stop</a>
     {% if config.get('OPTIONS_AVAILABLE') %}<a href="/desk/paper#desk-options">Calls &amp; puts</a>{% endif %}
     {% if config.get('COMPANION_AVAILABLE') %}<a href="/desk/paper#moss-desk">Moss &amp; workday</a>{% endif %}

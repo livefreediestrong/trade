@@ -121,7 +121,7 @@ def fox_view(agent: dict[str, Any] | None, window: dict[str, Any] | None, now: d
     elif phase == "waiting_for_market" or agent.get("market_open") is False:
         state, headline = "waiting", "Fox is waiting for the next regular US session."
     elif window:
-        state, headline = "holding", f"Fox is holding off on new trades: {market_events.describe(window, now)}. His exits still work."
+        state, headline = "holding", f"Fox is holding off on new trades: {market_events.describe(window, now)}. Exit checks remain eligible and still need current broker data."
     elif phase == "researching":
         state, headline = "researching", f"Fox is researching {ticker or 'the next symbol'}."
     elif phase == "reconciling":
@@ -137,7 +137,7 @@ def fox_view(agent: dict[str, Any] | None, window: dict[str, Any] | None, now: d
     if managed and state not in ("off",):
         protect = ", ".join(f"{m['ticker']} (stop {_money(m['stop'])}{' at entry' if m['breakeven'] else ''}, "
                             f"target {_money(m['target'])})" for m in managed[:3])
-        headline += f" Protecting {len(managed)} position{'s' if len(managed) != 1 else ''}: {protect}."
+        headline += f" Tracking {len(managed)} position{'s' if len(managed) != 1 else ''}: {protect}. App-managed exits require this desk, Gateway and an eligible market session."
     recent_trades = []
     for row in events:
         at = _moment(row["at"])
@@ -275,7 +275,7 @@ def reasoning(desk, cfg: dict[str, Any], now: datetime, fox: dict[str, Any], win
                 and row["bull_share"] <= 0.3 and row["mentions_60m"] >= 10):
             notes.append(_note("wsb_bearish:" + sym, "caution",
                                f"WSB is leaning against {sym}, which Fox holds: {round((1 - row['bull_share']) * 100)}% "
-                               f"bearish across {row['mentions_60m']} mentions this hour. His stop still stands."))
+                               f"bearish across {row['mentions_60m']} mentions this hour. The planned stop is unchanged; it is an app-level exit check."))
     for sym, earn in _earnings_rows(fox, last_signal):
         try:
             day = datetime.fromisoformat(str(earn.get("date"))[:10]).date()
@@ -407,6 +407,7 @@ def snapshot(desk, now: datetime | None = None) -> dict[str, Any]:
     woman["headline"] = (f"Changing Woman is on it: {open_chores[0]['label'].lower()} — {open_chores[0]['detail']}"
                          if open_chores else "Changing Woman has the chores done and is reading along with Fox.")
     nightly = {}
+    latest = {}
     companion = getattr(desk, "_research_companion", None)
     if companion and getattr(companion, "after_close", None):
         state = companion.after_close.status(now)
@@ -415,7 +416,7 @@ def snapshot(desk, now: datetime | None = None) -> dict[str, Any]:
                    "status": latest.get("status"), "error": state.get("error"), "completed_at": latest.get("completed_at")}
         for role in ("changing_woman", "fox"):
             model = (latest.get("models") or {}).get(role) or {}
-            nightly[role] = (model.get("result") or {}).get("summary") if model.get("status") == "complete" else None
+            nightly[role] = (model.get("checked_result") or {}).get("summary") if model.get("status") == "complete" else None
         # Preserve broker state and alerts; nightly presentation is a separate activity.
         if state.get("busy"):
             woman["chores"].insert(0, _chore("after_close", "After-close review", "working", "Comparing the session with retained history and dated public sources."))
@@ -423,8 +424,12 @@ def snapshot(desk, now: datetime | None = None) -> dict[str, Any]:
         guard = market_events.guard_window(row, cfg) if cfg.get("event_guard_enabled", True) else None
         row["when"] = market_events.describe(row, now)
         row["guard"] = (f"{market_events.clock_et(guard[0])}–{market_events.clock_et(guard[1])}" if guard else None)
+    import companion_evidence
+    research = research_view(desk, now)
+    context = companion_evidence.presentation(desk, cfg, agent or {}, fox, research, last, latest, now)
     return {
-        "ok": True, "as_of": now.isoformat(), "fox": fox, "woman": woman, "research": research_view(desk, now), "after_close": nightly,
+        "ok": True, "as_of": now.isoformat(), "fox": fox, "woman": woman, "research": research, "after_close": nightly,
+        "context": context,
         "events": {"upcoming": upcoming[:10], "active_window": window, "status": market_events.status(),
                    "guard_enabled": bool(cfg.get("event_guard_enabled", True))},
         "wsb": {k: wsb.get(k) for k in ("configured", "fresh", "threads", "top", "error", "comments_read",

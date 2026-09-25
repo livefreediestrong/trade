@@ -19,6 +19,8 @@
  }
  function scenePose(scene,actor,elapsed,frequency,still){
   if(!scene||still)return null;
+  // Micro-movement decorates the current task; a clock never invents a handoff.
+  if(scene.kind==='research')return {sheet:actor?'woman':'fox',row:2,frame:1,label:actor?'Reading available evidence':'Evaluating the recorded setup',expression:actor?'thoughtful':'curious'};
   const t=scene.kind==='pass'?elapsed:elapsed%(PERIOD[frequency]||PERIOD.balanced);
   if(t>=16000)return null;
   const beat=Math.floor(t/4000),frame=Math.floor(t/1200)%4;

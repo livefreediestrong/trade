@@ -188,8 +188,9 @@ def quote_error(quote, max_age):
         number(quote.get("price"), "Quote", .000001, 1e9)
         stamp = datetime.fromisoformat(str(quote.get("market_time")).replace("Z", "+00:00"))
         age = (now_utc()-stamp).total_seconds()
-        # IBKR delayed ticks may be slightly older than Finnhub; trust IB fresh flag up to 120s.
-        limit = max(int(max_age), 120) if "ibkr" in source else int(max_age)
+        if quote.get("frozen") or "frozen" in source:
+            return "Live agent cannot act on a frozen quote"
+        limit = int(max_age)
         if not quote.get("fresh") or not 0 <= age <= limit or not paper_loop.is_rth(stamp):
             return "Live agent quote is stale, future-dated or outside the session"
     except (ValueError, TypeError, AttributeError):
@@ -443,11 +444,13 @@ class LiveAgent:
         return sorted(rows, key=lambda r: ({"PASS": 0, "WATCH": 1}.get(r["verdict"], 2), -datetime.fromisoformat(r["at"]).timestamp()))[:10]
 
     def note_review(self, cfg, symbol, signal, notes):
+        from companion_evidence import decision_detail
         row = {"ticker": symbol, "at": now_utc().isoformat(), "scope": self.key(cfg),
                "verdict": (signal or {}).get("verdict") or notes.get("verdict") or "UNAVAILABLE",
                "reason": str((signal or {}).get("llm_thesis") or (signal or {}).get("reason") or notes.get("text") or notes.get("error") or "Assessment unavailable")[:500],
                "side": (signal or {}).get("llm_side") or "hold",
-               "error": (signal or {}).get("data_error") or (signal or {}).get("llm_error") or notes.get("error")}
+               "error": (signal or {}).get("data_error") or (signal or {}).get("llm_error") or notes.get("error"),
+               "detail": decision_detail(signal or notes)}
         with self.desk._lock:
             raw = self.load()
             reviews = raw.get("reviews") if isinstance(raw.get("reviews"), list) else []

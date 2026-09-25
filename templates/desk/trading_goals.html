@@ -1,0 +1,22 @@
+<section id="trading-goals" class="trading-goals desk-module" aria-labelledby="goals-title">
+ <h2 id="goals-title">Profit targets &amp; milestones</h2>
+ <p>Two separate plans. Targets are aspirations, not return forecasts. A saved target pauses new entries when reached; existing exits and all risk limits still apply. Saving never starts trading.</p>
+ <p id="goals-status" role="status">Reading goals…</p>
+ <div class="goals-grid">
+ {% for scope, title in [('live', 'Live account'), ('paper', 'Paper practice')] %}
+ <article data-goal-scope="{{ scope }}">
+  <h3>{{ title }}</h3><p id="goal-{{ scope }}-progress">Progress unavailable</p>
+  <progress id="goal-{{ scope }}-meter" max="100" value="0" aria-label="{{ title }} target progress" hidden></progress>
+  <p id="goal-{{ scope }}-source" class="hint-line keep-visible"></p>
+  <ul id="goal-{{ scope }}-milestones"></ul>
+  <form id="goal-{{ scope }}-form">
+   <label for="goal-{{ scope }}-preset">Plan</label><select id="goal-{{ scope }}-preset" required><option value="">Loading…</option></select>
+   <label for="goal-{{ scope }}-custom" id="goal-{{ scope }}-custom-label" hidden>Custom daily target in USD (0 clears it)</label>
+   <input id="goal-{{ scope }}-custom" type="number" min="0" max="1000000000" step="0.01" hidden />
+   <button type="submit" class="btn">Save {{ scope }} goal</button>
+  </form>
+ </article>
+ {% endfor %}
+ </div>
+ <p class="hint-line keep-visible">Milestones measure evidence and operating checks. Passing on a trade is valid; sample milestones never require placing trades or increasing size. Progress resets with the Eastern trading day.</p>
+</section>

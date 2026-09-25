@@ -757,7 +757,7 @@ def paper_research_config(cfg: dict[str, Any]) -> dict[str, Any]:
     result = dict(cfg, mode="auto_paper" if cfg.get("paper_auto_approve") else "manual",
                 session_active=bool(cfg.get("paper_research_enabled")),
                 risk_preset=cfg.get("paper_risk_preset", "mid"),
-                daily_profit_target_usd=None, max_session_loss_usd=None,
+                daily_profit_target_usd=cfg.get("paper_profit_target_usd"), max_session_loss_usd=None,
                 kill_switch=dict(DEFAULT_CONFIG["kill_switch"]), _paper_research=True)
     import moss_policy
     p = moss_policy.settings(cfg)
@@ -2804,7 +2804,7 @@ def _enrich_signal_with_llm(sig: dict[str, Any], analysis: dict, cfg: dict) -> d
     sig["brain_mode"] = thesis.get("brain_mode") or llm_trader.resolve_brain_mode(cfg)
     sig["routed"] = thesis.get("routed")
     sig["router_reason"] = thesis.get("router_reason")
-    for key in ("decision_record_id", "shadow", "advisory", "execution_block", "advisory_size_mult"):
+    for key in ("decision_record_id", "learning_context", "shadow", "advisory", "execution_block", "advisory_size_mult"):
         sig[key] = thesis.get(key)
     multiplier = thesis.get("advisory_size_mult", 1.0)
     if multiplier is not None and multiplier < 1:
@@ -4961,6 +4961,8 @@ def _with_lessons(analysis: dict, cfg: dict | None = None) -> dict:
         "setup": rec.get("setup"),
         "sample_count": rec.get("setup_count", 0),
         "side_stats": rec.get("side_stats", {}),
+        "recalled_at": datetime.now(timezone.utc).isoformat(),
+        "evidence_rows": rec.get("evidence_rows", []),
         "instruction": "Use this as prior evidence, not as a guarantee. Abstain when the matching side has persistent negative results.",
     }
     return out
@@ -5161,6 +5163,7 @@ def _research_thesis(analysis: dict, cfg: dict, *, source: str) -> dict[str, Any
             "brain_mode": brain,
         }
     main = dict(main)
+    main["learning_context"] = copy.deepcopy(analysis.get("learning_context"))
     main.update(prompt_version=llm_trader.PROMPT_VERSION, shadow=None, advisory=None)
     if not main.get("error"):
         side = str(main.get("side") or "flat")
@@ -5203,6 +5206,7 @@ def _research_thesis(analysis: dict, cfg: dict, *, source: str) -> dict[str, Any
           "verdict": analysis.get("verdict"), "lateness_label": (analysis.get("entry_quality") or {}).get("label"),
           "mid": quote.get("price") or analysis.get("price"), "quote": copy.deepcopy(quote),
           "slip_bps": float(cfg.get("slip_bps", 5) or 0), "fee_bps": _cfg_fee_bps(cfg),
+          "learning_context": main.get("learning_context"),
           "inputs": facts, "input_hash": hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest(),
           "outcome_tolerance_sec": 120, "paper_only": True, "filled": False}
     if quote.get("fresh") and not main.get("error"):
@@ -9283,6 +9287,8 @@ import desk_backups
 desk_backups.register(app, __import__("sys").modules[__name__])
 import fox_workspace
 fox_workspace.register(app, __import__("sys").modules[__name__])
+import trading_goals
+trading_goals.register(app, __import__("sys").modules[__name__])
 
 # Claim the instance before starting any background work.
 if __name__ == "__main__":

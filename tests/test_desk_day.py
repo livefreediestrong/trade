@@ -151,7 +151,8 @@ def test_snapshot_ties_fox_events_and_changing_woman_together(live, monkeypatch)
     snap = desk_day.snapshot(desk)
     fox = snap["fox"]
     assert fox["latest_trade"]["text"] == "Bought 2 TEST at $100.00."
-    assert fox["managed"][0]["ticker"] == "TEST" and "Protecting 1 position" in fox["headline"]
+    assert fox["managed"][0]["ticker"] == "TEST" and "Tracking 1 position" in fox["headline"]
+    assert "App-managed exits require" in fox["headline"]
     notes = {n["key"].split(":")[0]: n for n in snap["woman"]["reasoning"]}
     assert "FOMC Press Conference" in notes["event_soon"]["text"] and "Fox pauses new entries" in notes["event_soon"]["text"]
     assert notes["wsb_crowded"]["level"] == "caution" and "half size" in notes["wsb_crowded"]["text"]
