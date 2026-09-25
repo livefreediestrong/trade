@@ -701,6 +701,33 @@ def last_call_cost() -> float:
     return float(getattr(_CALL_COST, "last", 0.0) or 0.0)
 
 
+_COST_SCOPE = _threading.local()
+
+
+class cost_scope:
+    """Attribute model spend on this thread to a workspace (e.g. "live_agent").
+
+    Lets the live agent budget count only its own research instead of the
+    desk-wide total, so paper Moss spending can never pause live research.
+    """
+
+    def __init__(self, name: str) -> None:
+        self.name, self.prev = str(name), None
+
+    def __enter__(self):
+        self.prev = getattr(_COST_SCOPE, "name", None)
+        _COST_SCOPE.name = self.name
+        return self
+
+    def __exit__(self, *exc):
+        _COST_SCOPE.name = self.prev
+        return False
+
+
+def current_cost_scope() -> str | None:
+    return getattr(_COST_SCOPE, "name", None)
+
+
 def record_model_cost(usd: float, *, meta: Optional[dict] = None) -> float:
     """Persist an estimate; historical provider invoices remain authoritative."""
     add = float(usd or 0)
@@ -715,6 +742,10 @@ def record_model_cost(usd: float, *, meta: Optional[dict] = None) -> float:
         subtotal = day.setdefault("models", {}).setdefault(name, {"model_usd": 0, "calls": 0})
         subtotal["model_usd"] = round(subtotal["model_usd"] + add, 6)
         subtotal["calls"] += 1
+        scope = str((meta or {}).get("scope") or current_cost_scope() or "desk")
+        scoped = day.setdefault("scopes", {}).setdefault(scope, {"model_usd": 0, "calls": 0})
+        scoped["model_usd"] = round(scoped["model_usd"] + add, 6)
+        scoped["calls"] += 1
         _write_usage(data)
         return day["model_usd"]
 
@@ -725,7 +756,8 @@ def model_cost_today() -> dict[str, Any]:
             data = _read_usage()
             day = data["days"][_usage_day()]
             return {"day": _usage_day(), "model_usd": round(day["model_usd"], 4),
-                    "calls": day["calls"], "models": day.get("models", {}), "estimated": True,
+                    "calls": day["calls"], "models": day.get("models", {}),
+                    "scopes": day.get("scopes", {}), "estimated": True,
                     "persistent": True, "tracking_since": data["tracking_since"],
                     "pricing_as_of": "2026-09-23", "scope": "Recorded responses since tracking began; excludes earlier usage, taxes and unknown failed-call charges."}
         except (RuntimeError, ValueError, KeyError, TypeError):

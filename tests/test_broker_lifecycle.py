@@ -215,8 +215,10 @@ def test_live_account_rejects_paper_setting(gateway):
 
 def test_unavailable_daily_pnl_never_defaults_to_zero(gateway, monkeypatch):
     gateway.pnl = float("nan")
-    ticks = iter([0., 4.])
-    monkeypatch.setattr(ibkr.time, "monotonic", lambda: next(ticks, 4.))
+    # Clock must keep advancing: get_account now reads monotonic() more than
+    # twice, and a frozen clock never reaches its callback-wait deadline.
+    ticks = iter(float(4 * i) for i in range(10**6))
+    monkeypatch.setattr(ibkr.time, "monotonic", lambda: next(ticks))
     result = ibkr.get_account()
     assert result["ok"] and not result["risk_ready"]
     assert result["account"]["day_pnl"] is None and result["account"]["equity"] == 100000

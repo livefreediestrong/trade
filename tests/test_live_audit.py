@@ -254,7 +254,7 @@ def test_prior_day_pnl_is_not_accepted_and_subscription_recovers(monkeypatch):
     monkeypatch.setattr(ibkr,'_PNL_UPDATED',{'TEST':50.})
     result=ibkr.get_account.__wrapped__()
     assert result['ok'] and result['account']['day_pnl'] is None and not result['risk_ready']
-    clock[0]=161.
+    clock[0]=100.+ibkr._PNL_SILENT_RETRY_SEC+1.  # silent-retry window (was 60s, now 180s)
     result=ibkr.get_account.__wrapped__()
     assert canceled==['TEST'] and result['account']['day_pnl']==-50 and result['risk_ready']
 

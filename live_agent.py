@@ -172,6 +172,28 @@ def quote_error(quote, max_age):
     return None
 
 
+def _realtime_signal_quote(desk, symbol, max_age):
+    """Real-time replacement for an IBKR-delayed quote, or None (keep IBKR)."""
+    try:
+        import data_sources as ds
+        helper = getattr(desk, "_realtime_quote_or_none", None)
+        quote = helper(ds, symbol) if callable(helper) else None
+    except Exception:
+        return None
+    if not quote or quote_error(quote, max_age):
+        return None
+    # expires_at = market_time + max_age, so an older real-time print would
+    # shrink the execution window below what the IBKR receipt stamp allows.
+    # Only swap when most of that window remains.
+    try:
+        stamp = datetime.fromisoformat(str(quote.get("market_time")).replace("Z", "+00:00"))
+        if (now_utc() - stamp).total_seconds() > min(10.0, float(max_age) / 3):
+            return None
+    except (ValueError, TypeError):
+        return None
+    return dict(quote, fresh=True, delayed=False)
+
+
 def execution_terms(signal, cfg, price, execution_quote):
     """Called with the fresh execution price; never uses model-supplied order terms."""
     error = authorization_error(signal, cfg)
@@ -399,14 +421,23 @@ class LiveAgent:
         if context["identity"].get("broker") != "ibkr":
             self.record("blocked", "This agent version requires the IBKR Gateway adapter")
             return
-        cost = self.desk.llm_trader.model_cost_today().get("model_usd")
+        usage = self.desk.llm_trader.model_cost_today()
+        # Budget counts only live-agent research (paper Moss has its own budget).
+        # Older ledgers without scopes count as zero live spend: never a block.
+        scoped = (usage.get("scopes") or {}).get("live_agent") or {}
+        cost = scoped.get("model_usd") or 0.0
         if number(cost, "Recorded AI cost", 0, 1e12) >= Decimal(str(policy["model_budget_usd"])):
             self.record("budget", "Recorded desk AI budget reached; live research is paused")
             return
         def authorized():
             return self.desk.load_config() == cfg and paper_loop.is_rth(now_utc())
         self.phase, self.message = "researching", "Evaluating "+symbol+" (live-order eligible · full universe)"
-        signal = self.desk.generate_scan_signal(cfg, ticker=symbol, force=False, still_authorized=authorized)
+        scope = getattr(self.desk.llm_trader, "cost_scope", None)
+        if callable(scope):
+            with scope("live_agent"):
+                signal = self.desk.generate_scan_signal(cfg, ticker=symbol, force=False, still_authorized=authorized)
+        else:
+            signal = self.desk.generate_scan_signal(cfg, ticker=symbol, force=False, still_authorized=authorized)
         if not authorized():
             self.record("discarded", "Settings or session changed during research")
             return
@@ -426,10 +457,19 @@ class LiveAgent:
                     "market_time": ibq.get("market_time"), "received_at": ibq.get("received_at"),
                     "age_sec": ibq.get("age_sec"), "fresh": True,
                     "bid": ibq.get("bid"), "ask": ibq.get("ask"), "last": ibq.get("last"),
-                    "con_id": ibq.get("con_id"),
+                    "con_id": ibq.get("con_id"), "delayed": bool(ibq.get("delayed")),
+                    "market_data_type": ibq.get("market_data_type"),
                 }
                 signal["signal_price"] = ibq["price"]
                 _note_quote_ok(symbol)
+                if ibq.get("delayed"):
+                    # Delayed IBKR prices trail the market ~15 min. Prefer a
+                    # real-time quote that passes the same gate; if none does,
+                    # keep the IBKR quote so the order path is never blocked.
+                    realtime = _realtime_signal_quote(self.desk, symbol, policy["max_quote_age_sec"])
+                    if realtime:
+                        signal["quote"] = realtime
+                        signal["signal_price"] = realtime["price"]
             else:
                 err = (ibq.get("error") or "ibkr_quote_unavailable")[:160]
                 _note_quote_failure(symbol, err)
@@ -463,7 +503,7 @@ class LiveAgent:
                     day = self.load()["days"].get(self.key(cfg), {"research": 0, "orders": 0})
                 if day.get("research", 0) % max(1, int(auto_cfg.get("every_n_stock_cycles") or 1)) == 0:
                     signal = self._maybe_convert_to_option(signal, cfg, auto_cfg, context)
-            except ValueError as exc:
+            except (ValueError, TypeError, KeyError) as exc:
                 self.record("options_skip", str(exc)[:180], signal)
                 return
         # No paper clone, no reuse of the rehearsal plan, one execution owner.
@@ -532,7 +572,11 @@ class LiveAgent:
             leg = quotes["legs"][0]
             if not leg.get("con_id") or int(leg.get("multiplier") or 0) != 100:
                 raise ValueError("Only standard 100-share options can auto-trade")
-            premium = float(leg.get("ask") if action == "BUY" else leg.get("bid") or 0)
+            raw_premium = leg.get("ask") if action == "BUY" else leg.get("bid")
+            try:
+                premium = float(raw_premium or 0)
+            except (TypeError, ValueError):
+                premium = 0.0
             if premium <= 0:
                 raise ValueError("Executable option premium missing")
             signal.update(candidate)
@@ -549,6 +593,9 @@ class LiveAgent:
                 "market_time": quotes.get("received_at") or signal.get("quote", {}).get("market_time"),
                 "bid": leg.get("bid"), "ask": leg.get("ask"), "fresh": True,
                 "local_symbol": leg.get("local_symbol"), "con_id": int(leg["con_id"]), "multiplier": 100,
+                # Provenance only (never a block): 1=live, 3/4=delayed.
+                "market_data_type": leg.get("market_data_type"),
+                "delayed": leg.get("market_data_type") in (3, 4),
             }
             signal["reason"] = (signal.get("reason") or "") + f" | auto_options {candidate['option_strategy']} {candidate['option_intent']}"
             signal["broker_book"] = book
@@ -565,7 +612,13 @@ class LiveAgent:
         if not quotes.get("ok") or len(quotes.get("legs") or []) != 2:
             raise ValueError(quotes.get("error") or "BAG leg quotes unavailable")
         rows = quotes["legs"]
-        debit = float(rows[0]["ask"]) - float(rows[1]["bid"])
+        # options_desk.legs order is [long BUY, short SELL]; verify rather than assume.
+        if rows[0].get("action") != "BUY" or rows[1].get("action") != "SELL":
+            raise ValueError("BAG leg quotes returned in an unexpected order")
+        try:
+            debit = float(rows[0]["ask"]) - float(rows[1]["bid"])
+        except (TypeError, ValueError, KeyError):
+            raise ValueError("BAG leg bid/ask missing")
         premium = abs(debit)
         if premium <= 0:
             raise ValueError("BAG net premium missing or non-positive")
@@ -586,6 +639,8 @@ class LiveAgent:
             "price": premium, "source": quotes.get("source") or "IBKR option quote",
             "market_time": quotes.get("received_at") or signal.get("quote", {}).get("market_time"),
             "fresh": True, "net_debit": debit,
+            "market_data_type": rows[0].get("market_data_type"),
+            "delayed": any(r.get("market_data_type") in (3, 4) for r in rows),
         }
         signal["reason"] = (signal.get("reason") or "") + f" | auto_options BAG {candidate['option_strategy']}"
         signal["broker_book"] = book
