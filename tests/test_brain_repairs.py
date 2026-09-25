@@ -40,6 +40,40 @@ def thesis(**updates):
     return out
 
 
+@pytest.mark.parametrize("field", ["brain_mode", "model"])
+@pytest.mark.parametrize("key", ["", "fixture-key-must-not-unlock"])
+def test_jev_selection_rejected_without_config_or_journal_changes(monkeypatch, field, key):
+    monkeypatch.setattr(llm, "typesafe_api_key", lambda: key)
+    cfg = copy.deepcopy(desk.DEFAULT_CONFIG)
+    cfg.update(brain_mode="gemini", llm_enabled=True)
+    desk.save_config(cfg)
+    before = desk.CONFIG_PATH.read_bytes()
+    response = desk.app.test_client().post("/api/config", base_url="http://127.0.0.1:5056",
+        json={field: " JEV ", "llm_enabled": False, "watchlist": ["CHANGED"]})
+    assert response.status_code == 409
+    assert response.get_json()["code"] == "brain_unavailable"
+    assert "repaired and verified" in response.get_json()["error"]
+    assert desk.CONFIG_PATH.read_bytes() == before
+    assert not desk.JOURNAL_PATH.exists()
+
+
+def test_saved_jev_holds_without_network_or_provider_fallback(monkeypatch):
+    monkeypatch.setattr(llm, "typesafe_api_key", lambda: "fixture-key-must-not-unlock")
+    monkeypatch.setattr(llm, "jev_trade_thesis", lambda *a, **kw: pytest.fail("JEV is locked"))
+    monkeypatch.setattr(llm, "trade_thesis_from_analysis", lambda *a, **kw: pytest.fail("No silent Gemini switch"))
+    out = llm.decide_trade_thesis(analysis(), {"brain_mode": "jev"})
+    assert out["side"] == "hold" and out["confidence"] == 0 and out["abstain"]
+    assert out["brain_mode"] == "jev" and "temporarily unavailable" in out["error"]
+    status = llm.status_public_extended({"brain_mode": "jev"})
+    assert status["configured"] is False and status["selection_error"]
+    assert "fixture-key" not in json.dumps(status)
+
+
+def test_other_brains_remain_selectable():
+    for mode in ("gemini", "mock", "claude"):
+        assert llm.brain_selection_error(mode) is None
+
+
 def test_claude_dispatch_and_status_are_truthful(monkeypatch):
     calls = []
     monkeypatch.setattr(claude_brain, "decide", lambda a, **kw: calls.append(kw) or thesis(brain_mode="claude"))

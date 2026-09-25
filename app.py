@@ -6777,6 +6777,11 @@ def api_paper_research():
 
 def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
     """POST /api/config body handler (caller holds _lock; BadNumber → 400)."""
+    # Reject an unavailable brain before other fields can cause side effects.
+    if "brain_mode" in body or "model" in body:
+        error = llm_trader.brain_selection_error(body.get("brain_mode", body.get("model")))
+        if error:
+            return jsonify(ok=False, error=error, code="brain_unavailable"), 409
     if True:
         do_drain = False
         do_radar_refresh = False
@@ -7005,9 +7010,6 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
                 return jsonify({"ok": False, "error": "brain_mode must be gemini|mock|jev|claude"}), 400
             if mode == "claude" and not claude_brain.is_configured():
                 return jsonify({"ok": False, "error": "Add ANTHROPIC_API_KEY to .env (and restart) to use Claude"}), 400
-            if mode == "jev" and not llm_trader.typesafe_api_key():
-                # Allow selecting jev; runtime falls back to mock if key missing
-                pass
             cfg["brain_mode"] = mode
             append_journal("brain_mode_set", {"brain_mode": mode})
         if "decision_horizon_min" in body:

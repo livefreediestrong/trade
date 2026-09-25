@@ -21,6 +21,7 @@ d=snapshot();d.agent.identity.paper_mode=true;assert.match(tradingSummary(d,now)
 d=snapshot();d.agent.market_open=false;assert.equal(tradingSummary(d,now).title,'On · waiting for market');
 d=snapshot();d.brain.provider='mock';assert.match(tradingSummary(d,now).title,/blocked/);
 d=snapshot();d.brain.health={state:'unavailable'};assert.match(tradingSummary(d,now).brain,/failed/);
+d=snapshot();d.brain={provider:'jev',configured:false,jev_key_present:true,selection_error:'JEV is locked until repaired.'};s=tradingSummary(d,now);assert.equal(s.brain,'JEV · unavailable');assert.ok(s.checks.includes(d.brain.selection_error));
 d=snapshot();d.agent.policy.max_order_usd=1e9;assert.match(tradingSummary(d,now).limits,/1,000,000,000/);assert.ok(tradingSummary(d,now).checks.some(x=>x.includes('$1 billion')));
 d=snapshot();d.agent.policy.max_daily_loss_usd=null;assert.match(tradingSummary(d,now).limits,/incomplete/);
 // Actual controller: render, expiry, a failed read, and no trading writes.

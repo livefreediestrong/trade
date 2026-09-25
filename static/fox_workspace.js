@@ -14,7 +14,8 @@
   if(!brokerFresh)checks.push('The broker reading is out of date. Waiting for a fresh account check.');
   else if(!connected)checks.push('Gateway is disconnected or the account could not be read. Open broker connection checks.');
   else if(!pnl)checks.push("Today's profit/loss is missing. Fox cannot check the daily loss limit, so new trades are blocked.");
-  if(brain.configured!==true)checks.push(`${provider} is selected but is not set up. Choose a configured researcher in AI settings.`);
+  if(brain.selection_error)checks.push(brain.selection_error);
+  else if(brain.configured!==true)checks.push(`${provider} is selected but is not set up. Choose a configured researcher in AI settings.`);
   else if(brain.brain_mode==='mock'||brain.provider==='mock')checks.push('Mock research cannot authorize live orders. Review the AI settings.');
   else if(brain.health?.state==='unavailable')checks.push(`${provider}'s latest request failed. Review the AI status below.`);
   if(!a.configured)checks.push('No saved agent settings. Review and save the limits in Start / pause controls.');
@@ -34,7 +35,7 @@
    explanation:active?'The switch is already on. Fox can send orders when the required checks pass; no second Start is needed.':'Use the controls below to review the account, limits and trading switch.',
    account:verified?`${identity.paper_mode?'Practice broker account':'Real-money broker account'} · IBKR · ending ${identity.account_id.slice(-4)}`:'Broker account not verified',
    switch:on?'On':'Off',connection:connected?'Connected':brokerFresh?'Not connected':'Needs fresh check',pnl:pnl?money(b.day_pnl):'Missing — new trades blocked',
-   brain:brain.configured!==true?`${provider} · needs setup`:brain.brain_mode==='mock'||brain.provider==='mock'?'Mock · research only':brain.health?.state==='unavailable'?`${provider} · request failed`:`${provider} · configured`,
+   brain:brain.selection_error?`${provider} · unavailable`:brain.configured!==true?`${provider} · needs setup`:brain.brain_mode==='mock'||brain.provider==='mock'?'Mock · research only':brain.health?.state==='unavailable'?`${provider} · request failed`:`${provider} · configured`,
    checks:checks.length?checks:['No blocker reported in this summary. Quotes, available money, pending orders and all risk checks are checked again for every order.'],
    limits:limits+' Broker rules and other desk limits also apply.',tone:attention||largeLimits||!limitsValid?'attention':active?'waiting':'off'
   };
@@ -58,7 +59,7 @@
   set('fox-update','Updated '+stamp(d.as_of));
   const a=d.agent||{};set('fox-current',(a.enabled?'Authorized · ':'Paused · ')+(a.message||'Waiting for agent state'));
   const b=d.brain||{},h=b.health||{};
-  set('fox-brain',`${b.provider||'Brain'} · ${b.model||'No model'} · `+(!b.configured?'Not configured':h.state==='healthy'?'Latest provider call succeeded':h.state==='unavailable'?'Latest provider call failed: '+h.error:h.state==='stale'?'Last provider result is older than 15 minutes':'No provider call observed in this process')+(h.at?' · '+stamp(h.at*1000):''));
+  set('fox-brain',`${b.provider||'Brain'} · ${b.model||'No model'} · `+(b.selection_error||(!b.configured?'Not configured':h.state==='healthy'?'Latest provider call succeeded':h.state==='unavailable'?'Latest provider call failed: '+h.error:h.state==='stale'?'Last provider result is older than 15 minutes':'No provider call observed in this process'))+(h.at?' · '+stamp(h.at*1000):''));
   const broker=d.broker||{};set('fox-broker',broker.risk_ready?'Account data and daily P&L verified at the latest broker check. Every order is checked again.':broker.error||'Current daily P&L/account evidence unavailable. New risk stays blocked.');
   const backup=d.backups||{};set('fox-backup',backup.last_error?backup.last_error+' · Previous snapshot retained from '+stamp(backup.verified_at):backup.ok?(backup.stale?'Backup overdue · ':'Verified when created · ')+stamp(backup.verified_at)+` · ${backup.files} stores`:(backup.error||'No verified state snapshot yet'));
   const rows=a.reviews||[];

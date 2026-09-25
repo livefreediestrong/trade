@@ -10,6 +10,8 @@ The top-ten list contains actual completed agent assessments, one per symbol for
 
 ## Brain failures
 
+JEV is temporarily unavailable by owner request. The settings option is disabled and `/api/config` rejects both `brain_mode` and legacy `model` selection before applying any other settings. Existing saved JEV configurations return an explicit hold without a model request or silent provider switch. Credentials alone do not unlock JEV; a future integration repair must verify a real structured response and deliberately remove this lock. Gemini selection is unchanged.
+
 Stale/unverified quotes are market-data holds, including historical records using the old `llm_error` field. They do not call the brain. Provider overload, throttling and transient server errors receive at most two retries with increasing delay and jitter. Retry-After is honored only within the remaining request allowance; otherwise the error is returned. All attempts count against the persistent provider budget. Authentication/client errors, timeouts, invalid output and exhausted budgets remain explicit holds. Model or provider selection is unchanged.
 
 Gemini thinking-setting rejection now shares the same retry allowance rather than starting a new full timeout recursively. The workspace reports the latest observed provider transport result, expires that health after 15 minutes and says unobserved after restart. A successful transport is not evidence that a proposed trade is acceptable. Guidance: [Google's Gemini troubleshooting documentation](https://ai.google.dev/gemini-api/docs/troubleshooting).

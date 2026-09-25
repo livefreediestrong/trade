@@ -755,6 +755,13 @@ def status_public() -> dict[str, Any]:
 TYPESAFE_API_URL = "https://api.typesafe.ai/v1/systemone"
 DEFAULT_HORIZON_MIN = 20
 VALID_BRAIN_MODES = ("gemini", "mock", "jev", "claude")
+# Temporary product lock: credentials alone do not establish a working integration.
+# Remove only with a repaired provider path and verified end-to-end response.
+JEV_UNAVAILABLE = "JEV is temporarily unavailable until its integration is repaired and verified. Use Gemini or another available brain."
+
+
+def brain_selection_error(mode: str) -> str | None:
+    return JEV_UNAVAILABLE if str(mode).strip().lower() == "jev" else None
 
 # Persisted estimates share the same atomic usage file as call reservations.
 _CALL_COST = _threading.local()
@@ -1705,7 +1712,9 @@ def decide_trade_thesis(
         return out
 
     if mode == "jev":
-        out = jev_trade_thesis(analysis, cfg, timeout_sec=timeout_sec)
+        error = brain_selection_error(mode)
+        out = (_empty_thesis("jev-latest", error) if error
+               else jev_trade_thesis(analysis, cfg, timeout_sec=timeout_sec))
         if out.get("error"):
             # Hard hold — no silent mock fills when jev is configured
             return {
@@ -1789,7 +1798,8 @@ def status_public_extended(cfg: Optional[dict] = None) -> dict[str, Any]:
         base["model"] = "mock-momentum"
     elif mode == "jev":
         base["provider"] = "jev"
-        base["configured"] = bool(typesafe_api_key())
+        base["selection_error"] = brain_selection_error(mode)
+        base["configured"] = bool(typesafe_api_key()) and not base["selection_error"]
         base["model"] = "jev-latest"
     elif mode == "claude":
         import claude_brain

@@ -1692,7 +1692,12 @@
         llmEl.classList.add("ok-pill");
         llmEl.title = simpleUi ? "Brain (mock) — picks Hold, Buy, or Sell" : "Mock brain";
       } else if (brain === "jev") {
-        if (llm.configured || llm.jev_key_present) {
+        if (llm.selection_error) {
+          llmEl.textContent = "JEV unavailable";
+          llmEl.classList.add("warn-pill");
+          llmEl.classList.remove("ok-pill");
+          llmEl.title = llm.selection_error;
+        } else if (llm.configured) {
           llmEl.textContent = simpleUi ? "Jev" : "Jev on";
           llmEl.classList.remove("warn-pill");
           llmEl.classList.add("ok-pill");
