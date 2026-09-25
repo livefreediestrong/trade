@@ -40,7 +40,7 @@
     $('overview-next').textContent=!b.ok?'Connect the broker':!b.risk_ready?'Check account data':!confirmed?'Confirm execution account':'Review an idea';
     $('overview-evidence').textContent=!b.risk_ready?'Live entries blocked until account risk data is verified.':!confirmed?'Broker data is connected. Confirm the intended account in execution settings.':`Mode: ${String(cfg.mode||'unknown').replaceAll('_',' ')}. Order checks still apply.`;
     const action=$('overview-action'),target=!b.ok||!b.risk_ready?'desk-health':!confirmed?'live-execution-settings':'opp-panel';
-    if(action){action.href='#'+target;action.dataset.guideJump=target;action.textContent=target==='opp-panel'?'Review ideas ↗':target==='live-execution-settings'?'Confirm account ↗':'Account checks ↗';}
+    if(action){action.href=($(target)?'':target==='live-execution-settings'?'/desk/settings':'/desk/auto')+'#'+target;action.dataset.guideJump=target;action.textContent=target==='opp-panel'?'Review ideas ↗':target==='live-execution-settings'?'Confirm account ↗':'Account checks ↗';}
   });
   const links=[...document.querySelectorAll('.page-nav a[href^="#"]')];
   const observer=new IntersectionObserver(entries=>{const visible=entries.filter(x=>x.isIntersecting).sort((a,b)=>a.boundingClientRect.top-b.boundingClientRect.top);if(!visible.length)return;for(const link of links){if(link.hash==='#'+visible[0].target.id)link.setAttribute('aria-current','location');else link.removeAttribute('aria-current');}},{rootMargin:'-5% 0px -65% 0px'});

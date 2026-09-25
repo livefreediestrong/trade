@@ -77,18 +77,7 @@ body.unified-desk:has(.has-companion-habitat){padding-left:332px}
 .moss-sprite[data-still=true] .moss-prop{animation:none}
 @keyframes moss-inspect{0%,100%{translate:0 0;rotate:7deg}50%{translate:-3px 2px;rotate:0deg}}
 @keyframes moss-jot{0%,30%,60%,100%{rotate:7deg}15%,45%{rotate:2deg}}
-.moss-preview-dialog{width:min(700px,calc(100vw - 32px));max-height:calc(100dvh - 32px);box-sizing:border-box;padding:24px;border:1px solid var(--border);border-radius:20px;background:var(--panel);color:var(--text);overflow:auto;pointer-events:auto;box-shadow:0 20px 100px #0007}
-.moss-preview-dialog::backdrop{background:#080915b8}
-.moss-preview-head{display:flex;gap:20px;align-items:flex-start;justify-content:space-between}.moss-preview-head h2{margin:0}.moss-preview-head .eyebrow{margin-top:0}
-.moss-preview-dialog p{font:13px/1.65 var(--sans,system-ui)}
-.moss-preview-disclaimer{border-left:3px solid var(--accent);padding:8px 12px;background:var(--panel2)}
-.moss-preview-controls,.moss-preview-preferences{display:flex;align-items:end;gap:12px;flex-wrap:wrap}.moss-preview-dialog label{display:grid;gap:6px;font-size:12px}.moss-preview-dialog select{max-width:100%;min-height:38px}
-.moss-preview-stage{display:flex;justify-content:space-evenly;gap:16px;min-height:250px;padding:40px 12px 18px;margin:16px 0;border-radius:16px;background:linear-gradient(160deg,var(--panel2),color-mix(in srgb,var(--panel) 85%,#9d6554));overflow:hidden}
-.moss-preview-character{display:flex;flex-direction:column;align-items:center;justify-content:end;gap:6px;width:48%;text-align:center;min-width:0}.moss-preview-character .moss-sprite{position:relative;left:auto;top:auto;flex-shrink:0}.moss-preview-character>span{font-size:12px;min-height:36px}.moss-preview-character>strong{font-size:13px}
-.moss-preview-preferences{border:1px solid var(--border);border-radius:12px;padding:14px;margin-top:18px}.moss-preview-preferences legend{padding:0 6px;font-size:12px}.moss-preview-preferences p{width:100%;margin:0}
-#moss-preview-story{min-height:44px}#desk-companions-open{margin-left:auto}
 [id^=dd-note-]:target,[id^=dd-chore-]:target,[id^=dd-move-]:target,#dd-fox-headline:target,#dd-woman-headline:target{outline:2px solid var(--accent);outline-offset:5px;scroll-margin-top:120px}
-@media(max-width:500px){.moss-preview-dialog{padding:16px}.moss-preview-controls{align-items:stretch}.moss-preview-controls label{width:100%}.moss-preview-stage{gap:8px;padding-inline:0}.moss-preview-character .moss-sprite{max-width:130px;max-height:130px}#desk-companions-open{margin-left:0}}
 @media(prefers-reduced-motion:reduce){.moss-prop{animation:none!important}.moss-sprite::before,.moss-sprite::after{rotate:0deg!important}}
 .sidebar-companions .moss-speech[data-topic=buzz]{top:auto;bottom:158px;left:16px;right:16px;height:148px;padding:15px 17px}
 .moss-speech[data-topic=buzz] p{font-size:12px;line-height:1.6}.moss-speech[data-topic=buzz] small{font-size:9px}

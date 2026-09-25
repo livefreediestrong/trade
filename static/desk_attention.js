@@ -16,7 +16,7 @@
  $('desk-task-go').addEventListener('click',()=>{
   const target=$(task.value);
   if(!target){ // split pages: the section lives on another page
-   const page={'desk-options':'paper','desk-paper':'paper','moss-desk':'paper','moss-notebook':'paper','agent-research':'research','desk-settings':'settings'}[task.value]||'auto';
+   const page={'desk-options':'paper','desk-paper':'paper','moss-desk':'paper','moss-notebook':'research','agent-research':'research','desk-settings':'settings'}[task.value]||'auto';
    location.href='/desk/'+page+'#'+encodeURIComponent(task.value);return;
   }
   for(let p=target;p;p=p.parentElement)if(p.tagName==='DETAILS')p.open=true;

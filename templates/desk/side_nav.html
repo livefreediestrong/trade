@@ -16,17 +16,17 @@
     <a href="#broker-book">Positions</a>
     <a href="#broker-orders-list">Orders</a>
     <a href="#opp-panel">Ideas waiting</a>
-    <a href="#live-automation">Agent controls</a>
+    <a href="/desk/auto#live-automation">Agent controls</a>
   {% elif desk_page == 'paper' %}
     <span class="nav-caption">PAPER PRACTICE</span>
     <a href="#desk-paper">Paper status</a>
     <a href="#paper-research-title">Start / stop</a>
-    {% if config.get('OPTIONS_AVAILABLE') %}<a href="#desk-options">Calls &amp; puts</a>{% endif %}
-    {% if config.get('COMPANION_AVAILABLE') %}<a href="#moss-desk">Moss &amp; workday</a>{% endif %}
+    {% if config.get('OPTIONS_AVAILABLE') %}<a href="/desk/paper#desk-options">Calls &amp; puts</a>{% endif %}
+    {% if config.get('COMPANION_AVAILABLE') %}<a href="/desk/paper#moss-desk">Moss &amp; workday</a>{% endif %}
   {% elif desk_page == 'research' %}
     <span class="nav-caption">RESEARCH</span>
     <a href="#desk-research">Records</a>
-    {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}<a href="#research-studio">Studio</a><a href="#stocks-on-sale">On sale</a>{% endif %}
+    {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}<a href="#research-studio">Studio</a><a href="/desk/research#stocks-on-sale">On sale</a>{% endif %}
     {% if config.get('COMPANION_AVAILABLE') %}<a href="#agent-research">Moss brief</a>{% endif %}
   {% elif desk_page == 'ticket' %}
     <span class="nav-caption">TICKET</span>

@@ -8,9 +8,9 @@ The companions enact shared research and caution scenes. A recent recorded pass 
 
 Click a companion's thought to open its supporting desk status, exact caution, chore or recorded move. These are app-written interpretations of the displayed records, not hidden model reasoning. Source rows have stable anchors and receive keyboard focus when opened from another page. News thoughts use the validated source link.
 
-**Meet the companions**, next to Quiet desk, opens a separate animation preview on every desk page, including mobile. Its nine examples, replay and pause controls never publish live desk events or make API requests. Character size (Compact, Comfortable, Large) and movement frequency (every two minutes, one minute, or 30 seconds) are stored in this browser with the existing appearance preferences. Comfortable is the larger default. New observed activity responds immediately; the interval controls repeat scenes. A hidden companion does not participate in shared scenes.
+Companions act autonomously from the current desk snapshot and fresh headlines on every page. There is no scene picker, preview, replay button or character selector. Shared caution scenes never replace Fox's off-duty, waiting, blocked or reconciling posture. Thoughts open the specific recorded evidence.
 
-Quiet desk, still poses, reduced motion, typing, dialogs and hidden pages retain their motion boundaries. The preview respects Quiet desk, reduced motion and still/hidden character preferences. Its timer stops on close, pause, page hide or completion. A stale or failed desk snapshot clears live choreography. Props and gestures are presentation only and do not approve trades, infer fills, change risk settings or promise profit.
+Quiet desk, still poses, reduced motion, typing, dialogs and hidden pages retain their motion boundaries. A stale or failed desk snapshot clears live choreography. Props and gestures are presentation only and do not approve trades, infer fills, change risk settings or promise profit.
 
 ## Roles
 

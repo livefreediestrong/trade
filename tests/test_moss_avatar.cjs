@@ -55,7 +55,7 @@ assert.match(buzzNote(buzz,observed),/SPY.*Stocktwits.*not a buy signal/);
 for(const patch of [{stale:true},{cachedAt:null},{cachedAt:'bad'},{cachedAt:new Date(observed+1).toISOString()},{cachedAt:new Date(observed-420001).toISOString()},{ticker:'<img onerror=bad>'},{source:'mock feed'}])assert.equal(buzzNote({...buzz,...patch},observed),'');
 h=harness();let consumed=0;const cue={detail:buzz,preventDefault(){consumed++;}};
 const beforeBuzz=h.positions();h.events['moss:buzz'](cue);
-assert.equal(consumed,1);assert.equal(h.nodes['moss-speech'].dataset.speaker,'fox');assert.equal(h.nodes['moss-speech'].dataset.topic,'buzz');assert.equal(h.nodes['moss-fox'].dataset.buzz,'true');assert.equal(h.nodes['moss-woman'].dataset.buzz,'false');assert.equal(h.nodes['moss-speech-link'].href,'#buzz-panel');assert.deepEqual(h.positions(),beforeBuzz);
+assert.equal(consumed,1);assert.equal(h.nodes['moss-speech'].dataset.speaker,'fox');assert.equal(h.nodes['moss-speech'].dataset.topic,'buzz');assert.equal(h.nodes['moss-fox'].dataset.buzz,'true');assert.equal(h.nodes['moss-woman'].dataset.buzz,'false');assert.equal(h.nodes['moss-speech-link'].href,'/desk/research#buzz-panel');assert.deepEqual(h.positions(),beforeBuzz);
 h.advance(19000);assert.equal(h.nodes['moss-fox'].dataset.buzz,'false');assert.equal(h.nodes['moss-speech'].dataset.topic,'guide');
 h.events['moss:buzz'](cue);assert.equal(consumed,2);assert.equal(h.nodes['moss-fox'].dataset.buzz,'false','suppress repeat cues during three-minute cooldown');
 h.events['desk:attention']({detail:{quiet:true}});h.events['moss:buzz'](cue);assert.equal(consumed,2,'quiet mode does not claim the normal alert');
@@ -107,7 +107,10 @@ h=harness({without:['moss-motion','moss-avatar','moss-speech-enabled','moss-moti
 assert.ok(h.positions().every(t=>/translate3d/.test(t||'')),'both companions placed without the settings controls');
 assert.notEqual(h.positions()[0],h.positions()[1],'Fox and Changing Woman sit apart');
 h=harness({saved:{habitatVersion:3,avatar:'fox'},without:['moss-motion','moss-avatar','moss-speech-enabled','moss-motion-note']});h.advance(1000);
-assert.equal(h.nodes['moss-woman'].hidden,true,'a saved companion choice applies on every page');
+assert.equal(h.nodes['moss-woman'].hidden,false,'retired character choices cannot hide an autonomous companion');
+h=harness({saved:{habitatVersion:3,avatar:'woman',motion:'hide'},without:['moss-motion','moss-avatar']});
+assert.equal(h.nodes['moss-fox'].hidden,false);assert.equal(h.nodes['sidebar-companions'].hidden,false);
+assert.equal(JSON.parse(h.storage.get('moss_appearance_v1')).motion,'cozy');
 console.log('Desk day: Fox announces each trade once, Changing Woman raises cautions after him, day narration alternates, quiet and hidden companions stay silent passed.');
 // Character hands/faces/props follow the observed state, independently of which bubble is speaking.
 for(const [state,key,row] of [['researching','researching',2],['reconciling','reconciling',2],['blocked','blocked',2],['holding','holding',0],['watching','watching',0],['off','resting',3],['resting','resting',3],['done','resting',3]]){

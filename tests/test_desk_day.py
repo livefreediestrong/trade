@@ -173,6 +173,30 @@ def test_market_events_and_wsb_routes(execution):  # noqa: F811
 
 # ---- settings -----------------------------------------------------------------------------
 
+@pytest.mark.parametrize('stamp', ['bad', '2026-09-25T12:00:00', 1e100])
+def test_bad_saved_timestamps_do_not_break_desk_snapshot(stamp):
+    now = datetime.now(timezone.utc)
+    assert desk_day._ago(stamp, now) == 'unknown'
+    event = {'at': stamp, 'status': 'filled', 'ticker': 'TEST', 'fill': {'shares': 2, 'price': 100}}
+    assert desk_day.fox_view({'events': [event]}, None, now)['latest_trade'] is None
+
+
+def test_future_trade_is_not_announced_as_current():
+    now = datetime.now(timezone.utc)
+    event = {'at': (now + timedelta(minutes=1)).isoformat(), 'status': 'filled', 'ticker': 'TEST',
+             'fill': {'shares': 2, 'price': 100}}
+    assert desk_day.fox_view({'events': [event]}, None, now)['latest_trade'] is None
+    assert desk_day._ago(event['at'], now) == 'unknown'
+
+
+@pytest.mark.parametrize('fill', [{'shares': 'bad', 'price': 100}, {'shares': 2, 'price': 'NaN'},
+                                  {'shares': 0, 'price': 100}, {'shares': 2, 'price': None}])
+def test_invalid_retained_fill_is_never_narrated_as_a_purchase(fill):
+    row = desk_day._event_line({'status': 'filled', 'ticker': 'TEST', 'fill': fill})
+    assert row['kind'] == 'info'
+    assert 'fill details unavailable' in row['text'].lower()
+    assert 'Bought' not in row['text']
+
 def test_config_accepts_event_and_wsb_settings(execution):  # noqa: F811
     client = desk.app.test_client()
     reply = client.post("/api/config", base_url=BASE, json={

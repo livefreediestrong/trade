@@ -15,6 +15,7 @@ Nothing here places, changes or cancels an order; it only reads cached state.
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -34,15 +35,26 @@ def _money(value: Any) -> str:
         number = float(value)
     except (TypeError, ValueError):
         return "?"
+    if not math.isfinite(number):
+        return "?"
     return f"-${abs(number):,.2f}" if number < 0 else f"${number:,.2f}"
 
 
-def _ago(stamp: Any, now: datetime) -> str:
+def _moment(stamp: Any) -> datetime | None:
     try:
         moment = datetime.fromisoformat(str(stamp).replace("Z", "+00:00")) if not isinstance(stamp, (int, float)) \
             else datetime.fromtimestamp(float(stamp), timezone.utc)
-    except (TypeError, ValueError):
+        return moment if moment.utcoffset() is not None else None
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _ago(stamp: Any, now: datetime) -> str:
+    if stamp is None:
         return "never"
+    moment = _moment(stamp)
+    if moment is None or moment > now:
+        return "unknown"
     minutes = int((now - moment).total_seconds() // 60)
     if minutes < 1:
         return "just now"
@@ -58,7 +70,13 @@ def _event_line(event: dict[str, Any]) -> dict[str, Any]:
     ticker = event.get("ticker") or ""
     message = str(event.get("message") or "")
     fill = event.get("fill") if isinstance(event.get("fill"), dict) else None
-    if status.startswith("exit_"):
+    try:
+        valid_fill = bool(fill) and all(math.isfinite(float(fill[k])) and float(fill[k]) > 0 for k in ("shares", "price"))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        valid_fill = False
+    if fill is not None and not valid_fill:
+        kind, text = "info", f"Order update for {ticker}: fill details unavailable. Check the broker record."
+    elif status.startswith("exit_"):
         kind = "exit"
         reason = status[5:].replace("_", " ")
         if fill:
@@ -122,11 +140,10 @@ def fox_view(agent: dict[str, Any] | None, window: dict[str, Any] | None, now: d
         headline += f" Protecting {len(managed)} position{'s' if len(managed) != 1 else ''}: {protect}."
     recent_trades = []
     for row in events:
-        try:
-            at = datetime.fromisoformat(str(row["at"]))
-        except (TypeError, ValueError):
+        at = _moment(row["at"])
+        if at is None:
             continue
-        if row["kind"] in ("trade", "exit") and now - at <= timedelta(minutes=10):
+        if row["kind"] in ("trade", "exit") and timedelta(0) <= now - at <= timedelta(minutes=10):
             recent_trades.append(row)
     return {"state": state, "headline": headline, "ticker": ticker, "managed": managed, "recent": events[:8],
             "latest_trade": recent_trades[0] if recent_trades else None, "today": agent.get("today") or {},

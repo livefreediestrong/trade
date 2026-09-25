@@ -25,6 +25,9 @@
  function set(id,text){const n=$(id);if(n)n.textContent=text;}
  function fill(id,nodes,empty){const n=$(id);if(!n)return;n.replaceChildren(...(nodes.length?nodes:[el('li',empty,'dd-empty')]));}
  function render(d){
+  const chip=$('bx-agent-chip');
+  if(chip){chip.textContent=STATE[d.fox?.state]||'Unknown';chip.className='bx-agent-chip '+(['blocked','off'].includes(d.fox?.state)?'is-blocked':['resting','done'].includes(d.fox?.state)?'is-paused':d.fox?.state==='researching'?'is-scanning':'is-waiting');}
+  set('bx-agent-detail',d.fox?.headline||'Agent status unavailable');
   if(!$('desk-day'))return;
   const fox=d.fox||{},woman=d.woman||{};
   set('dd-state',STATE[fox.state]||'Unknown');
@@ -56,7 +59,7 @@
    const r=await fetch('/api/desk-day',{credentials:'same-origin',signal:controller.signal}),d=await r.json();
    if(!r.ok||!d.ok)throw Error(d.error||'Desk day unavailable');
    render(d);window.dispatchEvent(new CustomEvent('desk:day',{detail:d}));
-  }catch(e){set('dd-state','Unavailable');set('dd-fox-headline',String((e&&e.message)||'Desk day unavailable'));window.dispatchEvent(new CustomEvent('desk:day-unavailable'));}
+  }catch(e){set('dd-state','Unavailable');set('dd-fox-headline',String((e&&e.message)||'Desk day unavailable'));set('bx-agent-chip','Status unavailable');set('bx-agent-detail','Current agent status could not be read.');if($('bx-agent-chip'))$('bx-agent-chip').className='bx-agent-chip is-blocked';window.dispatchEvent(new CustomEvent('desk:day-unavailable'));}
   finally{clearTimeout(stop);busy=false;if(active&&!document.hidden)timer=setTimeout(poll,POLL_MS);}
  }
  document.addEventListener('visibilitychange',()=>{clearTimeout(timer);if(!document.hidden)poll();});

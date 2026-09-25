@@ -49,7 +49,7 @@
  }
  if(typeof module==='object'&&module.exports){module.exports={perchLayout,activityForSky,buzzNote,companionAction,actionPose};return;}
  const $=id=>document.getElementById(id),stage=$('moss-sidebar-stage'),panel=$('sidebar-companions');
- // The appearance controls live only on the Paper page; elsewhere the saved choices apply.
+ // Both companions work autonomously. Retired character/motion choices cannot hide them.
  const stand=(value,checked)=>({value,checked,addEventListener(){}});
  const control=$('moss-motion')||stand('cozy'),choice=$('moss-avatar')||stand('both'),speech=$('moss-speech-enabled')||stand('',true),bubble=$('moss-speech');
  if(!stage||!bubble)return;
@@ -67,9 +67,9 @@
   ['desk-settings','Settings & journal','Change one assumption at a time so results stay understandable.','One change at a time. Future us has enough mysteries.']
  ];
  let saved={};try{saved=JSON.parse(localStorage.getItem('moss_appearance_v1')||'{}')||{};}catch(_){}
- choice.value=saved.habitatVersion>=2&&['fox','woman','both'].includes(saved.avatar)?saved.avatar:'both';
+ choice.value=$('moss-avatar')&&saved.habitatVersion>=2&&['fox','woman','both'].includes(saved.avatar)?saved.avatar:'both';
  // Old roaming preferences migrate to the user's requested stationary perches.
- control.value=['dock','hide'].includes(saved.motion)?saved.motion:'cozy';speech.checked=saved.speech!==false;
+ control.value=$('moss-motion')&&['dock','hide'].includes(saved.motion)?saved.motion:'cozy';speech.checked=saved.speech!==false;
  let characterSize=['compact','comfortable','large'].includes(saved.size)?saved.size:'comfortable';
  let frequency=['gentle','balanced','lively'].includes(saved.frequency)?saved.frequency:'balanced',scene=null,sceneSince=0;
  let timer=null,active=true,hovered=false,quiet=document.documentElement.dataset.deskQuiet==='true',lastScroll=-Infinity;
@@ -105,7 +105,8 @@
   const toDay=isTrade||isNote||(isDay&&!!dayText),target=isBuzz?'buzz-panel':isNews?news.url:toDay?'desk-day':stop[0],key=speaker+'|'+target+'|'+text;
   if(key!==messageKey){
    messageKey=key;$('moss-speech-text').textContent=text;
-   const a=$('moss-speech-link');a.href=isNews?news.url:toDay&&!$('desk-day')?'/desk/overview#desk-day':'#'+target;a.target=isNews?'_blank':'_self';a.rel=isNews?'noopener noreferrer':'';
+   const page={'desk-overview':'overview','desk-day':'overview','moss-desk':'paper','desk-paper':'paper','desk-options':'paper','desk-research':'research','research-studio':'research','buzz-panel':'research','desk-settings':'settings'}[target]||'auto';
+   const a=$('moss-speech-link');a.href=isNews?news.url:($(target)?'':'/desk/'+page)+'#'+target;a.target=isNews?'_blank':'_self';a.rel=isNews?'noopener noreferrer':'';
    a.textContent=isBuzz?'Inspect buzz':isNews?news.source+' · '+new Date(news.publishedAt).toLocaleString()+' ↗':toDay?'Today at the desk':'Go to this section';
    $('moss-destination').textContent=isTrade?'Fox · broker agent':isBuzz?'Fox · Market buzz':isNote?'Changing Woman · thinking it through':isNews?'Changing Woman · News commentary':
     toDay?(speaker?'Changing Woman · chores & reasoning':'Fox · broker agent'):(speaker?'Changing Woman':'Fox')+' · '+stop[1];
@@ -190,7 +191,7 @@
  function apply(){
   actors[0].hidden=control.value==='hide'||choice.value==='woman';actors[1].hidden=control.value==='hide'||choice.value==='fox';panel.hidden=control.value==='hide';
   const motionNote=$('moss-motion-note');
-  if(motionNote)motionNote.textContent=quiet?'Quiet desk: companions hold still; trading continues.':reduced.matches?'Reduced motion: still poses show what each companion is doing.':'Fox and Changing Woman act out shared scenes with charts, calendars and notebooks. Click a thought to inspect its recorded source. Meet the companions to preview scenes and adjust their size and pace.';
+  if(motionNote)motionNote.textContent=quiet?'Quiet desk: companions hold still; trading continues.':reduced.matches?'Reduced motion: still poses show what each companion is doing.':'Fox and Changing Woman act out shared scenes with charts, calendars and notebooks. Click a thought to inspect its recorded source. Their actions follow current information automatically.';
   tick();
  }
  function save(){persist();dismissed='';apply();}
@@ -226,7 +227,6 @@
  });
  window.addEventListener('desk:day-unavailable',()=>{day=null;dayUnavailable=true;foxEvent=null;note=null;scene=null;tick();});
  window.addEventListener('moss:appearance',e=>{const d=e.detail||{};if(['compact','comfortable','large'].includes(d.size))characterSize=d.size;if(['gentle','balanced','lively'].includes(d.frequency))frequency=d.frequency;persist();apply();});
- window.MossAvatars={companionAction,actionPose,appearance:()=>({size:characterSize,frequency,quiet,reduced:reduced.matches,motion:control.value}),refresh:tick};
  window.addEventListener('desk:attention',e=>{quiet=!!e.detail?.quiet;apply();});
  window.addEventListener('scroll',()=>{lastScroll=performance.now();customUntil=0;tick();},{passive:true});
  document.addEventListener('focusin',tick);document.addEventListener('focusout',tick);window.addEventListener('resize',tick);reduced.addEventListener('change',apply);

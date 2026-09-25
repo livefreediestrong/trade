@@ -1682,7 +1682,11 @@
       const simpleUi = getUiMode() === "simple" || document.body.classList.contains("ui-simple");
       // Always keep quiet class — chill vibe; ok/warn are soft hints not neon
       llmEl.classList.add("quiet", "soft");
-      if (brain === "mock") {
+      if (!data.llm) {
+        llmEl.textContent = "Checking research model…";
+        llmEl.classList.remove("warn-pill", "ok-pill");
+        llmEl.title = "Waiting for model configuration status.";
+      } else if (brain === "mock") {
         llmEl.textContent = simpleUi ? "Mock" : "Mock brain";
         llmEl.classList.remove("warn-pill");
         llmEl.classList.add("ok-pill");

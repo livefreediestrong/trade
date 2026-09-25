@@ -4,7 +4,7 @@
 .utilitarian-desk .nav-brand .wordmark{font-size:28px;letter-spacing:-.7px;animation:none}
 .logo-medallion{position:relative;display:grid;place-items:center;width:88px;height:88px;isolation:isolate;animation:logo-soft-breath 90s ease-in-out infinite}
 .logo-medallion::before{content:'';position:absolute;inset:-8px;z-index:-1;border-radius:50%;background:radial-gradient(circle,#d7bdd539 0,#e6a39115 43%,transparent 70%)}
-.logo-medallion #scene-mark{width:80px;height:80px;grid-row:auto;filter:drop-shadow(0 0 7px #c4b5e035);transform-origin:50% 50%;animation:logo-calm-cycle 180s ease-in-out infinite}
+.logo-medallion .scene-mark{width:80px;height:80px;grid-row:auto;filter:drop-shadow(0 0 7px #c4b5e035);transform-origin:50% 50%;animation:logo-calm-cycle 180s ease-in-out infinite}
 /* Original swirl geometry, with a feathered light band moving from the inner
    blocks to the tips and back. Calm from first paint; no acceleration or flash. */
 .logo-flow{transform-origin:50px 50px;animation:logo-light-flow 28s ease-in-out infinite,logo-light-presence 180s ease-in-out infinite;transform:scale(.32)}
@@ -14,7 +14,7 @@
 @keyframes logo-soft-breath{0%,33.333%,66.667%,100%{transform:scale(1)}16.667%,83.333%{transform:scale(1.015)}50%{transform:scale(1.025)}}
 @keyframes logo-light-flow{0%,100%{transform:scale(.32)}50%{transform:scale(1.08)}}
 @keyframes logo-light-presence{0%,20%,100%{opacity:.95}30%,45%{opacity:.5}55%,70%{opacity:.65}80%,90%{opacity:.75}}
-:root[data-scene-motion=off] .logo-medallion,:root[data-scene-motion=off] #scene-mark,:root[data-scene-motion=off] #scene-mark *,:root[data-desk-quiet=true] .logo-medallion,:root[data-desk-quiet=true] #scene-mark,:root[data-desk-quiet=true] #scene-mark *{animation-play-state:paused!important}
+:root[data-scene-motion=off] .logo-medallion,:root[data-scene-motion=off] .scene-mark,:root[data-scene-motion=off] .scene-mark *,:root[data-desk-quiet=true] .logo-medallion,:root[data-desk-quiet=true] .scene-mark,:root[data-desk-quiet=true] .scene-mark *{animation-play-state:paused!important}
 .utilitarian-desk .has-companion-habitat .sidebar-scroll{gap:2px;top:223px}
 .utilitarian-desk .sidebar-scroll>a{padding:6px 11px;line-height:1.5}
 .utilitarian-desk .nav-caption{padding:12px 10px 3px;letter-spacing:.13em;font-size:9px}
@@ -82,7 +82,7 @@
 @media(max-width:800px){
  .utilitarian-desk .page-nav.has-companion-habitat{padding:9px 10px;margin-bottom:12px}
  .utilitarian-desk .page-nav .nav-brand{display:grid;grid-template-columns:56px 1fr;min-height:56px;padding:0;gap:10px;width:auto}
- .utilitarian-desk .logo-medallion{width:56px;height:56px}.utilitarian-desk .logo-medallion #scene-mark{width:50px;height:50px}
+ .utilitarian-desk .logo-medallion{width:56px;height:56px}.utilitarian-desk .logo-medallion .scene-mark{width:50px;height:50px}
  .utilitarian-desk .nav-brand .wordmark{font-size:21px}
  .utilitarian-desk .sidebar-scroll>a{font-size:11px;padding:5px 7px}
  .utilitarian-desk .nav-bottom{padding:0;display:block}.utilitarian-desk .scene-controls summary{padding:5px 0}
@@ -91,7 +91,7 @@
  .utilitarian-desk .attention-bar .btn{flex:0 0 auto}.utilitarian-desk .overview-card{padding:12px 14px}.utilitarian-desk .panel{padding:14px}
  .scene-veil{filter:none;opacity:.16}
 }
-@media(prefers-reduced-motion:reduce){.logo-medallion,#scene-mark,#scene-mark *,.scene-veil{animation:none!important}.logo-flow{transform:scale(.7)}.scene-fauna *{animation:none!important}.scene-fauna{transition:none}}
+@media(prefers-reduced-motion:reduce){.logo-medallion,.scene-mark,.scene-mark *,.scene-veil{animation:none!important}.logo-flow{transform:scale(.7)}.scene-fauna *{animation:none!important}.scene-fauna{transition:none}}
 @media print{.logo-medallion,.scene-veil{display:none}}
 
 /* Persistent modules: location and a quiet edge replace accordion controls. */

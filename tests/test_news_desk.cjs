@@ -25,5 +25,13 @@ const settle=()=>new Promise(r=>setImmediate(r));
  const count=requests.length;doc.hidden=true;events.visibilitychange();assert.equal(timers.size,0);events.pageshow({persisted:true});await settle();assert.equal(requests.length,count);
  doc.hidden=false;events.visibilitychange();await settle();assert.equal(requests.length,count+1);
  events.pagehide();assert.equal(timers.size,0);
+ // On Overview/Auto there is a companion perch but no news panel or its child nodes.
+ const beforeSplit=spoken.length;fail=false;payload.items=[{...row,id:'split-page-headline'}];
+ const split={...context,document:{...doc,getElementById:id=>id==='sidebar-companions'?{}:null}};
+ vm.runInNewContext(fs.readFileSync('static/news_desk.js','utf8'),split);await settle();
+ assert.equal(spoken.length,beforeSplit+1,'fresh news reaches Changing Woman without a news panel');
+ assert.equal(spoken.at(-1).detail.id,'split-page-headline');
+ fail=true;events.pageshow({persisted:true});await settle();assert.equal(spoken.length,beforeSplit+1);
+ events.pagehide();assert.equal(timers.size,0);
  console.log('News desk: read-only polling, text-safe headlines, one-time delivery, suppressed-story retry, stale/failure behavior and hidden-page lifecycle passed.');
 })().catch(e=>{console.error(e);process.exitCode=1;});

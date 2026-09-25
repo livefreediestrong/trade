@@ -200,6 +200,12 @@ assert.equal($('#stat-pnl').textContent,'-2');
 assert.equal($('#stat-trades').textContent,'3');
 assert.equal($('#daily-recap-headline').textContent,'PAPER');
 assert.equal($('#stat-llm').textContent,'Claude · claude-test');
+delete data.llm;
+renderTop(data);
+assert.equal($('#stat-llm').textContent,'Checking research model…');
+data.llm={brain_mode:'gemini',configured:false};
+renderTop(data);
+assert.equal($('#stat-llm').textContent,'Gemini needs an API key');
 assert.equal($('#stat-mode').textContent,'Approve each live broker order');
 assert.equal($('#mode-select').value,'live_manual');
 """)

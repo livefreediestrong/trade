@@ -8,5 +8,5 @@
 #paper-auto-next{line-height:1.65;max-width:75ch}#paper-auto-feedback:empty{display:none}.automation-card [hidden]{display:none!important}
 :root[data-desk-quiet=true]{scroll-behavior:auto}
 :root[data-desk-quiet=true] .desert-scene{opacity:.12}
-:root[data-desk-quiet=true] .desert-scene *,:root[data-desk-quiet=true] #scene-mark *,:root[data-desk-quiet=true] .trade-sky *{animation-play-state:paused!important;transition:none!important}
+:root[data-desk-quiet=true] .desert-scene *,:root[data-desk-quiet=true] .scene-mark *,:root[data-desk-quiet=true] .trade-sky *{animation-play-state:paused!important;transition:none!important}
 @media(max-width:800px){.automation-facts{grid-template-columns:1fr;gap:12px}.automation-card{padding:16px}.attention-bar select{max-width:none}.attention-bar .btn{width:100%}.automation-actions .btn{flex:1 1 200px}}

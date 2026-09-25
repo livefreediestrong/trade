@@ -1,4 +1,4 @@
-/* Shared presentation for the real companions and the explicitly simulated preview. */
+/* Autonomous presentation of current desk information. No trading actions. */
 (() => {
  'use strict';
  const PERIOD={gentle:120000,balanced:60000,lively:30000};
@@ -9,7 +9,7 @@
  function sceneFor(day,now=Date.now()){
   if(!day)return null;
   const note=caution(day);
-  if(note)return {key:'caution:'+note.key,kind:'caution'};
+  if(note)return {key:'caution:'+note.key+'|'+day.fox?.state,kind:'caution',partnered:['watching','researching','holding'].includes(day.fox?.state)};
   if(day.fox?.state==='researching')return {key:'research:'+day.fox.ticker,kind:'research'};
   const last=day.fox?.recent?.[0],stamp=Date.parse(last?.at);
   if(day.fox?.state==='watching'&&last?.kind==='skip'&&Number.isFinite(stamp)&&stamp<=now&&now-stamp<120000)
@@ -32,7 +32,7 @@
     {sheet:'gesture',row:0,frame:1,expression:'raised-brow'},
     {sheet:'gesture',row:0,frame:2,expression:'explaining'},
     {sheet:'gesture',row:0,frame:3,expression:'composed'}][beat]:
-   {sheet:'fox',row:0,frame:[0,1,3,0][beat],label:'Listening to Changing Woman',expression:'listening'};
+   scene.partnered===false?null:{sheet:'fox',row:0,frame:[0,1,3,0][beat],label:'Listening to Changing Woman',expression:'listening'};
   if(scene.kind==='pass')return actor?{sheet:'gesture',row:0,frame:[0,3,0,3][beat],expression:'composed'}:
    {sheet:'fox',row:beat<2?2:0,frame:beat<2?[1,0][beat]:0,label:beat<2?'Reviewing the recorded pass':'Putting the notebook away',expression:'settling'};
   return null;
@@ -45,8 +45,8 @@
   return ['reading','explaining'].includes(action.key)?'journal':'';
  }
  function thoughtFor(actor,{day,action,news,trade,unavailable}={}){
-  if(unavailable)return {text:'Status unavailable',detail:'The latest desk status could not be read.',href:'/desk/settings#desk-health'};
-  if(!day)return {text:'Meet the companions',detail:'See how we work together.',href:'#moss-preview-dialog'};
+  if(unavailable)return {text:'Status unavailable',detail:'The latest desk status could not be read.',href:'/desk/auto#desk-health'};
+  if(!day)return {text:'Reading desk status',detail:'Waiting for current desk information.',href:'/desk/overview#desk-day'};
   if(!actor){
    if(action.key==='order-update'&&trade?.id)return {text:'Read the order update',detail:trade.text,href:source('move',trade.id)};
    const last=day.fox?.recent?.[0];
@@ -60,16 +60,6 @@
   if(task)return {text:task.state==='attention'?'This task needs attention':'See the task I am checking',detail:task.label+': '+task.detail,href:source('chore',task.key)};
   return {text:'See my desk notes',detail:day.woman?.headline||'Read the current chores and reasoning.',href:'/desk/overview#dd-woman-headline'};
  }
- function paintPose(el,pose,still,previous){
-  const {sheet,row,frame}=pose,position=(frame*100/3)+'% '+(sheet==='gesture'?row*100:row*100/3)+'%',key=sheet+'|'+row+'|'+frame;
-  el.dataset.sheet=sheet;el.dataset.frame=String(frame);el.dataset.still=String(still);
-  el.dataset.pose=sheet==='breeze'||sheet==='routine'||(sheet==='fox'&&row===3)?'sit':'stand';
-  if(still||!previous||previous.sheet!==sheet){
-   el.style.setProperty('--frame-a',position);el.style.setProperty('--frame-b',position);el.style.setProperty('--frame-blend','0');return {sheet,key,upper:false};
-  }
-  if(previous.key!==key){el.style.setProperty(previous.upper?'--frame-a':'--frame-b',position);previous.upper=!previous.upper;previous.key=key;el.style.setProperty('--frame-blend',previous.upper?'1':'0');}
-  return previous;
- }
- const api={PERIOD,anchor,source,sceneFor,scenePose,propFor,thoughtFor,paintPose};
+ const api={PERIOD,anchor,source,sceneFor,scenePose,propFor,thoughtFor};
  if(typeof module==='object'&&module.exports)module.exports=api;else window.DeskCompanionScenes=api;
 })();

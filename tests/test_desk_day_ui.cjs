@@ -3,7 +3,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 function node(tag){return{tag,children:[],textContent:'',dataset:{},hidden:false,className:'',attrs:{},
  append(...xs){for(const x of xs)this.children.push(typeof x==='string'?{tag:'#text',textContent:x}:x);},
  replaceChildren(...xs){this.children=[];this.append(...xs);},setAttribute(k,v){this.attrs[k]=v;}};}
-const ids=['desk-day','dd-state','dd-fox-headline','dd-positions-table','dd-positions','dd-fox-recent','dd-woman-headline','dd-notes','dd-chores','dd-events','dd-events-note','dd-wsb','dd-wsb-note'];
+const ids=['bx-agent-chip','bx-agent-detail','desk-day','dd-state','dd-fox-headline','dd-positions-table','dd-positions','dd-fox-recent','dd-woman-headline','dd-notes','dd-chores','dd-events','dd-events-note','dd-wsb','dd-wsb-note'];
 const nodes=Object.fromEntries(ids.map(id=>[id,node('div')]));
 const snap={ok:true,fox:{state:'holding',headline:'Fox is holding off on new trades: FOMC Press Conference (2:30 PM ET).',
  managed:[{ticker:'NVDA',shares:2,entry:100,stop:99.2,target:101.6,breakeven:true}],
@@ -20,6 +20,7 @@ const context={document:{getElementById:id=>nodes[id],createElement:tag=>node(ta
 vm.runInNewContext(fs.readFileSync('static/desk_day.js','utf8'),context);
 setImmediate(()=>{
  assert.equal(nodes['dd-state'].textContent,'Holding off');assert.equal(nodes['dd-state'].dataset.state,'holding');
+ assert.equal(nodes['bx-agent-chip'].textContent,'Holding off');assert.equal(nodes['bx-agent-detail'].textContent,snap.fox.headline);
  assert.equal(nodes['dd-positions-table'].hidden,false);
  const cells=nodes['dd-positions'].children[0].children.map(c=>c.textContent);assert.deepEqual(cells.slice(0,2),['NVDA','2']);assert.match(cells[3],/\(entry\)/);
  assert.equal(nodes['dd-notes'].children[0].textContent,'<b>Scheduled</b> event','fetched text renders as text');
@@ -32,5 +33,5 @@ setImmediate(()=>{
  assert.equal(dispatched.type,'desk:day');assert.equal(dispatched.detail,snap);
  console.log('Desk day panel: text-only rendering, positions, notes, events with safe links, WSB lean and companion event passed.');
  unavailable=true;vm.runInNewContext(fs.readFileSync('static/desk_day.js','utf8'),context);
- setImmediate(()=>{assert.equal(nodes['dd-state'].textContent,'Unavailable');assert.equal(dispatched.type,'desk:day-unavailable');console.log('Failed desk-day fetch explicitly clears companion activity.');});
+ setImmediate(()=>{assert.equal(nodes['dd-state'].textContent,'Unavailable');assert.equal(nodes['bx-agent-chip'].textContent,'Status unavailable');assert.equal(dispatched.type,'desk:day-unavailable');console.log('Failed desk-day fetch explicitly clears companion activity and overview status.');});
 });

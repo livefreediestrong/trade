@@ -25,7 +25,7 @@
 }
 .desk-topnav .desk-topnav-brand .logo-medallion { width: 32px; height: 32px; flex: none; }
 /* The sidebar mark is 80px; in the top bar it must fit its 32px slot. */
-.desk-topnav .desk-topnav-brand .logo-medallion #scene-mark { width: 32px; height: 32px; }
+.desk-topnav .desk-topnav-brand .logo-medallion .scene-mark { width: 32px; height: 32px; }
 .desk-topnav .desk-topnav-brand .logo-medallion::before { inset: -3px; }
 .desk-topnav-links {
   display: flex;
