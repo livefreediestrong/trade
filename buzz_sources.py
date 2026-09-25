@@ -360,10 +360,10 @@ def reddit_auth_status() -> dict[str, Any]:
     """Public status for /api/buzz — no secrets."""
     configured = _reddit_oauth_configured()
     username_present = bool(_reddit_env("REDDIT_USERNAME"))
-    with _token_lock:
-        mode = _oauth_mode
-        last_error = _oauth_last_error
-        has_live = bool(_oauth_token) and time.time() < _oauth_expires_at
+    # Status is observational: never wait behind a token HTTP request.
+    mode = _oauth_mode
+    last_error = _oauth_last_error
+    has_live = bool(_oauth_token) and time.time() < _oauth_expires_at
     if not configured:
         out_mode = "public_json" if _public_reddit_enabled() else "disabled"
         if not last_error:
@@ -1177,8 +1177,8 @@ _live_chat_paste: dict[str, Any] = {
 }
 LIVE_CHAT_STATUS_NOTE = (
     "Community Live Chat is not connected by this reader. "
-    "Matrix at matrix.redditspace.com requires a session token; "
-    "no public anonymous chat API. Paste a chat export below to bridge."
+    "Connecting the post/comment API does not connect Live Chat. "
+    "You can paste a chat export below; it expires after 30 minutes."
 )
 
 
@@ -1325,6 +1325,8 @@ def get_cached_buzz() -> dict[str, Any] | None:
             out = dict(_mem_cache)
             out["cache_age_sec"] = round(age, 1)
             out["stale"] = not 0 <= age <= CACHE_TTL_SEC
+            out["reddit_auth"] = reddit_auth_status()
+            out["auth_mode"] = out["reddit_auth"]["mode"]
             return out
     disk = _load_disk_cache()
     if disk:
@@ -1337,6 +1339,8 @@ def get_cached_buzz() -> dict[str, Any] | None:
         out = dict(disk)
         out["cache_age_sec"] = round(age, 1)
         out["stale"] = not 0 <= age <= CACHE_TTL_SEC
+        out["reddit_auth"] = reddit_auth_status()
+        out["auth_mode"] = out["reddit_auth"]["mode"]
         return out
     return None
 

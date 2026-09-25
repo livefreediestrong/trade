@@ -4215,7 +4215,7 @@
     const liveTicks = $("#buzz-live-chat-tickers");
     const live = buzz.live_chat || {};
     if (liveNote) {
-      liveNote.textContent = live.note || "Live Chat needs Reddit login - connect later.";
+      liveNote.textContent = live.note || "Community Live Chat is not connected by this reader.";
     }
     if (liveTicks) {
       const pasteRows = live.paste_tickers || [];
@@ -5055,7 +5055,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
       if (state) state.buzz = data;
       renderBuzzPanel(data);
       renderBuzzSimplePill({ buzz: data });
-      toast("Buzz refreshed");
+      toast(data.refreshing ? "Source refresh requested · running in background" : "Cached source data loaded");
     } catch (e) {
       toast(e.message || "Buzz refresh failed", true);
     }

@@ -1,6 +1,7 @@
 import copy
 import json
 import threading
+import time
 
 import pytest
 
@@ -136,6 +137,30 @@ def test_buzz_route_never_waits_for_social_requests(monkeypatch):
 def test_future_disk_cache_is_not_fresh(monkeypatch):
     buzz.CACHE_PATH.write_text(json.dumps({'cached_at_epoch': buzz.time.time()+3600, 'cache_key': 'all|'}))
     assert buzz.get_cached_buzz()['stale'] is True
+
+
+def test_saved_auth_cannot_claim_a_connection_after_restart():
+    buzz.CACHE_PATH.write_text(json.dumps({'cached_at_epoch': buzz.time.time(),
+        'auth_mode': 'oauth_password', 'reddit_auth': {'mode': 'oauth_password', 'state': 'connected'}}))
+    cached = buzz.get_cached_buzz()
+    assert cached['auth_mode'] == 'disabled' and cached['reddit_auth']['state'] == 'needs_credentials'
+
+
+def test_connection_status_does_not_wait_for_slow_token_request(monkeypatch):
+    credentials(monkeypatch)
+    entered, release = threading.Event(), threading.Event()
+    def slow(*a, **kw):
+        entered.set(); assert release.wait(3)
+        return Reply(body={'access_token': 'token', 'expires_in': 3600})
+    monkeypatch.setattr(buzz.requests, 'post', slow)
+    thread = threading.Thread(target=buzz._ensure_reddit_token)
+    try:
+        thread.start(); assert entered.wait(2)
+        began = time.monotonic()
+        assert buzz.reddit_auth_status()['state'] == 'ready'
+        assert time.monotonic() - began < .5
+    finally:
+        release.set(); thread.join(3)
 
 
 def test_concurrent_consumers_share_one_request(monkeypatch):
