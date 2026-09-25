@@ -1,5 +1,5 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-const {perchLayout,activityForSky,buzzNote}=require('../static/moss_avatar.js');
+const {perchLayout,activityForSky,buzzNote,companionAction,actionPose}=require('../static/moss_avatar.js');
 const {newsQuip}=require('../static/news_quips.js');
 assert.deepEqual(['dawn','day','dusk','night'].map(s=>activityForSky(s).key),['water','weave','gathered-food','rest']);
 assert.equal(activityForSky('unknown').key,'rest');
@@ -10,7 +10,7 @@ for(const width of [270,300])for(const height of [600,650,1000]){
 }
 function harness({width=300,height=1000,reduced=false,saved={},without=[]}={}){
  let now=0,serial=0,dialog=null;const nodes={},events={},timers=new Map(),storage=new Map([['moss_appearance_v1',JSON.stringify(saved)]]);
- for(const id of ['moss-fox','moss-woman','moss-motion','moss-avatar','moss-motion-note','moss-speech','moss-speech-enabled','moss-speech-text','moss-speech-link','moss-destination','moss-speech-dismiss','sidebar-companions','moss-sidebar-stage','moss-trails','moss-canyon-far','moss-canyon-near','moss-sand','moss-cacti'])
+ for(const id of ['moss-fox','moss-woman','moss-fox-action','moss-woman-action','moss-fox-thought','moss-woman-thought','moss-motion','moss-avatar','moss-motion-note','moss-speech','moss-speech-enabled','moss-speech-text','moss-speech-link','moss-destination','moss-speech-dismiss','sidebar-companions','moss-sidebar-stage','moss-trails','moss-canyon-far','moss-canyon-near','moss-sand','moss-cacti'])
   nodes[id]={id,style:{setProperty(k,v){this[k]=v;}},dataset:{},hidden:false,value:'',checked:false,attrs:{},setAttribute(k,v){this.attrs[k]=v;},contains:()=>false,addEventListener(k,f){this[k]=f;}};
  for(const id of without)delete nodes[id];
  const sections={'desk-overview':{top:100,bottom:800},'desk-live':{top:2000,bottom:2800},'desk-options':{top:3000,bottom:3800}};
@@ -18,7 +18,7 @@ function harness({width=300,height=1000,reduced=false,saved={},without=[]}={}){
  const doc={documentElement:{dataset:{}},hidden:false,activeElement:null,getElementById:id=>sections[id]?{getBoundingClientRect:()=>sections[id]}:nodes[id],querySelector:()=>dialog,addEventListener(k,f){events[k]=f;}};
  const preference={matches:reduced,addEventListener(k,f){this[k]=f;}};
  const context={document:doc,window:{NadzeelNews:{newsQuip},addEventListener(k,f){events[k]=f;}},matchMedia:()=>preference,performance:{now:()=>now},innerHeight:height,
- localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},setTimeout(fn,ms){timers.set(++serial,{fn,at:now+ms});return serial;},clearTimeout:id=>timers.delete(id),
+ localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},sessionStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},setTimeout(fn,ms){timers.set(++serial,{fn,at:now+ms});return serial;},clearTimeout:id=>timers.delete(id),
  requestAnimationFrame(){throw Error('Cozy perches must not schedule animation frames');},fetch(){throw Error('Avatar must not contact an API');}};
  vm.runInNewContext(fs.readFileSync('static/moss_avatar.js','utf8'),context);
  const positions=()=>[nodes['moss-fox'].style.transform,nodes['moss-woman'].style.transform];
@@ -98,7 +98,7 @@ h.advance(31000);assert.equal(h.nodes['moss-speech'].dataset.topic,'day','betwee
 assert.ok(['Fox is on watch.',daySnap.woman.reasoning[0].text].includes(h.nodes['moss-speech-text'].textContent));
 assert.equal(h.nodes['moss-speech-link'].href,'/desk/overview#desk-day');assert.equal(h.nodes['moss-speech-link'].textContent,'Today at the desk');
 h.events['desk:day']({detail:daySnap});assert.equal(h.nodes['moss-speech'].dataset.topic,'day','a trade is announced once');
-assert.equal(h.nodes['moss-fox'].attrs['aria-label'],'Fox, your broker agent · Fox is on watch.');
+assert.equal(h.nodes['moss-fox'].attrs['aria-label'],'Fox, your broker agent · On watch · Fox is on watch.');
 h=harness();h.events['desk:day']({detail:{fox:{state:'off',headline:'Fox is off duty.'},woman:{reasoning:[]}}});h.advance(1000);assert.equal(h.nodes['moss-speech'].dataset.topic,'guide','off duty keeps section guidance');
 h=harness();h.events['desk:attention']({detail:{quiet:true}});h.events['desk:day']({detail:daySnap});assert.notEqual(h.nodes['moss-speech'].dataset.topic,'trade','quiet desk stays quiet');
 h=harness({saved:{habitatVersion:3,avatar:'woman'}});h.events['desk:day']({detail:daySnap});assert.notEqual(h.nodes['moss-speech'].dataset.topic,'trade','trades belong to Fox');
@@ -109,4 +109,38 @@ assert.notEqual(h.positions()[0],h.positions()[1],'Fox and Changing Woman sit ap
 h=harness({saved:{habitatVersion:3,avatar:'fox'},without:['moss-motion','moss-avatar','moss-speech-enabled','moss-motion-note']});h.advance(1000);
 assert.equal(h.nodes['moss-woman'].hidden,true,'a saved companion choice applies on every page');
 console.log('Desk day: Fox announces each trade once, Changing Woman raises cautions after him, day narration alternates, quiet and hidden companions stay silent passed.');
+// Character hands/faces/props follow the observed state, independently of which bubble is speaking.
+for(const [state,key,row] of [['researching','researching',2],['reconciling','reconciling',2],['blocked','blocked',2],['holding','holding',0],['watching','watching',0],['off','resting',3],['resting','resting',3],['done','resting',3]]){
+ const action=companionAction(0,{day:{fox:{state}}});assert.equal(action.key,key);assert.equal(action.sheet,'fox');assert.equal(action.row,row);
+}
+assert.equal(companionAction(0,{day:{fox:{state:'reconciling'}},cue:'trade'}).label,'Order update','an update does not claim a fill or profit');
+assert.equal(companionAction(0,{day:{fox:{state:'waiting'}}}).sheet,'breeze');
+assert.equal(companionAction(1,{sky:'day'}).key,'weave');
+assert.equal(companionAction(1,{cue:'news'}).key,'reading-news');
+const think=companionAction(1,{day:daySnap,speaking:true});
+assert.equal(actionPose(think,0,false).sheet,'woman');assert.equal(actionPose(think,9600,false).sheet,'gesture');
+assert.equal(actionPose(think,9600,false).frame,2,'open hand explains the caution');
+assert.deepEqual(actionPose(think,9600,true),{sheet:'woman',row:2,frame:3},'reduced motion keeps the hand-to-chin pose without gestures');
+const research={fox:{state:'researching',ticker:'NVDA',headline:'Fox is researching NVDA.'},woman:{headline:'Reading along.',reasoning:[],chores:[]}};
+h=harness();h.events['desk:day']({detail:research});const researchHome=h.positions();
+assert.equal(h.nodes['moss-fox'].dataset.action,'researching');assert.equal(h.nodes['moss-woman'].dataset.action,'reading');
+assert.equal(h.nodes['moss-fox'].dataset.sheet,'fox');assert.match(h.nodes['moss-fox-action'].textContent,/NVDA/);
+const readingFrame=h.frames();h.advance(1600);assert.notDeepEqual(h.frames(),readingFrame,'both actors actually change reading frames');assert.deepEqual(h.positions(),researchHome);
+h.doc.activeElement={matches:()=>true};h.events.focusin();const typingFrame=h.frames();h.advance(6000);assert.deepEqual(h.frames(),typingFrame);assert.equal(h.nodes['moss-fox'].dataset.still,'true');
+h.doc.activeElement=null;h.events.focusout();h.setDialog({});h.advance(1000);assert.equal(h.nodes['moss-woman'].dataset.still,'true');h.setDialog(null);
+h.doc.hidden=true;h.events.visibilitychange();assert.equal(h.nodes['moss-fox'].dataset.still,'true');assert.equal(h.timers.size,0);
+h.doc.hidden=false;h.events.visibilitychange();assert.equal(h.nodes['moss-fox'].dataset.still,'false');
+h.events['desk:day-unavailable']();assert.equal(h.nodes['moss-fox'].dataset.action,'unavailable');assert.equal(h.nodes['moss-woman'].dataset.action,'unavailable');
+h.events['desk:day']({detail:research});assert.equal(h.nodes['moss-fox'].dataset.action,'researching');h.advance(91000);assert.equal(h.nodes['moss-fox'].dataset.action,'unavailable','missed polls expire activity');
+for(const as_of of ['bad',new Date(Date.now()-120000).toISOString(),new Date(Date.now()+60000).toISOString()]){h.events['desk:day']({detail:{...research,as_of}});assert.equal(h.nodes['moss-fox'].dataset.action,'unavailable','invalid, old and future snapshots do not animate work');}
+h.events['desk:day']({detail:{...research,as_of:new Date().toISOString()}});assert.equal(h.nodes['moss-fox'].dataset.action,'researching');
+h=harness({reduced:true});h.events['desk:day']({detail:research});const reducedRead=h.frames();h.advance(10000);assert.deepEqual(h.frames(),reducedRead);assert.equal(h.nodes['moss-fox-action'].textContent,'Researching NVDA');
+h=harness();h.events['desk:day']({detail:daySnap});assert.equal(h.nodes['moss-fox'].dataset.action,'order-update');assert.equal(h.nodes['moss-woman'].dataset.action,'thinking');
+h.advance(21000);h.events['desk:day']({detail:daySnap});assert.equal(h.nodes['moss-fox'].dataset.action,'watching');
+h.advance(3000);assert.equal(h.nodes['moss-woman'].dataset.sheet,'gesture');
+h.advance(31000);h.events['desk:day']({detail:daySnap});assert.equal(h.nodes['moss-fox'].dataset.action,'watching','repeat polls do not replay an order gesture');
+assert.ok(JSON.parse(h.storage.get('desk_day_trades_v1')).includes('t1'),'remember event IDs across page visits');
+h=harness();h.events['desk:day']({detail:{fox:{state:'watching'},woman:{reasoning:[],chores:[{key:'calendar',label:'Check the calendar',state:'attention'}]}}});
+assert.equal(h.nodes['moss-woman'].dataset.action,'checking');assert.match(h.nodes['moss-woman-action'].textContent,/needs attention/);
+console.log('Action poses: reading, waiting, reconciling, thought-to-gesture sequence, chores, one-shot order updates, stale-feed recovery and motion pauses passed.');
 console.log('Cozy perches: stationary top/bottom through task changes, occasional expressions, pause/dock/reduced motion, dismissal, preferences migration, hidden/narrow lifecycle, and no animation loop or network actions passed.');

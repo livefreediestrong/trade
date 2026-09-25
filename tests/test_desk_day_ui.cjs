@@ -12,11 +12,11 @@ const snap={ok:true,fox:{state:'holding',headline:'Fox is holding off on new tra
  chores:[{key:'wsb',label:'Read the WSB threads',state:'done',detail:'Daily Discussion'}]},
  events:{guard_enabled:true,status:{sources:{bls:{ok:false,error:'HTTP 503'}}},upcoming:[{title:'FOMC Press Conference',when:'FOMC Press Conference (2:30 PM ET)',impact:'high',url:'javascript:alert(1)',guard:'2:15 PM ET–2:45 PM ET'}]},
  wsb:{configured:true,threads:[{label:'Daily Discussion'}],top:[{ticker:'NVDA',mentions_60m:40,velocity:null,bull_share:.25,live_chat_pasted:0}],live_chat_note:'Paste chat.'}};
-let dispatched=null;
+let dispatched=null,unavailable=false;
 const context={document:{getElementById:id=>nodes[id],createElement:tag=>node(tag),createTextNode:t=>({tag:'#text',textContent:t}),addEventListener(){},hidden:false},
- window:{addEventListener(){},dispatchEvent(e){dispatched=e;}},CustomEvent:function(type,init){this.type=type;this.detail=init.detail;},
+ window:{addEventListener(){},dispatchEvent(e){dispatched=e;}},CustomEvent:function(type,init){this.type=type;this.detail=init?.detail;},
  AbortController:function(){this.signal={};this.abort=()=>{};},setTimeout:()=>1,clearTimeout(){},
- fetch:async url=>{assert.equal(url,'/api/desk-day');return{ok:true,json:async()=>snap};}};
+ fetch:async url=>{assert.equal(url,'/api/desk-day');if(unavailable)throw Error('Disconnected');return{ok:true,json:async()=>snap};}};
 vm.runInNewContext(fs.readFileSync('static/desk_day.js','utf8'),context);
 setImmediate(()=>{
  assert.equal(nodes['dd-state'].textContent,'Holding off');assert.equal(nodes['dd-state'].dataset.state,'holding');
@@ -29,4 +29,6 @@ setImmediate(()=>{
  assert.equal(nodes['dd-wsb'].children[0].children[3].textContent,'75% bear');assert.equal(nodes['dd-wsb'].children[0].children[2].textContent,'building');
  assert.equal(dispatched.type,'desk:day');assert.equal(dispatched.detail,snap);
  console.log('Desk day panel: text-only rendering, positions, notes, events with safe links, WSB lean and companion event passed.');
+ unavailable=true;vm.runInNewContext(fs.readFileSync('static/desk_day.js','utf8'),context);
+ setImmediate(()=>{assert.equal(nodes['dd-state'].textContent,'Unavailable');assert.equal(dispatched.type,'desk:day-unavailable');console.log('Failed desk-day fetch explicitly clears companion activity.');});
 });

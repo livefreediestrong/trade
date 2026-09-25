@@ -7,6 +7,39 @@
   return {width,height,size,fox:{x:28,y:height<650?188:210},woman:{x:width-size-28,y:height-16}};
  }
  function activityForSky(sky){return ({dawn:{row:0,key:'water',label:'Preparing water'},day:{row:1,key:'weave',label:'Working plant fibers'},dusk:{row:2,key:'gathered-food',label:'Sorting gathered food'},night:{row:3,key:'rest',label:'Resting'}})[sky]||{row:3,key:'rest',label:'Resting'};}
+ // Poses describe observed work, never infer a fill, profit or a new trading decision.
+ function companionAction(actor,{day,sky,cue='',speaking=false,unavailable=false}={}){
+  const action=(key,label,sheet,row,mark='',sequence=[0,1,2,3,2,1])=>({key,label,sheet,row,mark,sequence,speaking});
+  if(unavailable)return action('unavailable','Status unavailable',actor?'woman':'fox',0,'?',[0]);
+  if(!actor){
+   if(cue==='trade')return action('order-update','Order update','fox',2,'…');
+   if(cue==='buzz')return action('listening','Listening','fox',0,'!');
+   if(cue==='guide')return action('explaining','Reading along','fox',2,'…');
+   const state=day?.fox?.state;
+   if(state==='researching')return action('researching','Researching'+(day.fox.ticker?' '+String(day.fox.ticker).slice(0,12):''),'fox',2,'…');
+   if(state==='reconciling')return action('reconciling','Awaiting broker','fox',2,'…',[0,1,3,1]);
+   if(state==='blocked')return action('blocked','Blocked','fox',2,'?',[1,3,1,0]);
+   if(state==='holding')return action('holding','Holding off','fox',0,'Ⅱ',[0,2,1,0]);
+   if(['off','resting','done'].includes(state))return action('resting',state==='done'?'Done for today':state==='off'?'Off duty':'Resting','fox',3,'z',[0,1,2,3,3,2]);
+   if(state==='watching')return action('watching','On watch','fox',0,'',[0,1,0,2,3,1]);
+   return action('waiting',state==='waiting'?'Waiting for open':'At the desk','breeze',0,'',[0,1,2,3,2,1]);
+  }
+  if(cue==='news')return action('reading-news','Reading the news','woman',2,'…');
+  if(cue==='guide')return action('explaining','Explaining','gesture',0,'',[0,1,2,2,3,0]);
+  const reasoning=(day?.woman?.reasoning||[]).find(n=>n.level==='block'||n.level==='caution');
+  if(cue==='reasoning'||reasoning)return action('thinking','Thinking it through','woman',2,reasoning?.level==='block'?'!':'…',[3,2,3,1,0,1]);
+  const chores=day?.woman?.chores||[],chore=chores.find(c=>c.state==='attention')||chores.find(c=>c.state==='working');
+  if(chore)return action('checking',String(chore.label||'Checking the desk').slice(0,48)+(chore.state==='attention'?' · needs attention':''),'woman',2,chore.state==='attention'?'?':'…',[0,1,3,2,1,0]);
+  if(day?.fox?.state==='researching')return action('reading','Reading along','woman',2,'…');
+  const routine=activityForSky(sky);return action(routine.key,routine.label,'routine',routine.row,routine.key==='rest'?'z':'');
+ }
+ function actionPose(action,elapsed,still){
+  // Read -> hand to chin -> open palm when sharing the reason. Paused poses retain meaning.
+  if(action.key==='thinking'&&action.speaking&&!still&&elapsed%14400>=7200)
+   return {sheet:'gesture',row:0,frame:[0,1,2,2,3,0][Math.floor((elapsed%14400-7200)/1200)]};
+  const sequence=action.sequence,frame=still?sequence[0]:sequence[Math.floor(elapsed/1200)%sequence.length];
+  return {sheet:action.sheet,row:action.row,frame};
+ }
  function buzzNote(detail,now=Date.now()){
   const d=detail||{},stamp=Date.parse(d.cachedAt),ticker=String(d.ticker||'').toUpperCase();
   if(d.stale!==false||!Number.isFinite(stamp)||stamp>now||now-stamp>7*60000||! /^[A-Z][A-Z0-9.^=-]{0,14}$/.test(ticker))return '';
@@ -14,14 +47,14 @@
   if(/mock|demo|simulat/i.test(source))return '';
   return ticker+' · '+(source||'Social feed')+' activity rose. Attention, not a buy signal.';
  }
- if(typeof module==='object'&&module.exports){module.exports={perchLayout,activityForSky,buzzNote};return;}
+ if(typeof module==='object'&&module.exports){module.exports={perchLayout,activityForSky,buzzNote,companionAction,actionPose};return;}
  const $=id=>document.getElementById(id),stage=$('moss-sidebar-stage'),panel=$('sidebar-companions');
  // The appearance controls live only on the Paper page; elsewhere the saved choices apply.
  const stand=(value,checked)=>({value,checked,addEventListener(){}});
  const control=$('moss-motion')||stand('cozy'),choice=$('moss-avatar')||stand('both'),speech=$('moss-speech-enabled')||stand('',true),bubble=$('moss-speech');
  if(!stage||!bubble)return;
  const actors=[$('moss-fox'),$('moss-woman')],reduced=matchMedia('(prefers-reduced-motion: reduce)');
- const frames=[null,null];
+ const frames=[null,null],actions=[null,null];
  const stops=[
   ['desk-overview','Overview','Start with the account and data status. The next step should be clear before we act.','First, the numbers. My eyebrow is not a risk model.'],
   ['moss-desk','Notebook','Research lives here. An honest notebook is more useful than a confident guess.','A good note outlives a confident guess. How inconvenient for the guess.'],
@@ -41,7 +74,7 @@
  let buzz='',buzzUntil=0,lastBuzzAt=-Infinity;
  let news=null,newsUntil=0,lastNewsAt=-Infinity;
  // Fox is the broker agent; Changing Woman keeps the chores and reasons with him (desk:day).
- let day=null,foxEvent=null,foxEventUntil=0,note=null,noteUntil=0,lastNoteAt=-Infinity;
+ let day=null,dayAt=-Infinity,dayUnavailable=false,foxEvent=null,foxEventUntil=0,note=null,noteUntil=0,lastNoteAt=-Infinity;
  const remembered=key=>{try{return new Set(JSON.parse(sessionStorage.getItem(key)||'[]'));}catch(_){return new Set();}};
  const remember=(key,set)=>{try{sessionStorage.setItem(key,JSON.stringify([...set].slice(-60)));}catch(_){}};
  const seenTrades=remembered('desk_day_trades_v1'),seenNotes=remembered('desk_day_notes_v1');
@@ -93,37 +126,55 @@
  function tick(){
   clearTimeout(timer);timer=null;
   bubble.hidden=!speech.checked||control.value==='hide'||dismissed===messageKey||(quiet&&!custom)||!!dialog()||!active||document.hidden;
-  if(!active||document.hidden||control.value==='hide')return;
-  const r=stage.getBoundingClientRect(),g=perchLayout(r.width,r.height);if(!g){bubble.hidden=true;return;}
-  const now=performance.now();if(now-lastScroll>250)selectStop(now);message();landscape(g);
+  if(!active||document.hidden||control.value==='hide'){actors.forEach(el=>{el.dataset.still='true';});return;}
+  const r=stage.getBoundingClientRect(),g=perchLayout(r.width,r.height);if(!g){bubble.hidden=true;actors.forEach(el=>{el.dataset.still='true';});return;}
+  const now=performance.now();
+  if(day&&now-dayAt>90000){day=null;dayUnavailable=true;foxEvent=null;note=null;}
+  if(now-lastScroll>250)selectStop(now);message();
   const still=quiet||reduced.matches||control.value==='dock'||!!dialog()||interacting()||now-lastScroll<250;
   for(let i=0;i<actors.length;i++){
    const el=actors[i],p=i?g.woman:g.fox;
    el.style.width=g.size+'px';el.style.height=g.size+'px';el.style.transform='translate3d('+p.x+'px,'+(p.y-g.size)+'px,0)';
-   el.dataset.pose='sit';el.dataset.destination=i?'bottom-perch':'top-perch';
+   el.dataset.destination=i?'bottom-perch':'top-perch';
    el.dataset.buzz=String(i===0&&!still&&showingBuzz()&&dismissed!==messageKey);
    // A slow 12.8-second breeze every two minutes. CSS blends registered frames.
    const wind=(now-i*300)%120000-18000,step=Math.floor(wind/1600);
-   const activity=activityForSky(document.documentElement.dataset.sky),workStep=Math.floor(now/3200)%20;
-   const frame=still?0:i===1?(workStep<6?[0,1,2,3,2,1][workStep]:0):step>=0&&step<8?[0,1,2,3,2,3,1,0][step]:0;
+   const sky=document.documentElement.dataset.sky,activity=activityForSky(sky),workStep=Math.floor(now/3200)%20;
+   const speaking=!bubble.hidden&&bubble.dataset.speaker===(i?'woman':'fox');
+   const cue=speaking&&(bubble.dataset.topic!=='guide'||custom)?bubble.dataset.topic:'';
+   const action=companionAction(i,{day,sky,cue,speaking,unavailable:dayUnavailable});
+   if(actions[i]?.key!==action.key)actions[i]={key:action.key,since:now};
+   const pose=actionPose(action,now-actions[i].since,still||el.hidden);
+   // Unoccupied companions keep their original slow breeze / daily chores.
+   if(pose.sheet==='routine')pose.frame=still?0:workStep<6?[0,1,2,3,2,1][workStep]:0;
+   if(pose.sheet==='breeze')pose.frame=still?0:step>=0&&step<8?[0,1,2,3,2,3,1,0][step]:0;
+   const {sheet,row,frame}=pose;
+   el.dataset.action=action.key;el.dataset.sheet=sheet;
+   el.dataset.pose=sheet==='breeze'||sheet==='routine'||(sheet==='fox'&&row===3)?'sit':'stand';
+   const caption=$(i?'moss-woman-action':'moss-fox-action'),thought=$(i?'moss-woman-thought':'moss-fox-thought');
+   if(caption)caption.textContent=action.label;
+   if(thought){thought.textContent=action.mark;thought.hidden=!action.mark;}
    el.dataset.breeze=String(!still&&step>=0&&step<8);
-   const row=i===1?activity.row:0,position=(frame*100/3)+'% '+(i===1?row*100/3:0)+'%',key=row+'|'+frame;
-   if(i===1){el.dataset.activity=activity.key;el.setAttribute('aria-label','Changing Woman · '+activity.label+' · '+(document.documentElement.dataset.sky||'night'));}
-   el.dataset.still=String(still);el.dataset.frame=String(frame);
-   if(still||!frames[i]){
-    el.style.setProperty('--frame-a',position);el.style.setProperty('--frame-b',position);el.style.setProperty('--frame-blend','0');frames[i]={frame,key,upper:false};
+   const position=(frame*100/3)+'% '+(sheet==='gesture'?row*100:row*100/3)+'%',key=sheet+'|'+row+'|'+frame;
+   if(i===1)el.dataset.activity=activity.key;
+   const detail=i?(day?.woman?.headline||''):(day?.fox?.headline||'');
+   el.setAttribute('aria-label',(i?'Changing Woman':'Fox, your broker agent')+' · '+action.label+(detail?' · '+detail:''));
+   el.dataset.still=String(still||el.hidden);el.dataset.frame=String(frame);
+   if(still||!frames[i]||frames[i].sheet!==sheet){
+    el.style.setProperty('--frame-a',position);el.style.setProperty('--frame-b',position);el.style.setProperty('--frame-blend','0');frames[i]={frame,key,sheet,upper:false};
    }else if(frames[i].key!==key){
     // Replace the covered layer, then reveal it over 1.35s; the torso stays aligned.
     el.style.setProperty(frames[i].upper?'--frame-a':'--frame-b',position);frames[i].upper=!frames[i].upper;frames[i].frame=frame;frames[i].key=key;
     el.style.setProperty('--frame-blend',frames[i].upper?'1':'0');
    }
   }
+  landscape(g);
   timer=setTimeout(tick,still?1000:400);
  }
  function apply(){
   actors[0].hidden=control.value==='hide'||choice.value==='woman';actors[1].hidden=control.value==='hide'||choice.value==='fox';panel.hidden=control.value==='hide';
   const motionNote=$('moss-motion-note');
-  if(motionNote)motionNote.textContent=quiet?'Quiet desk: companions rest; trading continues.':reduced.matches?'Reduced motion: still poses.':'Fox is your broker agent and reports his trades. Changing Woman keeps the chores and reasons with him; she follows the sky: dawn water, daytime fiber work, dusk food sorting, night rest. Typing and dialogs pause motion.';
+  if(motionNote)motionNote.textContent=quiet?'Quiet desk: companions hold still; trading continues.':reduced.matches?'Reduced motion: still poses show what each companion is doing.':'Fox reads during research, watches, waits and opens his notebook for order updates. Changing Woman reads, thinks and gestures through her reasons, then returns to her daily chores. Typing and dialogs pause motion.';
   tick();
  }
  function save(){persist();dismissed='';apply();}
@@ -146,7 +197,9 @@
  });
  function canSpeak(i){const r=stage.getBoundingClientRect();return !quiet&&!document.hidden&&active&&!actors[i].hidden&&speech.checked&&!dialog()&&!interacting()&&!!perchLayout(r.width,r.height)&&performance.now()>=customUntil;}
  window.addEventListener('desk:day',e=>{
-  const d=e.detail||{},now=performance.now();day=d;
+  const d=e.detail||{},now=performance.now(),stamp=d.as_of==null?null:Date.parse(d.as_of);
+  if(d.ok===false||!d.fox||!d.woman||(stamp!==null&&(!Number.isFinite(stamp)||Date.now()-stamp>90000||stamp>Date.now()+5000))){day=null;dayUnavailable=true;foxEvent=null;note=null;tick();return;}
+  day=d;dayAt=now;dayUnavailable=false;
   const trade=d.fox&&d.fox.latest_trade;
   if(trade&&trade.id&&!seenTrades.has(trade.id)&&canSpeak(0)){seenTrades.add(trade.id);remember('desk_day_trades_v1',seenTrades);foxEvent={text:String(trade.text||'').slice(0,230)};foxEventUntil=now+20000;dismissed='';}
   const next=((d.woman&&d.woman.reasoning)||[]).find(n=>(n.level==='block'||n.level==='caution')&&n.key&&!seenNotes.has(n.key));
@@ -154,6 +207,7 @@
   if(d.fox&&d.fox.headline)actors[0].setAttribute('aria-label','Fox, your broker agent · '+d.fox.headline);
   tick();
  });
+ window.addEventListener('desk:day-unavailable',()=>{day=null;dayUnavailable=true;foxEvent=null;note=null;tick();});
  window.addEventListener('desk:attention',e=>{quiet=!!e.detail?.quiet;apply();});
  window.addEventListener('scroll',()=>{lastScroll=performance.now();customUntil=0;tick();},{passive:true});
  document.addEventListener('focusin',tick);document.addEventListener('focusout',tick);window.addEventListener('resize',tick);reduced.addEventListener('change',apply);

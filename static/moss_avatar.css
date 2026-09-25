@@ -26,6 +26,22 @@ body.unified-desk:has(.has-companion-habitat){padding-left:332px}
 @keyframes fox-buzz-listen{0%,100%{rotate:0deg;filter:drop-shadow(0 2px 2px #0003)}30%,55%{rotate:-2deg;filter:drop-shadow(0 0 6px #e6a39155)}75%{rotate:1deg}}
 .moss-sprite.moss-woman{--frame-a:0% 100%;--frame-b:0% 100%}
 .moss-sprite.moss-woman::before,.moss-sprite.moss-woman::after{background-image:url('/static/changing-woman-day-routine-v1.png');background-size:400% 400%}
+/* Reuse the original character art: hands, faces and props enact the current desk state. */
+.moss-sprite[data-sheet=fox]::before,.moss-sprite[data-sheet=fox]::after{background-image:url('/static/moss-fox-actions-v1.png');background-size:400% 400%}
+.moss-sprite[data-sheet=woman]::before,.moss-sprite[data-sheet=woman]::after{background-image:url('/static/changing-woman-atlas.png');background-size:400% 400%}
+.moss-sprite[data-sheet=gesture]::before,.moss-sprite[data-sheet=gesture]::after{background-image:url('/static/changing-woman-expressions-v1.png');background-size:400% 200%}
+.moss-sprite:is([data-sheet=fox],[data-sheet=woman],[data-sheet=gesture])::after{transition-duration:.3s}
+.moss-sprite[data-pose=stand]::before,.moss-sprite[data-pose=stand]::after{translate:0 -28%}
+.moss-action{position:absolute;left:calc(100% + 5px);top:30%;width:130px;font:11px/1.5 var(--sans,system-ui);color:var(--text);text-wrap:pretty;image-rendering:auto}
+.moss-woman .moss-action{left:auto;right:calc(100% + 5px);text-align:right;width:125px}
+.moss-thought{position:absolute;z-index:2;right:-5px;top:-10px;min-width:23px;height:23px;box-sizing:border-box;padding:0 5px;background:var(--panel2);border:1px solid var(--border);border-radius:50%;color:var(--text);font:600 13px/21px var(--sans,system-ui);text-align:center;image-rendering:auto;animation:moss-thought-rise 4.8s ease-in-out infinite}
+.moss-thought::after{content:'';position:absolute;bottom:-4px;left:3px;width:4px;height:4px;border-radius:50%;background:var(--panel2);border:1px solid var(--border)}
+.moss-sprite[data-pose=stand] .moss-thought{top:-18px}
+.moss-thought[hidden]{display:none}
+.moss-sprite[data-still=true],.moss-sprite[data-still=true] .moss-thought{animation:none}
+.moss-sprite[data-still=true]::after{transition:none}
+@keyframes moss-thought-rise{0%,100%{translate:0 0}50%{translate:0 -3px}}
+@media(prefers-reduced-motion:reduce){.moss-sprite,.moss-thought{animation:none!important}.moss-sprite::after{transition:none!important}}
 .sidebar-companions .moss-speech{position:absolute;bottom:122px;left:16px;right:16px;height:148px;box-sizing:border-box;overflow:auto;pointer-events:auto;padding:15px 17px;background:color-mix(in srgb,var(--panel2) 65%,var(--bg));border:1px solid color-mix(in srgb,var(--border) 65%,transparent);border-radius:22px 18px 25px 11px;box-shadow:0 5px 18px #0001;scrollbar-width:thin}
 .moss-speech[data-speaker=woman]{border-radius:18px 23px 10px 25px}
 .sidebar-companions .moss-speech[data-topic=buzz]{top:116px;bottom:auto;left:119px;right:12px;height:100px;padding:8px 10px;border-radius:14px 14px 14px 3px}

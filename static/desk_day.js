@@ -45,7 +45,7 @@
    const r=await fetch('/api/desk-day',{credentials:'same-origin',signal:controller.signal}),d=await r.json();
    if(!r.ok||!d.ok)throw Error(d.error||'Desk day unavailable');
    render(d);window.dispatchEvent(new CustomEvent('desk:day',{detail:d}));
-  }catch(e){set('dd-state','Unavailable');set('dd-fox-headline',String((e&&e.message)||'Desk day unavailable'));}
+  }catch(e){set('dd-state','Unavailable');set('dd-fox-headline',String((e&&e.message)||'Desk day unavailable'));window.dispatchEvent(new CustomEvent('desk:day-unavailable'));}
   finally{clearTimeout(stop);busy=false;if(active&&!document.hidden)timer=setTimeout(poll,POLL_MS);}
  }
  document.addEventListener('visibilitychange',()=>{clearTimeout(timer);if(!document.hidden)poll();});
