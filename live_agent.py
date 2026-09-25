@@ -344,6 +344,7 @@ class LiveAgent:
     def __init__(self, desk):
         self.desk = desk
         self.cycle_lock = threading.Lock()
+        self._worker = None
         self.phase = "not_configured"
         self.message = "Save a policy to prepare the live agent"
         self.exit_checks = {}
@@ -699,13 +700,39 @@ class LiveAgent:
     def tick(self):
         if not self.cycle_lock.acquire(blocking=False):
             return
+        self._run_tick()
+
+    def schedule_tick(self):
+        """Reserve one cycle before launch; leave broker reconciliation responsive."""
+        if not self.cycle_lock.acquire(blocking=False):
+            return False
+        try:
+            cfg = self.desk.load_config()
+            saved = cfg.get("live_agent")
+            if not saved or not saved.get("enabled") or cfg.get("mode") != "auto_live" or not cfg.get("session_active"):
+                self.phase = "paused" if saved else "not_configured"
+                self.message = "Agent paused; broker reconciliation continues" if saved else "Save a policy to prepare the live agent"
+                self.cycle_lock.release()
+                return False
+            self._worker = threading.Thread(target=self._run_tick, name="live-agent-cycle", daemon=True)
+            self._worker.start()
+            return True
+        except Exception:
+            self.phase, self.message = "error", "Could not start the agent check; the scheduler will retry"
+            self.cycle_lock.release()
+            return False
+
+    def _run_tick(self):
         try:
             self._tick()
         except Exception as exc:
             # Never retry an uncertain broker submission. Its durable intent is
             # reconciled by the existing background worker before another cycle.
             self.phase, self.message = "error", type(exc).__name__+": "+str(exc)[:180]
-            self.desk.append_journal("live_agent_error", {"error": self.message})
+            try:
+                self.desk.append_journal("live_agent_error", {"error": self.message})
+            except Exception:
+                self.message += "; activity log could not be written"
         finally:
             self.cycle_lock.release()
 
@@ -825,6 +852,12 @@ class LiveAgent:
             self.record("discarded", "Settings or session changed during research")
             return
         if not signal:
+            # Only an explicit completed WATCH/AVOID screen earns a fast retry.
+            # Providers also return None on failures; those retain the durable
+            # attempt and full interval reserved before I/O.
+            if notes.get("error") or notes.get("verdict") not in ("WATCH", "AVOID"):
+                self.record("blocked", "Market data or setup assessment unavailable for "+symbol+"; retrying after the saved research interval")
+                return
             self._refund_screen(cfg, policy)
             why = ""
             if notes.get("verdict"):

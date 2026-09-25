@@ -224,9 +224,9 @@ def test_failed_and_empty_scans_consume_one_interval(live, monkeypatch, fails):
     monkeypatch.setattr(desk, "generate_scan_signal", scan)
     live.service.tick(); live.service.tick(); agent.LiveAgent(desk).tick()
     assert live.calls == ["TEST"] and not live.sent
-    # A provider failure uses up the cycle; a screen with no PASS made no model
-    # call, so it is refunded and the next symbol comes up after SCREEN_GAP_SEC.
-    assert live.service.status()["today"]["research"] == (1 if fails else 0)
+    # An empty response is not evidence of a completed WATCH/AVOID screen.
+    # Only an explicit completed verdict is eligible for a refunded fast retry.
+    assert live.service.status()["today"]["research"] == 1
 
 
 def test_partial_limit_fill_remains_tracked_and_cannot_repeat(live, monkeypatch):

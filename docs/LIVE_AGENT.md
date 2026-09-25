@@ -61,7 +61,7 @@ The AI cost limit checks recorded live-agent estimated cost; paper research is c
 - `POST /api/live-agent/start`: exact `{revision, identity, confirm}`; explicit operator activation.
 - `POST /api/live-agent/pause`: stop future agent work; does not cancel/flatten.
 
-The existing background worker reconciles broker orders before running the agent. When a policy exists, it owns scheduled live research even while paused; the legacy scanner cannot silently take over. Local Moss paper research remains independent. Manual stock tickets still use their own explicit order review in `live_manual` mode.
+The existing background worker reconciles broker orders before scheduling the agent. The agent claims its single-cycle lock before launching a worker, so slow model or data requests do not hold up subsequent reconciliation checks. An occupied cycle is never duplicated or replaced. Submission and reconciliation still share the existing broker lock; unresolved orders and changed settings are checked again before submission. When a policy exists, it owns scheduled live research even while paused; the legacy scanner cannot silently take over. Local Moss paper research remains independent. Manual stock tickets still use their own explicit order review in `live_manual` mode.
 
 ## Validation boundary
 

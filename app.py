@@ -3061,6 +3061,8 @@ def generate_scan_signal(
 
     if errors:
         append_journal("scan_errors", {"errors": errors[:10]})
+        if notes is not None:
+            notes["error"] = "Market data was unavailable; no completed setup assessment"
     return None
 
 
@@ -5402,7 +5404,9 @@ def _bg_loop() -> None:
     while not _bg_stop.wait(timeout=5):
         try:
             _reconcile_pending_broker_orders()
-            _live_agent.tick()
+            # A slow provider/model call must not delay the next reconciliation.
+            # The agent reserves its single-worker lock before launching.
+            _live_agent.schedule_tick()
             cfg = None
             should = False
             with _lock:
@@ -5455,7 +5459,10 @@ def _bg_loop() -> None:
                         sig.update(workspace="paper", paper_research=True)
                     ingest_signal(sig, expected_config=cfg)
         except Exception as exc:  # noqa: BLE001
-            append_journal("bg_error", {"error": str(exc)})
+            try:
+                append_journal("bg_error", {"error": str(exc)})
+            except Exception:
+                app.logger.exception("Background cycle failed and its journal could not be written")
 
 
 _bg_thread: threading.Thread | None = None
@@ -6366,12 +6373,17 @@ def _state_aux_snapshot(cfg: dict[str, Any], watchlist: list[str], focus: str | 
         if not fresh and not _STATE_AUX.get("refreshing"):
             _STATE_AUX["key"] = key
             _STATE_AUX["refreshing"] = True
-            threading.Thread(
-                target=_refresh_state_aux_safe,
-                args=(dict(cfg), list(watchlist), focus),
-                daemon=True,
-                name="state-aux-refresh",
-            ).start()
+            try:
+                threading.Thread(
+                    target=_refresh_state_aux_safe,
+                    args=(dict(cfg), list(watchlist), focus),
+                    daemon=True,
+                    name="state-aux-refresh",
+                ).start()
+            except Exception:
+                # Optional context cannot take /api/state down or retain a
+                # phantom worker. Preserve the cache and let the next poll retry.
+                _STATE_AUX["refreshing"] = False
         cached = (_STATE_AUX.get("data") or {}) if _STATE_AUX.get("data_key") == key else {}
     return dict(cached)
 

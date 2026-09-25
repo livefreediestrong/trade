@@ -297,7 +297,12 @@ def start(
             with _lock:
                 _state["running"] = False
 
-    threading.Thread(target=worker, daemon=True, name="backtest").start()
+    try:
+        threading.Thread(target=worker, daemon=True, name="backtest").start()
+    except Exception:
+        with _lock:
+            _state.update(running=False, message="Could not start the test worker. Try again.")
+            return False, _state["message"]
     return True, "started"
 
 

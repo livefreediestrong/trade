@@ -133,7 +133,13 @@ class HeadlineDesk:
                 return False
             self.busy = True
             self.last_attempt = time.monotonic()
-        threading.Thread(target=self._work, name="companion-headlines", daemon=True).start()
+        try:
+            threading.Thread(target=self._work, name="companion-headlines", daemon=True).start()
+        except Exception:
+            with self.lock:
+                self.busy = False
+                self.error = "Could not start headline refresh; retrying after the refresh interval."
+            return False
         return True
 
     def _work(self):

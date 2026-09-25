@@ -1355,7 +1355,12 @@ def kick_background_refresh(
             with _refresh_lock:
                 _refresh_inflight = False
 
-    threading.Thread(target=worker, name="buzz-refresh", daemon=True).start()
+    try:
+        threading.Thread(target=worker, name="buzz-refresh", daemon=True).start()
+    except Exception:
+        with _refresh_lock:
+            _refresh_inflight = False
+        return False
     return True
 
 

@@ -126,6 +126,7 @@ class Companion:
         self.last_attempt = 0.0
         self.stop = threading.Event()
         self._threads = {}
+        self.scheduler_errors = {}
         self.paper = PaperWorkday(desk)
         self.trades = TradeJournal(desk)
         from agent_review import AgentReview
@@ -159,6 +160,7 @@ class Companion:
             now = now_utc()
             return {"ok": True, "settings": saved["settings"], "plan": saved["plan"],
                     "busy": self.busy, "error": self.last_error, "market_open": paper_loop.is_rth(now),
+                    "scheduler_errors": dict(self.scheduler_errors),
                     "next_session": next_session(now), "briefs": saved.get("briefs", [])[:30],
                     "notebook_count": len(saved.get("briefs", [])), "memory": memory_summary(self.events()),
                     "paper_workday": self.paper.status(), "actual_trades": self.trades.status(),
@@ -189,7 +191,13 @@ class Companion:
             self.last_attempt = time.monotonic()
             self.busy = True
             self.last_error = None
-        threading.Thread(target=self._work, args=(scheduled,), name="moss-research", daemon=True).start()
+        try:
+            threading.Thread(target=self._work, args=(scheduled,), name="moss-research", daemon=True).start()
+        except Exception:
+            with self.lock:
+                self.busy = False
+                self.last_error = "Could not start notebook research; retry after the cooldown."
+            return False
         return True
 
     def _work(self, scheduled=False):
@@ -317,12 +325,16 @@ class Companion:
     def start(self):
         def loop():
             while not self.stop.wait(30):
-                try:
-                    self.news.refresh()
-                    self.review.tick()
-                    self.run(scheduled=True)
-                except Exception:
-                    self.last_error = "Notebook unavailable; scheduled research paused."
+                # Optional feeds/reviews cannot starve the daily notebook.
+                for name, job in (("news", self.news.refresh), ("review", self.review.tick),
+                                  ("notebook", lambda: self.run(scheduled=True))):
+                    try:
+                        job()
+                        with self.lock:
+                            self.scheduler_errors.pop(name, None)
+                    except Exception as exc:
+                        with self.lock:
+                            self.scheduler_errors[name] = f"Scheduled {name} unavailable ({type(exc).__name__}); retrying on the next check."
         def paper_workday():
             while not self.stop.wait(5):
                 try:
@@ -371,7 +383,7 @@ def register(app, desk):
     @bp.post("/api/companion/research")
     def research():
         started = service.run()
-        return jsonify(ok=started, error=None if started else "Research is running or cooling down for one minute."), 202 if started else 409
+        return jsonify(ok=started, error=None if started else service.last_error or "Research is running or cooling down for one minute."), 202 if started else 409
 
     @bp.post("/api/companion/settings")
     def settings():

@@ -554,8 +554,13 @@ class PaperLoop:
                 return
             self._stop.clear()
             self._running_flag = True
-            self._thread = threading.Thread(target=self._run, name="paper-loop", daemon=True)
-            self._thread.start()
+            try:
+                self._thread = threading.Thread(target=self._run, name="paper-loop", daemon=True)
+                self._thread.start()
+            except Exception:
+                self._running_flag = False
+                self._last_error = "Could not start the paper loop; try starting it again."
+                raise
 
     def stop(self) -> None:
         self._running_flag = False
