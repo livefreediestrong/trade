@@ -3,7 +3,7 @@
  'use strict';
  function perchLayout(width,height,scale='comfortable'){
   if(width<150||height<350)return null;
-  const size=height<650?({compact:68,comfortable:84,large:92}[scale]||84):({compact:88,comfortable:112,large:128}[scale]||112);
+  const size=height<650?({compact:68,comfortable:84,large:92}[scale]||84):({compact:104,comfortable:128,large:140}[scale]||112);
   return {width,height,size,fox:{x:18,y:height<650?194:224},woman:{x:width-size-18,y:height-12}};
  }
  function activityForSky(sky){return ({dawn:{row:0,key:'water',label:'Preparing water'},day:{row:1,key:'weave',label:'Working plant fibers'},dusk:{row:2,key:'gathered-food',label:'Sorting gathered food'},night:{row:3,key:'rest',label:'Resting'}})[sky]||{row:3,key:'rest',label:'Resting'};}
@@ -24,6 +24,9 @@
    if(state==='watching')return action('watching','On watch','fox',0,'',[0,1,0,2,3,1]);
    return action('waiting',state==='waiting'?'Waiting for open':'At the desk','breeze',0,'',[0,1,2,3,2,1]);
   }
+  if(cue==='sources')return day?.research?.busy||day?.research?.fresh_sources>0?
+   action('sourcing',day.research.busy?'Refreshing source context':'Evaluating source updates','woman',2,'…'):
+   action('sources-unavailable','Waiting for source data','woman',2,'?',[0]);
   if(cue==='news')return action('reading-news','Reading the news','woman',2,'…');
   if(cue==='guide')return action('explaining','Explaining','gesture',0,'',[0,1,2,2,3,0]);
   const reasoning=(day?.woman?.reasoning||[]).find(n=>n.level==='block'||n.level==='caution');
@@ -73,7 +76,7 @@
  let characterSize=['compact','comfortable','large'].includes(saved.size)?saved.size:'comfortable';
  let frequency=['gentle','balanced','lively'].includes(saved.frequency)?saved.frequency:'balanced',scene=null,sceneSince=0;
  let timer=null,active=true,hovered=false,quiet=document.documentElement.dataset.deskQuiet==='true',lastScroll=-Infinity;
- let stop=stops[0],custom='',customUntil=0,messageKey='',dismissed='';
+ let stop=stops[0],custom='',customUntil=0,messageKey='',dismissed='',messageSince=-Infinity,messageState='';
  let buzz='',buzzUntil=0,lastBuzzAt=-Infinity;
  let news=null,newsUntil=0,lastNewsAt=-Infinity;
  // Fox is the broker agent; Changing Woman keeps the chores and reasons with him (desk:day).
@@ -84,8 +87,8 @@
  const showingBuzz=()=>!!buzz&&performance.now()<buzzUntil&&!custom&&!actors[0].hidden;
  const showingFoxEvent=()=>!!foxEvent&&performance.now()<foxEventUntil&&!custom&&!actors[0].hidden;
  const showingNote=()=>!!note&&performance.now()<noteUntil&&!custom&&!quiet&&!actors[1].hidden;
- const dayMode=()=>!custom&&!!day&&!!day.fox&&day.fox.state!=='off'&&performance.now()-lastScroll>30000;
- function womanLine(){const top=((day&&day.woman&&day.woman.reasoning)||[]).find(n=>n.level==='block'||n.level==='caution');return top?top.text:((day&&day.woman&&day.woman.headline)||'');}
+ const dayMode=()=>!custom&&!!day&&!!day.fox&&(day.fox.state!=='off'||!!day.research)&&performance.now()-lastScroll>30000;
+ function womanLine(){const top=((day&&day.woman&&day.woman.reasoning)||[]).find(n=>n.level==='block'||n.level==='caution');return top?top.text:(day?.research?.summary||day?.woman?.headline||'');}
  const showingNews=()=>!!news&&performance.now()<newsUntil&&!custom&&!quiet&&!actors[1].hidden&&Date.now()-news.publishedTs<=36*3600000&&Date.now()-news.checkedAt<=900000;
  const dialog=()=>document.querySelector('dialog[open],.modal:not(.hidden):not([hidden])');
  const interacting=()=>hovered||document.activeElement?.matches('input,select,textarea,[contenteditable="true"]')||bubble.contains(document.activeElement);
@@ -98,21 +101,32 @@
  function message(){
   const isTrade=showingFoxEvent(),isBuzz=!isTrade&&showingBuzz(),isNote=!isTrade&&!isBuzz&&showingNote(),isNews=!isTrade&&!isBuzz&&!isNote&&showingNews();
   const isDay=!isTrade&&!isBuzz&&!isNote&&!isNews&&dayMode();
-  const alternate=actors[1].hidden?0:actors[0].hidden?1:Math.floor(performance.now()/20000)%2;
+  const alternate=actors[1].hidden?0:actors[0].hidden?1:Math.floor(performance.now()/45000)%2;
   const speaker=isTrade||isBuzz?0:isNote||isNews?1:isDay?alternate:!actors[1].hidden&&(actors[0].hidden||stops.indexOf(stop)%2===0)?1:0;
   const dayText=isDay?(speaker?womanLine():day.fox.headline):'';
-  const text=isTrade?foxEvent.text:isBuzz?buzz:isNote?note.text:isNews?news.text:(isDay&&dayText)?dayText:custom||stop[speaker?3:2];
-  const toDay=isTrade||isNote||(isDay&&!!dayText),target=isBuzz?'buzz-panel':isNews?news.url:toDay?'desk-day':stop[0],key=speaker+'|'+target+'|'+text;
+  const text=dayUnavailable?'Current desk information is unavailable. I will wait for a fresh update before describing activity.':isTrade?foxEvent.text:isBuzz?buzz:isNote?note.text:isNews?news.text:(isDay&&dayText)?dayText:custom||stop[speaker?3:2];
+  const isSources=isDay&&speaker===1&&!!day?.research&&!((day.woman?.reasoning||[]).some(n=>n.level==='block'||n.level==='caution'));
+  const toDay=isTrade||isNote||(isDay&&!!dayText),target=isBuzz?'buzz-panel':isNews?news.url:isSources?'companion-news':toDay?'desk-day':stop[0],key=speaker+'|'+target+'|'+text;
+  const now=performance.now(),state=dayUnavailable?'unavailable':day?.fox?.state||'',critical=dayUnavailable||['blocked','reconciling'].includes(state);
+  const readingMs=Math.min(32000,Math.max(18000,String($('moss-speech-text').textContent||'').length*65));
+  // Keep a complete thought readable. New order/risk/status changes remain immediate.
+  if(key!==messageKey&&messageKey&&!custom&&!isTrade&&!isBuzz&&!isNote&&!isNews&&!critical&&state===messageState&&
+     (bubble.dataset.topic!=='news'||showingNews())&&
+     (interacting()||now-messageSince<readingMs)&&!bubble.hidden)return;
   if(key!==messageKey){
-   messageKey=key;$('moss-speech-text').textContent=text;
-   const page={'desk-overview':'overview','desk-day':'overview','moss-desk':'paper','desk-paper':'paper','desk-options':'paper','desk-research':'research','research-studio':'research','buzz-panel':'research','desk-settings':'settings'}[target]||'auto';
+   messageSince=now;messageState=state;messageKey=key;$('moss-speech-text').textContent=text;
+   const brief=scenes?.briefFor(speaker,day)||{};
+   if($('moss-speech-principle'))$('moss-speech-principle').textContent=isNews?'Read the facts. Test the implication.':isTrade?'Record first. Reconcile next.':brief.principle||'Evidence before conviction.';
+   if($('moss-speech-next')){$('moss-speech-next').textContent=isNews?(news.next||'Check the original source and what would disprove the thesis.'):isTrade?'This is the recorded broker update; the ledger determines what actually filled.':isBuzz?'Attention is a research lead. It does not establish an edge.':brief.next||'';}
+   if($('moss-speech-meta'))$('moss-speech-meta').textContent=isNews?'App-written research lens · source below':day?.as_of?'Desk update · '+new Date(day.as_of).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'})+' ET':'App-written desk guidance';
+   const page={'desk-overview':'overview','desk-day':'overview','moss-desk':'paper','desk-paper':'paper','desk-options':'paper','desk-research':'research','research-studio':'research','buzz-panel':'research','companion-news':'research','desk-settings':'settings'}[target]||'auto';
    const a=$('moss-speech-link');a.href=isNews?news.url:($(target)?'':'/desk/'+page)+'#'+target;a.target=isNews?'_blank':'_self';a.rel=isNews?'noopener noreferrer':'';
-   a.textContent=isBuzz?'Inspect buzz':isNews?news.source+' · '+new Date(news.publishedAt).toLocaleString()+' ↗':toDay?'Today at the desk':'Go to this section';
+   a.textContent=isBuzz?'Inspect buzz':isNews?news.source+' · '+new Date(news.publishedAt).toLocaleString()+' ↗':isSources?'Inspect source coverage':toDay?'Today at the desk':'Go to this section';
    $('moss-destination').textContent=isTrade?'Fox · broker agent':isBuzz?'Fox · Market buzz':isNote?'Changing Woman · thinking it through':isNews?'Changing Woman · News commentary':
-    toDay?(speaker?'Changing Woman · chores & reasoning':'Fox · broker agent'):(speaker?'Changing Woman':'Fox')+' · '+stop[1];
+    toDay?(speaker?'Changing Woman · evidence & context':'Fox · broker agent'):(speaker?'Changing Woman':'Fox')+' · '+stop[1];
    if($('moss-news-headline')){$('moss-news-headline').hidden=!isNews;$('moss-news-headline').textContent=isNews?news.title:'';}
   }
-  bubble.dataset.topic=isTrade?'trade':isBuzz?'buzz':isNote?'reasoning':isNews?'news':isDay?'day':'guide';
+  bubble.dataset.topic=dayUnavailable?'unavailable':isTrade?'trade':isBuzz?'buzz':isNote?'reasoning':isNews?'news':isSources?'sources':isDay?'day':'guide';
   bubble.dataset.speaker=speaker?'woman':'fox';bubble.hidden=!speech.checked||control.value==='hide'||dismissed===key||(quiet&&!custom)||!!dialog();
  }
  function landscape(g){
@@ -149,9 +163,9 @@
    const cue=speaking&&(bubble.dataset.topic!=='guide'||custom)?bubble.dataset.topic:'';
    const action=companionAction(i,{day,sky,cue,speaking,unavailable:dayUnavailable});
    const actionKey=action.key+'|'+action.label;if(actions[i]?.key!==actionKey)actions[i]={key:actionKey,since:now};
-   const elapsed=now-actions[i].since,restBeat=elapsed%period>16000&&!['reasoning','news','trade','buzz','guide'].includes(cue);
+   const elapsed=now-actions[i].since,restBeat=elapsed%period>16000&&!['reasoning','news','sources','trade','buzz','guide'].includes(cue);
    let pose=actionPose(action,elapsed,still||el.hidden||restBeat);
-   const priority=!bubble.hidden&&['trade','buzz','news'].includes(bubble.dataset.topic)||!!custom;
+   const priority=!bubble.hidden&&['trade','buzz','news','sources'].includes(bubble.dataset.topic)||!!custom;
    const partnered=!actors[0].hidden&&!actors[1].hidden&&!dayUnavailable&&!priority;
    const sceneFrame=partnered?scenes?.scenePose(scene,i,now-sceneSince,frequency,still):null;
    if(sceneFrame)pose=sceneFrame;
@@ -164,7 +178,7 @@
    const caption=$(i?'moss-woman-action':'moss-fox-action'),thought=$(i?'moss-woman-thought':'moss-fox-thought');
    if(caption)caption.textContent=sceneFrame?.label||action.label;
    el.dataset.speaking=String(speaking);el.dataset.expression=sceneFrame?.expression||(i?'composed':action.key==='researching'?'curious':'attentive');
-   const prop=scenes?.propFor(i,action,day)||'',propNode=$(i?'moss-woman-prop':'moss-fox-prop');
+   const prop=(sceneFrame?.expression==='listening'?'':scenes?.propFor(i,action,day))||'',propNode=$(i?'moss-woman-prop':'moss-fox-prop');
    if(propNode&&prop&&el.dataset.prop!==prop)propNode.setAttribute('href','/static/companion-props.svg#'+prop);el.dataset.prop=prop;
    if(thought){
     const info=scenes?.thoughtFor(i,{day,action,news:showingNews()?news:null,trade:foxEvent,unavailable:dayUnavailable});
@@ -172,16 +186,18 @@
     if(info){thought.href=info.href;thought.title=String(info.detail||'');thought.setAttribute('aria-label',(i?'Changing Woman':'Fox')+': '+info.text+'. '+(info.detail||''));thought.target=/^https:\/\//.test(info.href)?'_blank':'_self';thought.rel=thought.target==='_blank'?'noopener noreferrer':'';}
    }
    el.dataset.breeze=String(!still&&step>=0&&step<8);
-   const position=(frame*100/3)+'% '+(sheet==='gesture'?row*100:row*100/3)+'%',key=sheet+'|'+row+'|'+frame;
    if(i===1)el.dataset.activity=activity.key;
    const detail=i?(day?.woman?.headline||''):(day?.fox?.headline||'');
    el.setAttribute('aria-label',(i?'Changing Woman':'Fox, your broker agent')+' · '+(sceneFrame?.label||action.label)+(detail?' · '+detail:''));
    el.dataset.still=String(still||el.hidden||restBeat&&!sceneFrame);el.dataset.frame=String(frame);
-   if(still||!frames[i]||frames[i].sheet!==sheet){
-    el.style.setProperty('--frame-a',position);el.style.setProperty('--frame-b',position);el.style.setProperty('--frame-blend','0');frames[i]={frame,key,sheet,upper:false};
-   }else if(frames[i].key!==key){
-    // Replace the covered layer, then reveal it over 1.35s; the torso stays aligned.
-    el.style.setProperty(frames[i].upper?'--frame-a':'--frame-b',position);frames[i].upper=!frames[i].upper;frames[i].frame=frame;frames[i].key=key;
+   const portrait=scenes?.portraitFor(i,action,sceneFrame,speaking?now-messageSince:elapsed,still)||{row:i,frame:0,expression:'attentive'};
+   const faceKey=portrait.row+'|'+portrait.frame,facePosition=(portrait.frame*100/3)+'% '+(portrait.row*100)+'%';
+   // Crossfade both transparent layers; never replace both at a sheet boundary.
+   el.dataset.expression=portrait.expression;
+   if(!frames[i]){
+    el.style.setProperty('--frame-a',facePosition);el.style.setProperty('--frame-b',facePosition);el.style.setProperty('--frame-blend','0');frames[i]={key:faceKey,upper:false};
+   }else if(frames[i].key!==faceKey){
+    el.style.setProperty(frames[i].upper?'--frame-a':'--frame-b',facePosition);frames[i].upper=!frames[i].upper;frames[i].key=faceKey;
     el.style.setProperty('--frame-blend',frames[i].upper?'1':'0');
    }
   }

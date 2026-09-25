@@ -39,7 +39,7 @@
  }
  function propFor(actor,action,day){
   if(!actor)return ({researching:'chart',reconciling:'clock',waiting:'clock','order-update':'receipt',blocked:'lens',explaining:'journal',listening:'lens'})[action.key]||'';
-  if(action.key==='reading-news')return 'news';
+  if(['reading-news','sourcing','sources-unavailable'].includes(action.key))return 'news';
   if(action.key==='checking')return ({calendar:'calendar',news:'news',journal:'journal',reconcile:'receipt',wsb:'news'})[chore(day)?.key]||'journal';
   if(action.key==='thinking')return /^(event|earnings)/.test(caution(day)?.key||'')?'calendar':'journal';
   return ['reading','explaining'].includes(action.key)?'journal':'';
@@ -55,11 +55,47 @@
     detail:day.fox?.headline||'Read the current agent status.',href:'/desk/overview#dd-fox-headline'};
   }
   if(action.key==='reading-news'&&news)return {text:'Read this headline',detail:news.title,href:/^https:\/\//i.test(news.url||'')?news.url:'/desk/paper#companion-news'};
+  if(['sourcing','sources-unavailable'].includes(action.key))return {text:'Inspect source coverage',detail:day.research?.summary||'Current source status',href:'/desk/research#companion-news'};
   const note=caution(day),task=chore(day);
   if(note)return {text:/^(event|earnings)/.test(note.key)?'Check the timing with me':'Read my caution',detail:note.text,href:source('note',note.key)};
   if(task)return {text:task.state==='attention'?'This task needs attention':'See the task I am checking',detail:task.label+': '+task.detail,href:source('chore',task.key)};
   return {text:'See my desk notes',detail:day.woman?.headline||'Read the current chores and reasoning.',href:'/desk/overview#dd-woman-headline'};
  }
- const api={PERIOD,anchor,source,sceneFor,scenePose,propFor,thoughtFor};
+ // One expression atlas keeps the face in the same place between every activity.
+ // A speaking expression is a brief beat, not a perpetual open-mouth loop.
+ function portraitFor(actor,action,scene,elapsed,still){
+  const cautionKeys=['blocked','unavailable','sources-unavailable','holding','reconciling'];
+  const cautious=cautionKeys.includes(action.key)||scene?.expression==='raised-brow';
+  const focused=['researching','reading','reading-news','sourcing','thinking','checking'].includes(action.key);
+  const speaking=action.speaking&&!still&&elapsed>=2400&&elapsed<7200&&!cautious;
+  return {row:actor?1:0,frame:cautious?2:speaking?3:focused?1:0,
+   expression:cautious?'cautious':speaking?'explaining':scene?.expression==='listening'?'listening':focused?'thoughtful':'attentive'};
+ }
+ function briefFor(actor,day){
+  if(!day)return {principle:'Current evidence first.',next:'Waiting for a fresh desk update.'};
+  if(!actor){
+   const state=day.fox?.state;
+   const rules={
+    researching:['Earn the trade.','I am checking the setup; the decision still needs costs, risk and an invalidation level.'],
+    blocked:['Protect the account first.','I will reconsider when the recorded blocker clears. No forced trade.'],
+    reconciling:['Confirm before acting again.','I need the broker outcome before another decision. An acknowledgement is not a fill.'],
+    holding:['Patience is a position.','I am holding off until the recorded conditions allow another review.'],
+    watching:['Selectivity over activity.','A new idea must justify its downside and costs. Passing is a valid decision.'],
+    waiting:['Prepare, then act.','I will follow the saved session and policy when the market window opens.'],
+    resting:['Protect attention as well as capital.','The desk is resting; I will not describe it as active research.'],
+    off:['Authority starts with your policy.','Automatic trading is off. Research commentary does not authorize orders.'],
+    done:['Judge the process, then the result.','Review recorded outcomes after costs before changing a rule.']
+   };
+   const [principle,next]=rules[state]||['Evidence before conviction.','Waiting for the next recorded agent update.'];
+   return {principle,next};
+  }
+  const n=caution(day),task=chore(day),r=day.research;
+  if(n)return {principle:'Challenge the thesis kindly.',next:'I want the timing and contrary evidence clear before Fox commits.'};
+  if(r?.fresh_sources>0)return {principle:'Curiosity with receipts.',next:`Feeds refresh about every ${Math.round((r.refresh_seconds||300)/60)} minutes while the app runs. I separate reported facts from a hypothesis; Fox still checks the setup.`};
+  if(task)return {principle:'Uncertainty belongs in the open.',next:task.state==='attention'?'This source or task needs attention; I will keep its limitation visible.':'I am following the recorded task, then checking what changed.'};
+
+  return {principle:'A strong idea can survive a question.',next:'I compare sources, look for disconfirming evidence and keep the notebook honest.'};
+ }
+ const api={PERIOD,anchor,source,sceneFor,scenePose,propFor,thoughtFor,portraitFor,briefFor};
  if(typeof module==='object'&&module.exports)module.exports=api;else window.DeskCompanionScenes=api;
 })();

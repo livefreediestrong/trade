@@ -7,7 +7,7 @@
   <link rel="icon" href="/static/nadzeel-mark.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/static/app.css" />
   <link rel="stylesheet" href="/static/desk_attention.css?v=autonomous-20260925-1" />
-  <link rel="stylesheet" href="/static/moss_avatar.css?v=autonomous-20260925-1" />
+  <link rel="stylesheet" href="/static/moss_avatar.css?v=expressions-20260925-2" />
   <link rel="stylesheet" href="/static/market_operations.css" />
   <link rel="stylesheet" href="/static/nadzeel.css?v=moonlit-20260924-1" />
   <link rel="stylesheet" href="/static/desk_guidance.css?v=moonlit-20260924-1" />
@@ -53,14 +53,14 @@
   <span class="nav-caption">SETTINGS</span>
   <a href="#desk-settings">Settings &amp; journal</a>
   <div class="nav-bottom">
-    <section class="scene-controls desk-module"><h3 class="module-title">Scene &amp; motion</h3>
+    <details class="scene-controls desk-module scene-preferences"><summary>Appearance <span aria-hidden="true">⌄</span></summary><div class="scene-preferences-body">
       <label class="scene-motion-label"><input id="desk-scene-rotate" type="checkbox" checked /> Rotate scenery</label>
       <label for="desk-sky">Desert sky</label><select id="desk-sky"><option value="auto">Follow Eastern time</option><option value="dawn">Dawn</option><option value="day">Day</option><option value="dusk">Dusk</option><option value="night">Night</option></select>
       <label for="desk-landscape">Landscape treatment</label><select id="desk-landscape"><option value="banded">Banded sky</option><option value="clouds">Sculpted clouds</option><option value="earth">Earth &amp; grain</option></select>
       <label class="scene-motion-label"><input id="desk-scene-motion" type="checkbox" checked /> Gentle scene motion</label>
       <button id="desk-sky-preview" type="button" class="btn ghost sm" aria-pressed="false">Preview a day · 12s</button>
       <span id="scene-motion-note" class="scene-note" role="status">Scenery rotates gently</span>
-    </section>
+    </div></details>
     <small id="desk-clock"></small>
   </div>
   </div>
@@ -98,7 +98,7 @@
   <script src="/static/live_ticket.js?v=review10-20260924-1"></script>
   <script src="/static/desk_attention.js?v=autonomous-20260925-1"></script>
   {% if config.get('COMPANION_AVAILABLE') %}<script src="/static/paper_workday_ui.js?v=automation-20260925-1"></script>{% endif %}
-  {% if config.get('COMPANION_AVAILABLE') %}<script src="/static/news_quips.js?v=news-20260924-1"></script><script src="/static/companion_scenes.js?v=autonomous-20260925-1"></script><script src="/static/moss_avatar.js?v=autonomous-20260925-1"></script><script src="/static/companion.js?v=automation-20260925-1"></script><script src="/static/news_desk.js?v=autonomous-20260925-1"></script>{% endif %}
+  {% if config.get('COMPANION_AVAILABLE') %}<script src="/static/news_quips.js?v=expressions-20260925-2"></script><script src="/static/companion_scenes.js?v=expressions-20260925-2"></script><script src="/static/moss_avatar.js?v=expressions-20260925-2"></script><script src="/static/companion.js?v=automation-20260925-1"></script><script src="/static/news_desk.js?v=autonomous-20260925-1"></script>{% endif %}
   <script src="/static/app.js?v=fox-20260925-1"></script>
   <script src="/static/market_today.js?v=tidy-20260924-1"></script>
   <script src="/static/market_watch.js?v=tidy-20260924-1"></script>

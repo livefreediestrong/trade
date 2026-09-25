@@ -47,14 +47,14 @@
     <a href="/desk/research">Research</a>
   {% endif %}
   <div class="nav-bottom">
-    <section class="scene-controls desk-module"><h3 class="module-title">Scene</h3>
+    <details class="scene-controls desk-module scene-preferences"><summary>Appearance <span aria-hidden="true">⌄</span></summary><div class="scene-preferences-body">
       <label class="scene-motion-label"><input id="desk-scene-rotate" type="checkbox" checked /> Rotate scenery</label>
       <label for="desk-sky">Desert sky</label><select id="desk-sky"><option value="auto">Follow Eastern time</option><option value="dawn">Dawn</option><option value="day">Day</option><option value="dusk">Dusk</option><option value="night">Night</option></select>
       <label for="desk-landscape">Landscape</label><select id="desk-landscape"><option value="banded">Banded sky</option><option value="clouds">Sculpted clouds</option><option value="earth">Earth &amp; grain</option></select>
       <label class="scene-motion-label"><input id="desk-scene-motion" type="checkbox" checked /> Gentle motion</label>
       <button id="desk-sky-preview" type="button" class="btn ghost sm" aria-pressed="false">Preview day · 12s</button>
       <span id="scene-motion-note" class="scene-note" role="status">Scenery rotates gently</span>
-    </section>
+    </div></details>
     <small id="desk-clock"></small>
   </div>
   </div>

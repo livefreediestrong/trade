@@ -34,3 +34,17 @@ for(const width of[270,300])for(const height of[350,600,720,1000])for(const scal
  const g=A.perchLayout(width,height,scale);for(const p of[g.fox,g.woman])assert.ok(p.x>=0&&p.x+g.size<=width&&p.y-g.size>=0&&p.y<=height);
 }
 console.log('Autonomous scenes: actual state precedence, finite passes, current evidence links, props, reduced motion and geometry passed.');
+for(const actor of [0,1]){
+ for(const key of ['blocked','unavailable','reconciling'])assert.equal(S.portraitFor(actor,{key,speaking:true},null,4000,false).frame,2,'a blocker does not turn into a cheerful speaking expression');
+ const action={key:'researching',speaking:true};
+ assert.equal(S.portraitFor(actor,action,null,0,false).frame,1);
+ assert.equal(S.portraitFor(actor,action,null,4000,false).frame,3);
+ assert.equal(S.portraitFor(actor,action,null,9000,false).frame,1,'finite speaking beat settles');
+ assert.equal(S.portraitFor(actor,action,null,4000,true).frame,1,'still expression retains current meaning');
+ assert.equal(S.portraitFor(actor,action,null,4000,true).row,actor);
+}
+assert.match(S.briefFor(0,{fox:{state:'watching'}}).next,/costs/);
+assert.match(S.briefFor(0,{fox:{state:'off'}}).next,/off/);
+assert.match(S.briefFor(1,{woman:{},research:{fresh_sources:2,total_sources:10,fresh_headlines:3,refresh_seconds:300}}).next,/5 minutes/);
+assert.equal(S.thoughtFor(1,{day:{research:{summary:'2 current sources'}},action:{key:'sourcing'}}).href,'/desk/research#companion-news');
+console.log('Expression mapping and distinct evidence-oriented trader values passed.');

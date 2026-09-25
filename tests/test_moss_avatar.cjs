@@ -10,7 +10,7 @@ for(const width of [270,300])for(const height of [600,650,1000]){
 }
 function harness({width=300,height=1000,reduced=false,saved={},without=[]}={}){
  let now=0,serial=0,dialog=null;const nodes={},events={},timers=new Map(),storage=new Map([['moss_appearance_v1',JSON.stringify(saved)]]);
- for(const id of ['moss-fox','moss-woman','moss-fox-action','moss-woman-action','moss-fox-thought','moss-woman-thought','moss-motion','moss-avatar','moss-motion-note','moss-speech','moss-speech-enabled','moss-speech-text','moss-speech-link','moss-destination','moss-speech-dismiss','sidebar-companions','moss-sidebar-stage','moss-trails','moss-canyon-far','moss-canyon-near','moss-sand','moss-cacti'])
+ for(const id of ['moss-fox','moss-woman','moss-fox-action','moss-woman-action','moss-fox-thought','moss-woman-thought','moss-motion','moss-avatar','moss-motion-note','moss-speech','moss-speech-enabled','moss-speech-text','moss-speech-principle','moss-speech-next','moss-speech-meta','moss-speech-link','moss-destination','moss-speech-dismiss','sidebar-companions','moss-sidebar-stage','moss-trails','moss-canyon-far','moss-canyon-near','moss-sand','moss-cacti'])
   nodes[id]={id,style:{setProperty(k,v){this[k]=v;}},dataset:{},hidden:false,value:'',checked:false,attrs:{},setAttribute(k,v){this.attrs[k]=v;},contains:()=>false,addEventListener(k,f){this[k]=f;}};
  for(const id of without)delete nodes[id];
  const sections={'desk-overview':{top:100,bottom:800},'desk-live':{top:2000,bottom:2800},'desk-options':{top:3000,bottom:3800}};
@@ -30,7 +30,7 @@ let h=harness({saved:{motion:'roam',avatar:'both',habitatVersion:2}});
 assert.equal(h.nodes['moss-motion'].value,'cozy');assert.equal(h.nodes['moss-avatar'].value,'both');
 assert.equal(JSON.parse(h.storage.get('moss_appearance_v1')).habitatVersion,3);
 const home=h.positions(),initial=h.frames();h.advance(18000);assert.equal(h.frames()[0],initial[0],'long still period before fox breeze');h.advance(1600);assert.notEqual(h.frames()[0],initial[0],'fur frames change in a breeze');assert.deepEqual(h.positions(),home);
-assert.equal(h.nodes['moss-fox'].style['--frame-blend'],'1','frame transition uses the second image layer');
+assert.equal(h.nodes['moss-fox'].style['--frame-blend'],'0','decorative body-frame changes do not shuffle a stable face');
 h.advance(20000);assert.equal(h.frames()[0],initial[0],'breeze settles back to rest');assert.equal(h.nodes['moss-fox'].dataset.breeze,'false');
 for(const sky of ['dawn','day','dusk','night']){h.doc.documentElement.dataset.sky=sky;h.advance(1000);assert.equal(h.nodes['moss-woman'].dataset.activity,activityForSky(sky).key);assert.deepEqual(h.positions(),home);}
 h.sections['desk-overview']={top:-2000,bottom:-100};h.sections['desk-live']={top:180,bottom:1200};h.events.scroll();h.advance(1000);
@@ -149,8 +149,39 @@ assert.match(h.nodes['moss-woman-thought'].href,/#dd-chore-calendar$/,'thought o
 const paired={fox:{state:'watching',headline:'On watch'},woman:{reasoning:[{key:'event:test',level:'caution',text:'Recorded timing caution'}],chores:[]}};
 h=harness();h.events['desk:day']({detail:paired});h.advance(8500);assert.equal(h.nodes['moss-woman'].dataset.sheet,'gesture');assert.equal(h.nodes['moss-woman'].dataset.frame,'2');assert.equal(h.nodes['moss-fox'].dataset.expression,'listening');
 h.events['desk:day']({detail:paired});assert.equal(h.nodes['moss-woman'].dataset.frame,'2','repeated snapshots do not restart a scene');
-h.events['moss:appearance']({detail:{size:'large',frequency:'gentle'}});assert.equal(h.nodes['moss-fox'].style.width,'128px');assert.equal(JSON.parse(h.storage.get('moss_appearance_v1')).frequency,'gentle');
-h.events['moss:appearance']({detail:{size:'bad',frequency:'bad'}});assert.equal(h.nodes['moss-fox'].style.width,'128px');assert.equal(JSON.parse(h.storage.get('moss_appearance_v1')).frequency,'gentle','unknown appearance values are ignored');
-h.events['desk:day-unavailable']();assert.equal(h.nodes['moss-fox'].dataset.action,'unavailable');assert.equal(h.nodes['moss-woman'].dataset.expression,'composed');
+h.events['moss:appearance']({detail:{size:'large',frequency:'gentle'}});assert.equal(h.nodes['moss-fox'].style.width,'140px');assert.equal(JSON.parse(h.storage.get('moss_appearance_v1')).frequency,'gentle');
+h.events['moss:appearance']({detail:{size:'bad',frequency:'bad'}});assert.equal(h.nodes['moss-fox'].style.width,'140px');assert.equal(JSON.parse(h.storage.get('moss_appearance_v1')).frequency,'gentle','unknown appearance values are ignored');
+h.events['desk:day-unavailable']();assert.equal(h.nodes['moss-fox'].dataset.action,'unavailable');assert.equal(h.nodes['moss-woman'].dataset.expression,'cautious');
 console.log('Action poses: reading, waiting, reconciling, thought-to-gesture sequence, chores, one-shot order updates, stale-feed recovery and motion pauses passed.');
 console.log('Cozy perches: stationary top/bottom through task changes, occasional expressions, pause/dock/reduced motion, dismissal, preferences migration, hidden/narrow lifecycle, and no animation loop or network actions passed.');
+
+// Stable faces use the same sheet across operational state changes, with a real
+// two-layer blend. Repeated activity updates must not reset the transition.
+h=harness();h.events['desk:day']({detail:research});
+const portraitLayer=h.nodes['moss-fox'].style['--frame-blend'];
+assert.equal(portraitLayer,'1');
+const priorFace=h.nodes['moss-fox'].style['--frame-a'];
+h.events['desk:day']({detail:{...research,fox:{state:'blocked',headline:'Required account data is missing.'}}});
+assert.equal(h.nodes['moss-fox'].dataset.expression,'cautious');
+assert.equal(h.nodes['moss-fox'].style['--frame-blend'],'0');
+assert.notEqual(h.nodes['moss-fox'].style['--frame-a'],priorFace,'new expression enters the covered layer');
+assert.match(h.nodes['moss-speech-text'].textContent,/Required account data/,'a new blocker does not wait for the reading hold');
+assert.match(h.nodes['moss-speech-principle'].textContent,/Protect/);
+h.events['desk:day-unavailable']();
+assert.equal(h.nodes['moss-speech'].dataset.topic,'unavailable');
+assert.match(h.nodes['moss-speech-text'].textContent,/unavailable/,'lost data never becomes generic confident commentary');
+h=harness();h.events['desk:day']({detail:research});
+const firstLine=h.nodes['moss-speech-text'].textContent;
+h.advance(1000);h.events['desk:day']({detail:{...research,fox:{...research.fox,headline:'A minor updated research detail.'}}});
+assert.equal(h.nodes['moss-speech-text'].textContent,firstLine,'routine updates wait while a thought is being read');
+h.advance(18000);assert.equal(h.nodes['moss-speech-text'].textContent,'A minor updated research detail.');
+const css=fs.readFileSync('static/moss_avatar.css','utf8');
+assert.match(css,/companion-portraits-v2\.png/);assert.match(css,/opacity:calc\(1 - var\(--frame-blend/);
+assert.ok(!css.includes('translate:0 -28%'),'changing actions must not jump the face vertically');
+assert.ok(!css.includes('[data-topic=news]{height'),'news must not resize the sidebar navigation');
+console.log('Portraits and speech: stable crossfades, immediate blocker/outage, readable message hold and fixed geometry passed.');
+h=harness();h.events['desk:day']({detail:{fox:{state:'off',headline:'Fox is off duty.'},woman:{reasoning:[],chores:[]},research:{fresh_sources:2,total_sources:10,fresh_headlines:4,summary:'Two current feeds.',refresh_seconds:300}}});
+h.advance(46000);
+assert.equal(h.nodes['moss-woman'].dataset.action,'sourcing','source commentary continues independently of Fox trading activation');
+assert.equal(h.nodes['moss-speech-link'].href,'/desk/research#companion-news');
+assert.equal(companionAction(1,{cue:'sources',day:{research:{fresh_sources:0}}}).key,'sources-unavailable','no fake active research when feeds are missing');

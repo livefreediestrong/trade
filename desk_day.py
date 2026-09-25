@@ -346,6 +346,38 @@ def _last_signal(desk, agent: dict[str, Any] | None) -> dict[str, Any] | None:
     return None
 
 
+def research_view(desk, now: datetime) -> dict[str, Any]:
+    """Describe the existing autonomous feed worker; never fetch or call a model here."""
+    companion = getattr(desk, "_research_companion", None)
+    try:
+        news = companion.news.snapshot(now.timestamp()) if companion else {}
+    except Exception:
+        news = {}
+    news = news if isinstance(news, dict) else {}
+    source_rows, item_rows = news.get("sources"), news.get("items")
+    sources = [s for s in source_rows if isinstance(s, dict)] if isinstance(source_rows, list) else []
+    current = lambda stamp, age: isinstance(stamp, (int, float)) and 0 <= now.timestamp() - stamp <= age
+    fresh_sources = [s for s in sources if s.get("status") in ("connected", "partial")
+                     and current(s.get("checked_at"), 900)]
+    items = [r for r in item_rows if isinstance(r, dict) and r.get("fresh") is True
+             and current(r.get("checked_at"), 900) and current(r.get("published_ts"), 36 * 3600)] if isinstance(item_rows, list) else []
+    refresh = news.get("refresh_seconds", 300)
+    refresh = refresh if isinstance(refresh, (int, float)) and 30 <= refresh <= 3600 else 300
+    checked = [s.get("checked_at") for s in sources if isinstance(s.get("checked_at"), (float, int))
+               and 0 <= now.timestamp() - s["checked_at"] <= 900]
+    checked_at = max(checked) if checked else None
+    if news.get("busy"):
+        summary = "The headline worker is refreshing its sources. I am keeping the last verified context separate."
+    elif fresh_sources:
+        summary = f"{len(fresh_sources)} of {len(sources)} feeds current; {len(items)} fresh headlines to assess. I look for catalysts, contrary evidence and the source date."
+    else:
+        summary = "No current headline feeds verified. I will not turn an old story into a fresh trading reason."
+    return {"summary": summary, "busy": bool(news.get("busy")), "fresh_sources": len(fresh_sources),
+            "total_sources": len(sources), "fresh_headlines": len(items), "checked_at": checked_at,
+            "refresh_seconds": refresh, "evaluation": "App-written research questions; not model conclusions or order signals.",
+            "source": "/desk/research#companion-news"}
+
+
 def snapshot(desk, now: datetime | None = None) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     cfg = desk.load_config()
@@ -379,7 +411,7 @@ def snapshot(desk, now: datetime | None = None) -> dict[str, Any]:
         row["when"] = market_events.describe(row, now)
         row["guard"] = (f"{market_events.clock_et(guard[0])}–{market_events.clock_et(guard[1])}" if guard else None)
     return {
-        "ok": True, "as_of": now.isoformat(), "fox": fox, "woman": woman,
+        "ok": True, "as_of": now.isoformat(), "fox": fox, "woman": woman, "research": research_view(desk, now),
         "events": {"upcoming": upcoming[:10], "active_window": window, "status": market_events.status(),
                    "guard_enabled": bool(cfg.get("event_guard_enabled", True))},
         "wsb": {k: wsb.get(k) for k in ("configured", "fresh", "threads", "top", "error", "comments_read",
