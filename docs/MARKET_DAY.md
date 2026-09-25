@@ -2,6 +2,16 @@
 
 Implemented September 24, 2026. This ties the broker agent, the event calendar, the WSB threads, the news feeds and the desk's upkeep into one market day. The sidebar companions and the **Today at the desk** panel (Overview and Auto pages) show it.
 
+## Companion scenes and thoughts (September 25)
+
+The companions enact shared research and caution scenes. A recent recorded pass gets a finite notebook-closing scene; it is never inferred from silence or replayed by the movement interval. Fox leans into research and listens to Changing Woman; she reads, pauses with a raised eyebrow, and explains with an open palm. Charts, a magnifying glass, a clock, order receipts, a calendar, a newspaper and a journal identify their current task. The speaking character has a soft emphasis.
+
+Click a companion's thought to open its supporting desk status, exact caution, chore or recorded move. These are app-written interpretations of the displayed records, not hidden model reasoning. Source rows have stable anchors and receive keyboard focus when opened from another page. News thoughts use the validated source link.
+
+**Meet the companions**, next to Quiet desk, opens a separate animation preview on every desk page, including mobile. Its nine examples, replay and pause controls never publish live desk events or make API requests. Character size (Compact, Comfortable, Large) and movement frequency (every two minutes, one minute, or 30 seconds) are stored in this browser with the existing appearance preferences. Comfortable is the larger default. New observed activity responds immediately; the interval controls repeat scenes. A hidden companion does not participate in shared scenes.
+
+Quiet desk, still poses, reduced motion, typing, dialogs and hidden pages retain their motion boundaries. The preview respects Quiet desk, reduced motion and still/hidden character preferences. Its timer stops on close, pause, page hide or completion. A stale or failed desk snapshot clears live choreography. Props and gestures are presentation only and do not approve trades, infer fills, change risk settings or promise profit.
+
 ## Roles
 
 **Fox is the broker agent** (the live agent, `auto_live`; still called Moss in older notes). What he says is what the agent is doing:

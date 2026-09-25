@@ -8,6 +8,16 @@
  const STATE={off:'Off duty',resting:'Resting',waiting:'Waiting for the open',holding:'Holding off',researching:'Researching',
   reconciling:'Reconciling',done:'Done for today',blocked:'Stuck',watching:'On watch'};
  const CHORE={done:'✓',working:'…',attention:'!',off:'–'};
+ let followedHash='';
+ function sourceRow(node,kind,key){if(key){node.id='dd-'+kind+'-'+encodeURIComponent(String(key));node.tabIndex=-1;}return node;}
+ function followSource(){
+  const hash=typeof location==='undefined'?'':location.hash;
+  if(!hash||hash===followedHash)return;
+  let id;try{id=decodeURIComponent(hash.slice(1));}catch(_){return;}
+  if(!/^dd-(note-|chore-|move-|fox-headline$|woman-headline$)/.test(id))return;
+  const target=$(id);if(!target)return;
+  followedHash=hash;target.tabIndex=-1;target.scrollIntoView?.({block:'center',behavior:'instant'});target.focus?.({preventScroll:true});
+ }
  function el(tag,text,cls){const n=document.createElement(tag);if(text!=null)n.textContent=String(text);if(cls)n.className=cls;return n;}
  function link(text,url){if(!/^https:\/\//i.test(String(url||'')))return el('span',text);const a=el('a',text);a.href=url;a.target='_blank';a.rel='noopener noreferrer';return a;}
  const money=v=>Number.isFinite(Number(v))?'$'+Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'—';
@@ -23,10 +33,10 @@
   const managed=fox.managed||[];
   $('dd-positions-table').hidden=!managed.length;
   $('dd-positions').replaceChildren(...managed.map(m=>{const tr=el('tr');tr.append(el('td',m.ticker),el('td',m.shares),el('td',money(m.entry)),el('td',money(m.stop)+(m.breakeven?' (entry)':'')),el('td',money(m.target)));return tr;}));
-  fill('dd-fox-recent',(fox.recent||[]).map(r=>{const li=el('li',null,'dd-'+r.kind);li.append(el('time',clock(r.at)),document.createTextNode(' '+r.text));return li;}),'Nothing yet today.');
+  fill('dd-fox-recent',(fox.recent||[]).map(r=>{const li=sourceRow(el('li',null,'dd-'+r.kind),'move',r.id);li.append(el('time',clock(r.at)),document.createTextNode(' '+r.text));return li;}),'Nothing yet today.');
   set('dd-woman-headline',woman.headline||'');
-  fill('dd-notes',(woman.reasoning||[]).map(n=>el('li',n.text,'dd-note is-'+n.level)),'Nothing to flag right now.');
-  fill('dd-chores',(woman.chores||[]).map(c=>{const li=el('li',null,'dd-chore is-'+c.state);li.append(el('span',CHORE[c.state]||'·','dd-mark'),el('strong',c.label),el('small',c.detail));return li;}),'');
+  fill('dd-notes',(woman.reasoning||[]).map(n=>sourceRow(el('li',n.text,'dd-note is-'+n.level),'note',n.key)),'Nothing to flag right now.');
+  fill('dd-chores',(woman.chores||[]).map(c=>{const li=sourceRow(el('li',null,'dd-chore is-'+c.state),'chore',c.key);li.append(el('span',CHORE[c.state]||'·','dd-mark'),el('strong',c.label),el('small',c.detail));return li;}),'');
   const ev=d.events||{};
   fill('dd-events',(ev.upcoming||[]).map(e=>{const li=el('li',null,'dd-event is-'+e.impact);li.append(el('span',e.impact,'dd-impact'),' ',link(e.when||e.title,e.url));if(e.guard)li.append(el('small',' · Fox pauses new entries '+e.guard));return li;}),'No medium or high impact events in the next 36 hours.');
   const bad=Object.entries((ev.status||{}).sources||{}).filter(([,s])=>!s.ok).map(([k,s])=>k+' ('+(s.error||'unavailable')+')');
@@ -37,6 +47,7 @@
   $('dd-wsb').replaceChildren(...(rows.length?rows:[(()=>{const tr=el('tr'),td=el('td',w.configured?'No ticker mentions in the last hour yet.':'Reddit is not connected.');td.colSpan=4;tr.append(td);return tr;})()]));
   const threads=(w.threads||[]).map(t=>t.label).join(', ');
   set('dd-wsb-note',w.configured?((threads?'Reading '+threads+'. ':'')+(w.error?w.error+'. ':'')+(w.live_chat_note||'')):'Set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET to read the WSB threads. '+(w.live_chat_note||''));
+  followSource();
  }
  async function poll(){
   clearTimeout(timer);if(!active||document.hidden||busy)return;busy=true;
@@ -51,5 +62,6 @@
  document.addEventListener('visibilitychange',()=>{clearTimeout(timer);if(!document.hidden)poll();});
  window.addEventListener('pagehide',()=>{active=false;clearTimeout(timer);});
  window.addEventListener('pageshow',e=>{active=true;if(e.persisted)poll();}); // a normal load already polled
+ window.addEventListener('hashchange',()=>{followedHash='';followSource();});
  poll();
 })();

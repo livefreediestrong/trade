@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg">
+ <defs><style>.paper{fill:#f5dfb5;stroke:#704c43;stroke-width:3;stroke-linejoin:round}.ink{fill:none;stroke:#704c43;stroke-width:3;stroke-linecap:round;stroke-linejoin:round}.blue{fill:#7aafb7;stroke:#704c43;stroke-width:3}</style></defs>
+ <symbol id="chart" viewBox="0 0 64 64"><path class="paper" d="M5 8h43v45H5z"/><path class="ink" d="M12 18v27h28M15 37l8-9 7 4 10-14"/><circle class="blue" cx="42" cy="36" r="13" fill-opacity=".6"/><path class="ink" d="m51 47 9 12"/><path d="m36 31 4-4" stroke="#fff" stroke-width="3" stroke-linecap="round"/></symbol>
+ <symbol id="lens" viewBox="0 0 64 64"><circle class="blue" cx="25" cy="25" r="19" fill-opacity=".65"/><path class="ink" d="m39 40 18 18"/><path d="M13 24q1-11 12-12" fill="none" stroke="#f5dfb5" stroke-width="4" stroke-linecap="round"/></symbol>
+ <symbol id="clock" viewBox="0 0 64 64"><circle class="paper" cx="32" cy="32" r="26"/><path class="ink" d="M32 13v4m19 15h-4M32 51v-4M13 32h4m15-11v12l12 7"/><circle fill="#704c43" cx="32" cy="32" r="3"/></symbol>
+ <symbol id="receipt" viewBox="0 0 64 64"><path class="paper" d="M13 5h38v54l-7-4-6 4-6-4-6 4-6-4-7 4z"/><path class="ink" d="M21 17h22M21 26h22M21 35h14M21 44h18"/></symbol>
+ <symbol id="calendar" viewBox="0 0 64 64"><rect class="paper" x="7" y="12" width="50" height="45" rx="3"/><path fill="#c78578" d="M9 14h46v12H9z"/><path class="ink" d="M19 6v13M45 6v13M17 35h5m8 0h5m8 0h5M17 46h5m8 0h5"/><circle class="ink" cx="45" cy="46" r="7"/></symbol>
+ <symbol id="news" viewBox="0 0 64 64"><path class="paper" d="M5 9h45v43h8V19h-8v33q0 6-6 6H10q-5 0-5-5z"/><path class="ink" d="M13 18h29M13 25h29M29 34h13M29 42h13M13 51h29"/><path class="blue" d="M13 33h10v11H13z"/></symbol>
+ <symbol id="journal" viewBox="0 0 64 64"><path fill="#9d6554" stroke="#704c43" stroke-width="3" d="M8 8h40v49H8z"/><path class="paper" d="M15 8h33v45H15z"/><path class="ink" d="M22 18h18M22 27h16M22 36h12"/><path fill="#d6a45d" stroke="#704c43" stroke-width="2" d="m53 12 6 3-16 32-7 6 1-9z"/></symbol>
+</svg>

@@ -1,10 +1,10 @@
 /* Cozy sidebar perches. Local presentation only; no account or order actions. */
 (() => {
  'use strict';
- function perchLayout(width,height){
+ function perchLayout(width,height,scale='comfortable'){
   if(width<150||height<350)return null;
-  const size=height<650?68:88;
-  return {width,height,size,fox:{x:28,y:height<650?188:210},woman:{x:width-size-28,y:height-16}};
+  const size=height<650?({compact:68,comfortable:84,large:92}[scale]||84):({compact:88,comfortable:112,large:128}[scale]||112);
+  return {width,height,size,fox:{x:18,y:height<650?194:224},woman:{x:width-size-18,y:height-12}};
  }
  function activityForSky(sky){return ({dawn:{row:0,key:'water',label:'Preparing water'},day:{row:1,key:'weave',label:'Working plant fibers'},dusk:{row:2,key:'gathered-food',label:'Sorting gathered food'},night:{row:3,key:'rest',label:'Resting'}})[sky]||{row:3,key:'rest',label:'Resting'};}
  // Poses describe observed work, never infer a fill, profit or a new trading decision.
@@ -54,6 +54,7 @@
  const control=$('moss-motion')||stand('cozy'),choice=$('moss-avatar')||stand('both'),speech=$('moss-speech-enabled')||stand('',true),bubble=$('moss-speech');
  if(!stage||!bubble)return;
  const actors=[$('moss-fox'),$('moss-woman')],reduced=matchMedia('(prefers-reduced-motion: reduce)');
+ const scenes=window.DeskCompanionScenes;
  const frames=[null,null],actions=[null,null];
  const stops=[
   ['desk-overview','Overview','Start with the account and data status. The next step should be clear before we act.','First, the numbers. My eyebrow is not a risk model.'],
@@ -69,6 +70,8 @@
  choice.value=saved.habitatVersion>=2&&['fox','woman','both'].includes(saved.avatar)?saved.avatar:'both';
  // Old roaming preferences migrate to the user's requested stationary perches.
  control.value=['dock','hide'].includes(saved.motion)?saved.motion:'cozy';speech.checked=saved.speech!==false;
+ let characterSize=['compact','comfortable','large'].includes(saved.size)?saved.size:'comfortable';
+ let frequency=['gentle','balanced','lively'].includes(saved.frequency)?saved.frequency:'balanced',scene=null,sceneSince=0;
  let timer=null,active=true,hovered=false,quiet=document.documentElement.dataset.deskQuiet==='true',lastScroll=-Infinity;
  let stop=stops[0],custom='',customUntil=0,messageKey='',dismissed='';
  let buzz='',buzzUntil=0,lastBuzzAt=-Infinity;
@@ -86,7 +89,7 @@
  const showingNews=()=>!!news&&performance.now()<newsUntil&&!custom&&!quiet&&!actors[1].hidden&&Date.now()-news.publishedTs<=36*3600000&&Date.now()-news.checkedAt<=900000;
  const dialog=()=>document.querySelector('dialog[open],.modal:not(.hidden):not([hidden])');
  const interacting=()=>hovered||document.activeElement?.matches('input,select,textarea,[contenteditable="true"]')||bubble.contains(document.activeElement);
- function persist(){try{localStorage.setItem('moss_appearance_v1',JSON.stringify({motion:control.value,avatar:choice.value,speech:speech.checked,habitatVersion:3}));}catch(_){}}
+ function persist(){try{localStorage.setItem('moss_appearance_v1',JSON.stringify({motion:control.value,avatar:choice.value,speech:speech.checked,size:characterSize,frequency,habitatVersion:3}));}catch(_){}}
  function selectStop(now){
   if(now<customUntil)return;custom='';
   const visible=stops.map(s=>({s,r:$(s[0])?.getBoundingClientRect()})).filter(x=>x.r&&x.r.bottom>80&&x.r.top<innerHeight*.65);
@@ -127,24 +130,30 @@
   clearTimeout(timer);timer=null;
   bubble.hidden=!speech.checked||control.value==='hide'||dismissed===messageKey||(quiet&&!custom)||!!dialog()||!active||document.hidden;
   if(!active||document.hidden||control.value==='hide'){actors.forEach(el=>{el.dataset.still='true';});return;}
-  const r=stage.getBoundingClientRect(),g=perchLayout(r.width,r.height);if(!g){bubble.hidden=true;actors.forEach(el=>{el.dataset.still='true';});return;}
+  const r=stage.getBoundingClientRect(),g=perchLayout(r.width,r.height,characterSize);if(!g){bubble.hidden=true;actors.forEach(el=>{el.dataset.still='true';});return;}
   const now=performance.now();
-  if(day&&now-dayAt>90000){day=null;dayUnavailable=true;foxEvent=null;note=null;}
+  if(day&&now-dayAt>90000){day=null;dayUnavailable=true;foxEvent=null;note=null;scene=null;}
   if(now-lastScroll>250)selectStop(now);message();
   const still=quiet||reduced.matches||control.value==='dock'||!!dialog()||interacting()||now-lastScroll<250;
   for(let i=0;i<actors.length;i++){
    const el=actors[i],p=i?g.woman:g.fox;
    el.style.width=g.size+'px';el.style.height=g.size+'px';el.style.transform='translate3d('+p.x+'px,'+(p.y-g.size)+'px,0)';
+   el.style.setProperty('--caption-width',Math.max(90,g.width-g.size-44)+'px');
    el.dataset.destination=i?'bottom-perch':'top-perch';
    el.dataset.buzz=String(i===0&&!still&&showingBuzz()&&dismissed!==messageKey);
    // A slow 12.8-second breeze every two minutes. CSS blends registered frames.
-   const wind=(now-i*300)%120000-18000,step=Math.floor(wind/1600);
+   const period=scenes?.PERIOD[frequency]||60000,wind=(now-i*300)%(period*2)-18000,step=Math.floor(wind/1600);
    const sky=document.documentElement.dataset.sky,activity=activityForSky(sky),workStep=Math.floor(now/3200)%20;
    const speaking=!bubble.hidden&&bubble.dataset.speaker===(i?'woman':'fox');
    const cue=speaking&&(bubble.dataset.topic!=='guide'||custom)?bubble.dataset.topic:'';
    const action=companionAction(i,{day,sky,cue,speaking,unavailable:dayUnavailable});
-   if(actions[i]?.key!==action.key)actions[i]={key:action.key,since:now};
-   const pose=actionPose(action,now-actions[i].since,still||el.hidden);
+   const actionKey=action.key+'|'+action.label;if(actions[i]?.key!==actionKey)actions[i]={key:actionKey,since:now};
+   const elapsed=now-actions[i].since,restBeat=elapsed%period>16000&&!['reasoning','news','trade','buzz','guide'].includes(cue);
+   let pose=actionPose(action,elapsed,still||el.hidden||restBeat);
+   const priority=!bubble.hidden&&['trade','buzz','news'].includes(bubble.dataset.topic)||!!custom;
+   const partnered=!actors[0].hidden&&!actors[1].hidden&&!dayUnavailable&&!priority;
+   const sceneFrame=partnered?scenes?.scenePose(scene,i,now-sceneSince,frequency,still):null;
+   if(sceneFrame)pose=sceneFrame;
    // Unoccupied companions keep their original slow breeze / daily chores.
    if(pose.sheet==='routine')pose.frame=still?0:workStep<6?[0,1,2,3,2,1][workStep]:0;
    if(pose.sheet==='breeze')pose.frame=still?0:step>=0&&step<8?[0,1,2,3,2,3,1,0][step]:0;
@@ -152,14 +161,21 @@
    el.dataset.action=action.key;el.dataset.sheet=sheet;
    el.dataset.pose=sheet==='breeze'||sheet==='routine'||(sheet==='fox'&&row===3)?'sit':'stand';
    const caption=$(i?'moss-woman-action':'moss-fox-action'),thought=$(i?'moss-woman-thought':'moss-fox-thought');
-   if(caption)caption.textContent=action.label;
-   if(thought){thought.textContent=action.mark;thought.hidden=!action.mark;}
+   if(caption)caption.textContent=sceneFrame?.label||action.label;
+   el.dataset.speaking=String(speaking);el.dataset.expression=sceneFrame?.expression||(i?'composed':action.key==='researching'?'curious':'attentive');
+   const prop=scenes?.propFor(i,action,day)||'',propNode=$(i?'moss-woman-prop':'moss-fox-prop');
+   el.dataset.prop=prop;if(propNode)propNode.setAttribute('href','/static/companion-props.svg#'+prop);
+   if(thought){
+    const info=scenes?.thoughtFor(i,{day,action,news:showingNews()?news:null,trade:foxEvent,unavailable:dayUnavailable});
+    thought.textContent=info?.text||action.mark;thought.hidden=quiet||(!info&&!action.mark);
+    if(info){thought.href=info.href;thought.title=String(info.detail||'');thought.setAttribute('aria-label',(i?'Changing Woman':'Fox')+': '+info.text+'. '+(info.detail||''));thought.target=/^https:\/\//.test(info.href)?'_blank':'_self';thought.rel=thought.target==='_blank'?'noopener noreferrer':'';}
+   }
    el.dataset.breeze=String(!still&&step>=0&&step<8);
    const position=(frame*100/3)+'% '+(sheet==='gesture'?row*100:row*100/3)+'%',key=sheet+'|'+row+'|'+frame;
    if(i===1)el.dataset.activity=activity.key;
    const detail=i?(day?.woman?.headline||''):(day?.fox?.headline||'');
-   el.setAttribute('aria-label',(i?'Changing Woman':'Fox, your broker agent')+' · '+action.label+(detail?' · '+detail:''));
-   el.dataset.still=String(still||el.hidden);el.dataset.frame=String(frame);
+   el.setAttribute('aria-label',(i?'Changing Woman':'Fox, your broker agent')+' · '+(sceneFrame?.label||action.label)+(detail?' · '+detail:''));
+   el.dataset.still=String(still||el.hidden||restBeat&&!sceneFrame);el.dataset.frame=String(frame);
    if(still||!frames[i]||frames[i].sheet!==sheet){
     el.style.setProperty('--frame-a',position);el.style.setProperty('--frame-b',position);el.style.setProperty('--frame-blend','0');frames[i]={frame,key,sheet,upper:false};
    }else if(frames[i].key!==key){
@@ -174,7 +190,7 @@
  function apply(){
   actors[0].hidden=control.value==='hide'||choice.value==='woman';actors[1].hidden=control.value==='hide'||choice.value==='fox';panel.hidden=control.value==='hide';
   const motionNote=$('moss-motion-note');
-  if(motionNote)motionNote.textContent=quiet?'Quiet desk: companions hold still; trading continues.':reduced.matches?'Reduced motion: still poses show what each companion is doing.':'Fox reads during research, watches, waits and opens his notebook for order updates. Changing Woman reads, thinks and gestures through her reasons, then returns to her daily chores. Typing and dialogs pause motion.';
+  if(motionNote)motionNote.textContent=quiet?'Quiet desk: companions hold still; trading continues.':reduced.matches?'Reduced motion: still poses show what each companion is doing.':'Fox and Changing Woman act out shared scenes with charts, calendars and notebooks. Click a thought to inspect its recorded source. Meet the companions to preview scenes and adjust their size and pace.';
   tick();
  }
  function save(){persist();dismissed='';apply();}
@@ -198,16 +214,19 @@
  function canSpeak(i){const r=stage.getBoundingClientRect();return !quiet&&!document.hidden&&active&&!actors[i].hidden&&speech.checked&&!dialog()&&!interacting()&&!!perchLayout(r.width,r.height)&&performance.now()>=customUntil;}
  window.addEventListener('desk:day',e=>{
   const d=e.detail||{},now=performance.now(),stamp=d.as_of==null?null:Date.parse(d.as_of);
-  if(d.ok===false||!d.fox||!d.woman||(stamp!==null&&(!Number.isFinite(stamp)||Date.now()-stamp>90000||stamp>Date.now()+5000))){day=null;dayUnavailable=true;foxEvent=null;note=null;tick();return;}
+  if(d.ok===false||!d.fox||!d.woman||(stamp!==null&&(!Number.isFinite(stamp)||Date.now()-stamp>90000||stamp>Date.now()+5000))){day=null;dayUnavailable=true;foxEvent=null;note=null;scene=null;tick();return;}
   day=d;dayAt=now;dayUnavailable=false;
+  const nextScene=scenes?.sceneFor(d);if(nextScene?.key!==scene?.key){scene=nextScene;sceneSince=now;}
   const trade=d.fox&&d.fox.latest_trade;
-  if(trade&&trade.id&&!seenTrades.has(trade.id)&&canSpeak(0)){seenTrades.add(trade.id);remember('desk_day_trades_v1',seenTrades);foxEvent={text:String(trade.text||'').slice(0,230)};foxEventUntil=now+20000;dismissed='';}
+  if(trade&&trade.id&&!seenTrades.has(trade.id)&&canSpeak(0)){seenTrades.add(trade.id);remember('desk_day_trades_v1',seenTrades);foxEvent={id:trade.id,text:String(trade.text||'').slice(0,230)};foxEventUntil=now+20000;dismissed='';}
   const next=((d.woman&&d.woman.reasoning)||[]).find(n=>(n.level==='block'||n.level==='caution')&&n.key&&!seenNotes.has(n.key));
   if(next&&!showingFoxEvent()&&now-lastNoteAt>=180000&&canSpeak(1)){seenNotes.add(next.key);remember('desk_day_notes_v1',seenNotes);note={text:String(next.text||'').slice(0,230)};noteUntil=now+30000;lastNoteAt=now;dismissed='';}
   if(d.fox&&d.fox.headline)actors[0].setAttribute('aria-label','Fox, your broker agent · '+d.fox.headline);
   tick();
  });
- window.addEventListener('desk:day-unavailable',()=>{day=null;dayUnavailable=true;foxEvent=null;note=null;tick();});
+ window.addEventListener('desk:day-unavailable',()=>{day=null;dayUnavailable=true;foxEvent=null;note=null;scene=null;tick();});
+ window.addEventListener('moss:appearance',e=>{const d=e.detail||{};if(['compact','comfortable','large'].includes(d.size))characterSize=d.size;if(['gentle','balanced','lively'].includes(d.frequency))frequency=d.frequency;persist();apply();});
+ window.MossAvatars={companionAction,actionPose,appearance:()=>({size:characterSize,frequency,quiet,reduced:reduced.matches,motion:control.value}),refresh:tick};
  window.addEventListener('desk:attention',e=>{quiet=!!e.detail?.quiet;apply();});
  window.addEventListener('scroll',()=>{lastScroll=performance.now();customUntil=0;tick();},{passive:true});
  document.addEventListener('focusin',tick);document.addEventListener('focusout',tick);window.addEventListener('resize',tick);reduced.addEventListener('change',apply);

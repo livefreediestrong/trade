@@ -1,8 +1,9 @@
 <div id="sidebar-companions" class="sidebar-companions" aria-label="Sidebar companions">
  <div id="moss-sidebar-stage" class="moss-sidebar-stage">
   <svg class="sidebar-trails" id="moss-trails" aria-hidden="true"><path id="moss-canyon-far" class="habitat-rock far"/><path id="moss-canyon-near" class="habitat-rock near"/><path id="moss-sand" class="habitat-sand"/><path id="moss-cacti" class="habitat-cacti"/></svg>
-  <div class="moss-sprite" id="moss-fox" role="img" aria-label="Fox, your broker agent"><span class="moss-thought" id="moss-fox-thought" aria-hidden="true" hidden></span><span class="moss-action" id="moss-fox-action" aria-hidden="true">At the desk</span></div>
-  <div class="moss-sprite moss-woman" id="moss-woman" role="img" aria-label="Changing Woman, an elegant and gently humorous portrait-inspired companion"><span class="moss-thought" id="moss-woman-thought" aria-hidden="true" hidden></span><span class="moss-action" id="moss-woman-action" aria-hidden="true">Resting</span></div>
+  <div class="moss-sprite" id="moss-fox" role="group" aria-label="Fox, your broker agent"><svg class="moss-prop" aria-hidden="true" viewBox="0 0 64 64"><use id="moss-fox-prop"></use></svg><a class="moss-thought" id="moss-fox-thought" hidden></a><span class="moss-action" id="moss-fox-action" aria-hidden="true">At the desk</span></div>
+  <div class="moss-sprite moss-woman" id="moss-woman" role="group" aria-label="Changing Woman, an elegant and gently humorous portrait-inspired companion"><svg class="moss-prop" aria-hidden="true" viewBox="0 0 64 64"><use id="moss-woman-prop"></use></svg><a class="moss-thought" id="moss-woman-thought" hidden></a><span class="moss-action" id="moss-woman-action" aria-hidden="true">Resting</span></div>
  </div>
  <aside id="moss-speech" class="moss-speech" aria-label="Companion guidance"><button id="moss-speech-dismiss" type="button" aria-label="Dismiss this speech bubble">×</button><small id="moss-destination">Fox · Notebook</small><p id="moss-speech-text" aria-live="polite">This is home. Research lives in the notebook.</p><p id="moss-news-headline" hidden></p><a id="moss-speech-link" href="#moss-desk">Go to this section</a></aside>
 </div>
+{% include "desk/companion_preview.html" %}

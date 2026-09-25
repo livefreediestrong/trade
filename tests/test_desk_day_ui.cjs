@@ -24,6 +24,8 @@ setImmediate(()=>{
  const cells=nodes['dd-positions'].children[0].children.map(c=>c.textContent);assert.deepEqual(cells.slice(0,2),['NVDA','2']);assert.match(cells[3],/\(entry\)/);
  assert.equal(nodes['dd-notes'].children[0].textContent,'<b>Scheduled</b> event','fetched text renders as text');
  assert.equal(nodes['dd-notes'].children[0].className,'dd-note is-block');
+ assert.equal(nodes['dd-notes'].children[0].id,'dd-note-x');assert.equal(nodes['dd-notes'].children[0].tabIndex,-1);
+ assert.equal(nodes['dd-chores'].children[0].id,'dd-chore-wsb','thought links have stable source rows');
  const event=nodes['dd-events'].children[0];assert.ok(!event.children.some(c=>c.tag==='a'),'unsafe links are not links');
  assert.match(nodes['dd-events-note'].textContent,/bls \(HTTP 503\)/);
  assert.equal(nodes['dd-wsb'].children[0].children[3].textContent,'75% bear');assert.equal(nodes['dd-wsb'].children[0].children[2].textContent,'building');

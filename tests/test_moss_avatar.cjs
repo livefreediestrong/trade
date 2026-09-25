@@ -17,7 +17,7 @@ function harness({width=300,height=1000,reduced=false,saved={},without=[]}={}){
  nodes['moss-sidebar-stage'].getBoundingClientRect=()=>({width,height});
  const doc={documentElement:{dataset:{}},hidden:false,activeElement:null,getElementById:id=>sections[id]?{getBoundingClientRect:()=>sections[id]}:nodes[id],querySelector:()=>dialog,addEventListener(k,f){events[k]=f;}};
  const preference={matches:reduced,addEventListener(k,f){this[k]=f;}};
- const context={document:doc,window:{NadzeelNews:{newsQuip},addEventListener(k,f){events[k]=f;}},matchMedia:()=>preference,performance:{now:()=>now},innerHeight:height,
+ const context={document:doc,window:{NadzeelNews:{newsQuip},DeskCompanionScenes:require('../static/companion_scenes.js'),addEventListener(k,f){events[k]=f;}},matchMedia:()=>preference,performance:{now:()=>now},innerHeight:height,
  localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},sessionStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},setTimeout(fn,ms){timers.set(++serial,{fn,at:now+ms});return serial;},clearTimeout:id=>timers.delete(id),
  requestAnimationFrame(){throw Error('Cozy perches must not schedule animation frames');},fetch(){throw Error('Avatar must not contact an API');}};
  vm.runInNewContext(fs.readFileSync('static/moss_avatar.js','utf8'),context);
@@ -142,5 +142,12 @@ h.advance(31000);h.events['desk:day']({detail:daySnap});assert.equal(h.nodes['mo
 assert.ok(JSON.parse(h.storage.get('desk_day_trades_v1')).includes('t1'),'remember event IDs across page visits');
 h=harness();h.events['desk:day']({detail:{fox:{state:'watching'},woman:{reasoning:[],chores:[{key:'calendar',label:'Check the calendar',state:'attention'}]}}});
 assert.equal(h.nodes['moss-woman'].dataset.action,'checking');assert.match(h.nodes['moss-woman-action'].textContent,/needs attention/);
+assert.match(h.nodes['moss-woman-thought'].href,/#dd-chore-calendar$/,'thought opens the exact chore');
+const paired={fox:{state:'watching',headline:'On watch'},woman:{reasoning:[{key:'event:test',level:'caution',text:'Recorded timing caution'}],chores:[]}};
+h=harness();h.events['desk:day']({detail:paired});h.advance(8500);assert.equal(h.nodes['moss-woman'].dataset.sheet,'gesture');assert.equal(h.nodes['moss-woman'].dataset.frame,'2');assert.equal(h.nodes['moss-fox'].dataset.expression,'listening');
+h.events['desk:day']({detail:paired});assert.equal(h.nodes['moss-woman'].dataset.frame,'2','repeated snapshots do not restart a scene');
+h.events['moss:appearance']({detail:{size:'large',frequency:'gentle'}});assert.equal(h.nodes['moss-fox'].style.width,'128px');assert.equal(JSON.parse(h.storage.get('moss_appearance_v1')).frequency,'gentle');
+h.events['moss:appearance']({detail:{size:'bad',frequency:'bad'}});assert.equal(h.nodes['moss-fox'].style.width,'128px');assert.equal(JSON.parse(h.storage.get('moss_appearance_v1')).frequency,'gentle','unknown appearance values are ignored');
+h.events['desk:day-unavailable']();assert.equal(h.nodes['moss-fox'].dataset.action,'unavailable');assert.equal(h.nodes['moss-woman'].dataset.expression,'composed');
 console.log('Action poses: reading, waiting, reconciling, thought-to-gesture sequence, chores, one-shot order updates, stale-feed recovery and motion pauses passed.');
 console.log('Cozy perches: stationary top/bottom through task changes, occasional expressions, pause/dock/reduced motion, dismissal, preferences migration, hidden/narrow lifecycle, and no animation loop or network actions passed.');
