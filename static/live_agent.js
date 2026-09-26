@@ -25,7 +25,7 @@
  }
  if(typeof module==='object'&&module.exports){module.exports={agentView};return;}
  const $=id=>document.getElementById(id),form=$('live-agent-form');if(!form)return;
- const fields=['interval_sec','max_order_usd','max_daily_loss_usd','max_orders_per_day','max_research_per_day','model_budget_usd','limit_offset_bps','min_confidence','max_quote_age_sec','breakeven_after_r','max_hold_min','flatten_before_close_min'];
+ const fields=['interval_sec','max_order_usd','max_daily_loss_usd','max_orders_per_day','max_research_per_day','model_budget_usd','limit_offset_bps','min_confidence','max_quote_age_sec','breakeven_after_r','max_hold_min','flatten_before_close_min','max_positions_per_sector'];
  let snapshot=null,dirty=false,editRevision=null,busy=false,received=0,epoch=0,timer=null,loading=false;
  let deskState=null,deskReceived=0,draftOptions=null;
  const strategies=['long_call','long_put','short_call','short_put','call_debit','put_debit','call_credit','put_credit'];

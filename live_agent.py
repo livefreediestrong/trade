@@ -37,9 +37,12 @@ DEFAULTS = {
     # an optional maximum hold, and a flatten before the close (0 = off).
     "protective_exits": True, "breakeven_after_r": 1.0, "max_hold_min": 0,
     "flatten_before_close_min": 10,
+    # Most agent stock positions (open or still filling) in one sector; 0 = off.
+    "max_positions_per_sector": 2,
 }
 # Fields added after policies were first saved; older saved policies get these defaults.
-_ADDED_FIELDS = ("protective_exits", "breakeven_after_r", "max_hold_min", "flatten_before_close_min")
+_ADDED_FIELDS = ("protective_exits", "breakeven_after_r", "max_hold_min", "flatten_before_close_min",
+                 "max_positions_per_sector")
 
 SCREEN_GAP_SEC = 30  # after a screen with no PASS (no model call), the next symbol comes up this soon
 # Bad/delisted/unquotable symbols: skip for a while instead of blocking forever.
@@ -141,9 +144,10 @@ def validate(body):
               "max_daily_loss_usd": (.01, 1e9), "max_orders_per_day": (1, 100000),
               "max_research_per_day": (1, 10000), "model_budget_usd": (.01, 100000),
               "limit_offset_bps": (0, 100), "min_confidence": (0, 1), "max_quote_age_sec": (1, 60),
-              "breakeven_after_r": (0, 10), "max_hold_min": (0, 1440), "flatten_before_close_min": (0, 120)}
+              "breakeven_after_r": (0, 10), "max_hold_min": (0, 1440), "flatten_before_close_min": (0, 120),
+              "max_positions_per_sector": (0, 10)}
     integers = {"interval_sec", "max_orders_per_day", "max_research_per_day", "max_quote_age_sec",
-                "max_hold_min", "flatten_before_close_min"}
+                "max_hold_min", "flatten_before_close_min", "max_positions_per_sector"}
     if not isinstance(policy["protective_exits"], bool):
         raise ValueError("protective_exits must be true or false")
     for key, bounds in ranges.items():
@@ -275,6 +279,39 @@ def _exit_terms(signal, policy, price):
         quantum = Decimal(".01") if limit >= 1 else Decimal(".0001")
         options["limit_price"] = float(limit.quantize(quantum, rounding=ROUND_UP))
     return canonical_order(dict(signal, suggested_shares=int(shares)), options)
+
+
+def sector_block(signal, policy, managed, pending_orders):
+    """Stop a new agent buy when the agent already holds enough names in that sector.
+
+    Owner decision: like the event and WSB guards, this only reduces risk. A missing
+    sector (ETFs, lookup failures) never blocks. Counts the agent's tracked positions
+    and its buys still waiting at the broker; adding to a name already held is allowed.
+    """
+    cap = int(policy.get("max_positions_per_sector") or 0)
+    sector = str(signal.get("sector") or "").strip()
+    ticker = str(signal.get("ticker") or "").upper()
+    if cap <= 0 or not sector or sector.lower() == "unknown" or signal.get("side") != "buy":
+        return None
+    held = set()
+    for name, row in (managed or {}).items():
+        try:
+            open_shares = float((row or {}).get("shares") or 0) > 0
+        except (TypeError, ValueError):
+            open_shares = False
+        if open_shares and (row or {}).get("sector") == sector:
+            held.add(str(name).upper())
+    for item in pending_orders or []:
+        sig = (item or {}).get("signal") or {}
+        if sig.get("source") == "live_agent" and sig.get("side") == "buy" and sig.get("sector") == sector:
+            held.add(str(sig.get("ticker") or "").upper())
+    held.discard(ticker)
+    held.discard("")
+    if len(held) < cap:
+        return None
+    names = ", ".join(sorted(held)[:4])
+    return (f"Fox already holds {len(held)} {sector} position{'s' if len(held) != 1 else ''} ({names}); "
+            f"the per-sector limit is {cap}, so he skips {ticker} to keep the account spread out")
 
 
 def _event_window(cfg):
@@ -542,6 +579,7 @@ class LiveAgent:
                 "exit_at": exit_at, "account_scope": owner,
                 "tracking_error": (row or {}).get("tracking_error"),
                 "signal_id": signal.get("id"),
+                "sector": signal.get("sector") or (row or {}).get("sector"),
             }
             self.save(raw)
 
@@ -707,6 +745,12 @@ class LiveAgent:
             earnings = earnings_block(signal, cfg, policy)
             if earnings:
                 return earnings
+            with self.desk._lock:
+                managed = copy.deepcopy(self.load().get("managed") or {})
+            pending = self.desk.load_ledger().get("pending_broker_orders") or []
+            crowded = sector_block(signal, policy, managed, pending)
+            if crowded:
+                return crowded
         return None
 
     def reserve(self, signal, cfg):

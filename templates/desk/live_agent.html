@@ -23,6 +23,7 @@
   <label>Research attempts per day<input id="la-max_research_per_day" type="number" min="1" max="10000" step="1" required /></label>
   <label title="Pauses new agent research when recorded live-agent AI cost reaches this amount. Paper research is counted separately; one attempt may use several model calls.">Recorded agent AI budget · $<input id="la-model_budget_usd" type="number" min="0.01" max="100000" step="0.01" required /></label>
   <label title="A model confidence score is not a calibrated probability of profit.">Minimum decision confidence · 0–1<input id="la-min_confidence" type="number" min="0" max="1" step="0.01" required /></label>
+  <label title="Keeps Fox from piling into one part of the market. Example: with 2, once he holds AAPL and MSFT (both Technology) he skips NVDA until one of them is sold. Buys still waiting to fill count too. Funds with no sector, like SPY, are never limited. 0 turns this off.">Most positions in one sector<input id="la-max_positions_per_sector" type="number" min="0" max="10" step="1" required /></label>
   <fieldset id="la-exits"><legend>Protective exits (stocks the agent bought)</legend>
    <label class="chk"><input type="checkbox" id="la-protective_exits" checked /> Sell at the planned stop or target</label>
    <label title="Once the price rises this many times the planned risk, the checked stop moves to entry. Gaps, fees and unfilled exits can still cause a loss. 0 turns this off.">Move stop to entry after · R<input id="la-breakeven_after_r" type="number" min="0" max="10" step="0.1" required /></label>

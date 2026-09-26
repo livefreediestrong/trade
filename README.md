@@ -27,6 +27,10 @@ Useful feature references:
 - [Market watch, X watcher and internet-wide trend scanner](docs/MARKET_WATCH.md)
 - [Today at the desk: Fox, Changing Woman, scheduled events and WSB](docs/MARKET_DAY.md)
 - [Research capabilities review](docs/RESEARCH_CAPABILITIES.md)
+- [Company check: bottom line, insiders, contracts, lobbying, Congress trades](docs/COMPANY_CHECK.md)
+- [Strategy scorecard](docs/STRATEGY_SCORECARD.md)
+- [Watchlist alerts](docs/WATCH_ALERTS.md)
+- [Live trading ON/OFF switch](docs/LIVE_SWITCH.md)
 
 The detailed implementation notes below use the legacy Tomahawk name.
 

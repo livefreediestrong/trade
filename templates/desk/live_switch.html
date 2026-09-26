@@ -1,0 +1,17 @@
+<section id="live-switch" class="company-check desk-module live-switch" aria-labelledby="live-switch-title">
+ <h2 id="live-switch-title">Live trading</h2>
+ <div class="live-switch-row">
+  <span id="ls-state" class="live-switch-pill" data-live="unknown">Checking…</span>
+  <button type="button" class="btn" id="ls-off" hidden>Turn OFF</button>
+  <button type="button" class="btn ghost" id="ls-on" hidden>Turn ON…</button>
+ </div>
+ <p id="ls-plain">Reading the current mode…</p>
+ <form id="ls-confirm" class="live-switch-confirm" hidden>
+  <p id="ls-confirm-text">Turning ON lets this desk send orders to your broker. You still approve every order, and Fox stays off unless you start him on the Fox page.</p>
+  <label for="ls-phrase">Type <b>GO LIVE</b> to confirm</label>
+  <input id="ls-phrase" autocomplete="off" spellcheck="false" required />
+  <button type="submit" class="btn primary">Turn live trading on</button>
+  <button type="button" class="btn ghost" id="ls-cancel">Cancel</button>
+ </form>
+ <p id="ls-status" role="status" class="hint-line keep-visible"></p>
+</section>

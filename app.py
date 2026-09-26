@@ -2672,6 +2672,8 @@ def _analysis_to_signal(
         "session_is_today": (vol or {}).get("session_is_today"),
         "research_flags": research_flags,
         "reject_reason": None,
+        # Display and the agent's per-sector cap only; an unknown sector never blocks.
+        "sector": (analysis.get("sector_name") if analysis.get("sector_name") not in (None, "", "Unknown") else None),
     }
 
 
@@ -9289,6 +9291,14 @@ import fox_workspace
 fox_workspace.register(app, __import__("sys").modules[__name__])
 import trading_goals
 trading_goals.register(app, __import__("sys").modules[__name__])
+import company_check
+company_check.register(app, __import__("sys").modules[__name__])
+import strategy_scorecard
+strategy_scorecard.register(app, __import__("sys").modules[__name__])
+import watch_alerts
+watch_alerts.register(app, __import__("sys").modules[__name__])
+import live_switch
+live_switch.register(app, __import__("sys").modules[__name__])
 
 # Claim the instance before starting any background work.
 if __name__ == "__main__":

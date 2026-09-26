@@ -1,0 +1,12 @@
+<section id="company-check" class="company-check desk-module" aria-labelledby="company-check-title">
+ <h2 id="company-check-title">Company check</h2>
+ <p>One stock, five quick reads: its bottom line, what insiders did with their own money, federal contracts, lobbying and Congress trades. Research only. Nothing here places, sizes or blocks a trade.</p>
+ <form id="company-check-form" class="company-check-form">
+  <label for="company-check-ticker">Stock symbol</label>
+  <input id="company-check-ticker" autocomplete="off" spellcheck="false" maxlength="10" placeholder="e.g. LMT" required />
+  <button type="submit" class="btn" id="company-check-go">Check</button>
+  <button type="button" class="btn ghost" id="company-check-refresh" hidden title="Ignore the saved copy and read every source again">Read again</button>
+ </form>
+ <p id="company-check-status" role="status" class="hint-line keep-visible">Type a symbol. A first check reads five public sources and can take about 20 seconds; repeats within 6 hours are instant.</p>
+ <div id="company-check-result" class="company-check-grid" hidden></div>
+</section>

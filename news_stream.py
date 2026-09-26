@@ -475,6 +475,28 @@ def watchlist_news(
     return dict(payload)
 
 
+def material_headlines(symbols: list[str], *, max_age_sec: float = 7200, now: float | None = None) -> list[dict[str, Any]]:
+    """High-impact headlines for these symbols from the last watchlist refresh; no network call."""
+    now = time.time() if now is None else now
+    wanted = {str(s).upper() for s in symbols or []}
+    out = []
+    with _lock:
+        by_ticker = dict((_cache.get("payload") or {}).get("by_ticker") or {})
+    for sym, rows in by_ticker.items():
+        if sym not in wanted:
+            continue
+        for row in rows or []:
+            published = _ts_seconds(row.get("published_ts") or row.get("ts"))
+            link = str(row.get("link") or row.get("url") or "")
+            if (row.get("materiality") != "high" or published is None or not 0 <= now - published <= max_age_sec
+                    or row.get("timestamp_rejected")):
+                continue
+            out.append({"ticker": sym, "title": str(row.get("title") or "")[:300], "source": row.get("source"),
+                        "headline_key": row.get("headline_key"), "published_ts": published,
+                        "url": link if link.startswith(("https://", "http://")) else None})
+    return out
+
+
 def cached_evidence(symbol: str, *, now: float | None = None) -> dict[str, Any]:
     """Snapshot dated headlines without adding network latency to a decision."""
     now = time.time() if now is None else now

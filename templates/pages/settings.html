@@ -27,6 +27,7 @@
   </script>
   <link rel="stylesheet" href="/static/after_close.css?v=nightly-20260925-3" />
   <link rel="stylesheet" href="/static/companion_context.css?v=evidence-20260925-2" />
+  <link rel="stylesheet" href="/static/company_check.css?v=company-20260925-2" />
 </head>
 {% include "desk/header.html" %}
 {% include "desk/top_nav.html" %}
@@ -39,12 +40,13 @@
 {% include "desk/attention.html" %}
 {% include "desk/companion_context.html" %}
 
+{% include "desk/watch_alerts.html" %}
 {% include "desk/settings.html" %}
 
 </main>
 {% include "desk/dialogs.html" %}
   <script src="/static/agent_desk.js?v=tidy-20260924-1"></script>
-  <script src="/static/live_agent.js?v=agent-readiness-20260925-1"></script>
+  <script src="/static/live_agent.js?v=sector-cap-20260925-1"></script>
   <script src="/static/desk_day.js?v=fox-20260925-1"></script>
   <script src="/static/trade_guards.js?v=desk-day-20260924-1"></script>
   <script src="/static/equity_scoreboard.js"></script>
@@ -65,5 +67,6 @@
   {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}<script src="/static/research_studio.js?v=modules-20260924-1"></script><script src="/static/sale_market.js?v=cleanup-20260924-1"></script>{% endif %}
 
 <script src="/static/trading_goals.js?v=goals-20260925-2"></script>
+<script src="/static/watch_alerts.js?v=company-20260925-1"></script>
 </body>
 </html>
