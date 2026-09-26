@@ -6,11 +6,12 @@
   </a>
   <div class="desk-topnav-links" role="list">
     <a role="listitem" href="/desk/overview" class="desk-topnav-link{% if desk_page == 'overview' %} is-active{% endif %}">Overview</a>
-    <a role="listitem" href="/desk/auto" class="desk-topnav-link{% if desk_page == 'auto' %} is-active{% endif %}" title="Real broker · Moss agent">Auto</a>
+    <a role="listitem" href="/desk/fox" class="desk-topnav-link{% if desk_page == 'auto' %} is-active{% endif %}" title="Real broker · Fox agent">Fox</a>
     <a role="listitem" href="/desk/paper" class="desk-topnav-link{% if desk_page == 'paper' %} is-active{% endif %}" title="Simulated practice">Paper</a>
     <a role="listitem" href="/desk/research" class="desk-topnav-link{% if desk_page == 'research' %} is-active{% endif %}" title="Ideas, rankings, notes">Research</a>
     <a role="listitem" href="/desk/ticket" class="desk-topnav-link{% if desk_page == 'ticket' %} is-active{% endif %}" title="Buy or sell ticket">Ticket</a>
     <a role="listitem" href="/desk/settings" class="desk-topnav-link desk-topnav-muted{% if desk_page == 'settings' %} is-active{% endif %}">Settings</a>
   </div>
-  <p class="desk-topnav-hint" id="desk-page-hint">{{ page_hint|default("") }}</p>
+  {# Split pages repeat the hint in their banner; only the legacy full desk needs it here. #}
+  {% if desk_page|default("") == "all" %}<p class="desk-topnav-hint" id="desk-page-hint">{{ page_hint|default("") }}</p>{% endif %}
 </nav>

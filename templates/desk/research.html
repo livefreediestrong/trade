@@ -2,6 +2,8 @@
 <div class="section-heading"><h2 id="desk-research-title">Research</h2><p>Recorded by Moss · inspect details and run optional investigations here</p></div>
 {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}{% include "desk/scanner_link.html" %}{% endif %}
 <div class="section-grid">
+{% if config.get('COMPANION_AVAILABLE') %}{% include "desk/after_close.html" %}{% endif %}
+{% include "desk/market_watch.html" %}
 {% if config.get('COMPANION_AVAILABLE') %}{% include "desk/news_sources.html" %}{% endif %}
 {% if config.get('MARKETS_AVAILABLE') %}{% include "desk/market_operations.html" %}{% endif %}
 {% if config.get('COMPANION_AVAILABLE') %}{% include "desk/notebook.html" %}{% endif %}
@@ -74,13 +76,13 @@
       <h2>Ticker buzz <span class="title-ctx">(Reddit mention counts — research only)</span></h2>
       <button type="button" class="btn ghost sm" id="btn-buzz-refresh" title="Refresh Reddit mention counts now">Refresh</button>
     </div>
-    <p class="hint-line quiet-hint">Counts how often tickers show up on Reddit (WallStreetBets threads and hot posts). Uses a Reddit login when configured; otherwise public feeds may fail. Paper research only — not a trade signal.</p>
+    <p class="hint-line quiet-hint">Counts mentions in Reddit posts and classic discussion comments. Requires this app’s approved Reddit API access; tokens renew and temporary failures retry automatically. Research context only. <a href="https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-Data-API-Wiki" target="_blank" rel="noopener noreferrer">Connection setup</a></p>
     <div class="buzz-meta" id="buzz-meta" title="When buzz data was last refreshed">Last refresh: -</div>
     <div class="buzz-errors muted-line" id="buzz-errors"></div>
     <div class="buzz-live-chat" id="buzz-live-chat">
       <div class="live-chat-head">
         <strong>WSB Live Chat</strong>
-        <span class="live-chat-note muted" id="buzz-live-chat-note">Live Chat needs Reddit login — connect later.</span>
+        <span class="live-chat-note muted" id="buzz-live-chat-note">Community Live Chat is not connected by this reader.</span>
       </div>
       <div class="live-chat-tickers" id="buzz-live-chat-tickers"></div>
       <section class="desk-module live-chat-paste-wrap">

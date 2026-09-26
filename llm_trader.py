@@ -11,6 +11,8 @@ import json
 import math
 import os
 import re
+import copy
+import random
 from pathlib import Path
 from typing import Any, Optional
 
@@ -280,7 +282,50 @@ def gemini_budget_status() -> dict:
     return _GEMINI_BUDGET.status()
 
 
-def gemini_generate(
+_NO_THINKING_LEVEL: set[str] = set()
+
+
+def gemini_thinking_level(model: str) -> str | None:
+    """GEMINI_THINKING_LEVEL for JSON research calls (default low; "default" or empty
+    leaves the model's own setting). Only Gemini 3 models take a thinking level."""
+    raw = os.environ.get("GEMINI_THINKING_LEVEL")
+    level = ("low" if raw is None else raw).strip().lower()
+    if level in ("", "default", "off") or model in _NO_THINKING_LEVEL:
+        return None
+    if level not in ("minimal", "low", "medium", "high") or not str(model).startswith("gemini-3"):
+        return None
+    return level
+
+
+def gemini_generate(prompt: str, **kwargs) -> str:
+    """Expose the latest transport result, without confusing historical signals with health."""
+    cfg = kwargs.get("cfg") or load_llm_config()
+    model = cfg.get("model") or DEFAULT_MODEL
+    try:
+        answer = _gemini_generate(prompt, **kwargs)
+    except Exception as exc:
+        with _BRAIN_HEALTH_LOCK:
+            _BRAIN_HEALTH[model] = {"ok": False, "at": _time.time(),
+                                    "error": redact_secrets(str(exc), cfg.get("api_key") or "")[:300]}
+        raise
+    with _BRAIN_HEALTH_LOCK:
+        _BRAIN_HEALTH[model] = {"ok": True, "at": _time.time(), "error": None}
+    return answer
+
+
+_BRAIN_HEALTH_LOCK = _threading.Lock()
+_BRAIN_HEALTH: dict[str, dict] = {}
+
+
+def brain_health(model):
+    with _BRAIN_HEALTH_LOCK:
+        row = dict(_BRAIN_HEALTH.get(model) or {})
+    age = max(0, _time.time() - row["at"]) if row else None
+    return {**row, "age_sec": age, "state": "unobserved" if not row else
+            "stale" if age > 900 else "healthy" if row["ok"] else "unavailable"}
+
+
+def _gemini_generate(
     prompt: str,
     *,
     system: Optional[str] = None,
@@ -288,6 +333,7 @@ def gemini_generate(
     cfg: Optional[dict] = None,
     timeout_sec: float = 45,
     response_schema: Optional[dict] = None,
+    max_output_tokens: Optional[int] = None,
 ) -> str:
     """Call Gemini generateContent REST. Raises RuntimeError on hard failures."""
     cfg = cfg or load_llm_config()
@@ -297,7 +343,6 @@ def gemini_generate(
 
     _CALL_COST.last = 0.0
     _CALL_COST.last_model = None
-    _GEMINI_BUDGET.acquire()
 
     model = cfg.get("model") or DEFAULT_MODEL
     url = f"{GEMINI_API_BASE}/{model}:generateContent"
@@ -312,39 +357,64 @@ def gemini_generate(
         }
         if response_schema is not None:
             body["generationConfig"]["responseJsonSchema"] = response_schema
+        level = gemini_thinking_level(model)
+        if level:
+            # Short structured answers: thinking tokens are billed as output.
+            body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": level}
     else:
         body["generationConfig"] = {"temperature": 0.5}
 
+    if max_output_tokens is not None:
+        if isinstance(max_output_tokens, bool) or not isinstance(max_output_tokens, int) or not 1 <= max_output_tokens <= 8192:
+            raise ValueError("invalid_max_output_tokens")
+        body["generationConfig"]["maxOutputTokens"] = max_output_tokens
+
     try:
         timeout = float(timeout_sec) if timeout_sec is not None else 45.0
-        if timeout <= 0:
+        if not math.isfinite(timeout) or timeout <= 0:
             timeout = 45.0
     except (TypeError, ValueError):
         timeout = 45.0
 
-    try:
-        # Key goes in a header, never the URL: requests' error text includes the URL,
-        # and that text flows into signals/journal/UI.
-        r = requests.post(
-            url,
-            json=body,
-            headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
-            timeout=timeout,
-        )
-    except requests.Timeout as exc:
-        raise RuntimeError("llm_timeout") from exc
-    except requests.RequestException as exc:
-        raise RuntimeError(f"gemini_request_failed: {redact_secrets(str(exc), api_key)}") from exc
-
-    if r.status_code != 200:
-        # Do not include request URL (has key) or full body secrets
-        detail = ""
+    deadline = _time.monotonic() + timeout
+    for attempt in range(3):
+        remaining = deadline - _time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("llm_timeout")
+        _GEMINI_BUDGET.acquire()  # Every HTTP attempt consumes the persistent budget.
+        try:
+            r = requests.post(url, json=copy.deepcopy(body),
+                              headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+                              timeout=remaining)
+        except requests.Timeout as exc:
+            raise RuntimeError("llm_timeout") from exc
+        except requests.RequestException as exc:
+            raise RuntimeError(f"gemini_request_failed: {redact_secrets(str(exc), api_key)}") from exc
+        if r.status_code == 200:
+            break
         try:
             err = r.json()
             detail = (err.get("error") or {}).get("message") or str(err)[:200]
         except Exception:
             detail = (r.text or "")[:200]
-        raise RuntimeError(f"gemini_http_{r.status_code}: {redact_secrets(detail, api_key)}")
+        error = f"gemini_http_{r.status_code}: {redact_secrets(str(detail), api_key)}"
+        thinking = body["generationConfig"].get("thinkingConfig")
+        if attempt < 2 and r.status_code == 400 and thinking and "think" in str(detail).lower():
+            _NO_THINKING_LEVEL.add(model)
+            body["generationConfig"].pop("thinkingConfig")
+            continue  # Same deadline, no recursive timeout reset.
+        if attempt >= 2 or r.status_code not in (408, 429, 500, 502, 503, 504):
+            raise RuntimeError(error)
+        delay = (2 ** attempt) + random.uniform(0, .25)
+        try:
+            retry_after = float((getattr(r, "headers", {}) or {}).get("Retry-After", 0))
+            if math.isfinite(retry_after):
+                delay = max(delay, retry_after)
+        except (TypeError, ValueError):
+            pass
+        if delay + 1 >= deadline - _time.monotonic():
+            raise RuntimeError(error)
+        _time.sleep(delay)
 
     try:
         data = r.json()
@@ -368,7 +438,7 @@ def gemini_generate(
     if not candidates:
         # blocked / empty
         feedback = data.get("promptFeedback") or {}
-        raise RuntimeError(f"gemini_empty_candidates: {feedback}")
+        raise RuntimeError(f"gemini_empty_candidates: {redact_secrets(str(feedback), api_key)}")
 
     candidate = candidates[0] or {}
     if candidate.get("finishReason") != "STOP":
@@ -408,8 +478,17 @@ def _analysis_context_blob(analysis: dict) -> str:
         "companion_context",
     ]
     slim = {k: analysis.get(k) for k in keep_keys if k in analysis}
+    # The full recall receipt stays in the local decision record. The model
+    # receives the same numeric aggregates and a bounded set of examples, so
+    # growing memory cannot silently multiply the prompt size or model cost.
+    if isinstance(slim.get("learning_context"), dict):
+        memory = dict(slim["learning_context"])
+        rows = memory.get("evidence_rows") or []
+        memory["evidence_rows"] = rows[:12]
+        memory["retained_receipt_count"] = len(rows)
+        slim["learning_context"] = memory
     try:
-        return json.dumps(slim, default=str, indent=2)
+        return json.dumps(slim, default=str, separators=(",", ":"))  # compact: fewer input tokens
     except Exception:
         return str(slim)
 
@@ -597,10 +676,10 @@ def trade_thesis_from_analysis(
             "target_idea": "",
             "risks": [],
             "playbook_agree": False,
-            "notes": str(exc)[:300],
+            "notes": redact_secrets(str(exc), cfg.get("api_key") or "")[:300],
             "llm_model": model,
             "llm_raw": "",
-            "error": f"gemini_exception: {exc}"[:200],
+            "error": ("gemini_exception: " + redact_secrets(str(exc), cfg.get("api_key") or ""))[:200],
         }
 
     parsed = _extract_json_object(raw)
@@ -664,9 +743,9 @@ def chat(
     try:
         return gemini_generate(prompt, system=CHAT_SYSTEM, json_mode=False, cfg=cfg)
     except RuntimeError as exc:
-        return f"[error: {exc}]"
+        return f"[error: {redact_secrets(str(exc), cfg.get('api_key') or '')}]"
     except Exception as exc:  # noqa: BLE001
-        return f"[error: gemini_exception: {exc}]"
+        return f"[error: gemini_exception: {redact_secrets(str(exc), cfg.get('api_key') or '')}]"
 
 
 def status_public() -> dict[str, Any]:
@@ -685,6 +764,13 @@ def status_public() -> dict[str, Any]:
 TYPESAFE_API_URL = "https://api.typesafe.ai/v1/systemone"
 DEFAULT_HORIZON_MIN = 20
 VALID_BRAIN_MODES = ("gemini", "mock", "jev", "claude")
+# Temporary product lock: credentials alone do not establish a working integration.
+# Remove only with a repaired provider path and verified end-to-end response.
+JEV_UNAVAILABLE = "JEV is temporarily unavailable until its integration is repaired and verified. Use Gemini or another available brain."
+
+
+def brain_selection_error(mode: str) -> str | None:
+    return JEV_UNAVAILABLE if str(mode).strip().lower() == "jev" else None
 
 # Persisted estimates share the same atomic usage file as call reservations.
 _CALL_COST = _threading.local()
@@ -852,6 +938,14 @@ def shadow_auditor_enabled() -> bool:
     return v not in ("0", "false", "off", "no")
 
 
+def shadow_auditor_uses_model() -> bool:
+    """A second (paid) model call checks the thesis only when its answer can act:
+    SHADOW_GATE=1, or SHADOW_AUDITOR=gemini to record it anyway. Otherwise the
+    observe-only audit uses the free keyword check."""
+    v = (os.environ.get("SHADOW_AUDITOR", "1") or "1").strip().lower()
+    return v == "gemini" or shadow_gate_enabled()
+
+
 def shadow_gate_enabled() -> bool:
     v = (os.environ.get("SHADOW_GATE", "0") or "0").strip().lower()
     return v in ("1", "true", "on", "yes")
@@ -1015,18 +1109,18 @@ def jev_trade_thesis(
             timeout=max(3.0, float(timeout_sec or 12)),
         )
     except requests.Timeout as exc:
-        return _empty_thesis("jev-latest", "llm_timeout", str(exc)[:200])
+        return _empty_thesis("jev-latest", "llm_timeout", redact_secrets(str(exc), key)[:200])
     except requests.RequestException as exc:
-        return _empty_thesis("jev-latest", f"jev_request_failed: {exc}"[:200])
+        return _empty_thesis("jev-latest", ("jev_request_failed: " + redact_secrets(str(exc), key))[:200])
 
     if r.status_code != 200:
-        detail = (r.text or "")[:200]
+        detail = redact_secrets(r.text or "", key)[:200]
         return _empty_thesis("jev-latest", f"jev_http_{r.status_code}: {detail}"[:200])
 
     try:
         data = r.json()
     except Exception as exc:
-        return _empty_thesis("jev-latest", f"jev_bad_json: {exc}"[:200])
+        return _empty_thesis("jev-latest", ("jev_bad_json: " + redact_secrets(str(exc), key))[:200])
 
     import math
     answers = data.get("answers") if isinstance(data, dict) else None
@@ -1145,7 +1239,7 @@ def shadow_audit_decision(
         return h
 
     llm_cfg = load_llm_config()
-    if llm_cfg.get("configured") and llm_cfg.get("api_key"):
+    if llm_cfg.get("configured") and llm_cfg.get("api_key") and shadow_auditor_uses_model():
         ticker = ((analysis or {}).get("ticker") or "?").upper()
         prompt = (
             f"Side claimed: {s}\nThesis: {thesis}\nTicker: {ticker}\n"
@@ -1561,21 +1655,21 @@ def should_route_cheap(analysis: Optional[dict] = None, cfg: Optional[dict] = No
     """Cheap brain router: mock for junk tape instead of Gemini.
 
     Route when (rel_vol weak AND range extreme) OR verdict AVOID.
-    Never route to mock under live broker modes: mock research cannot
-    execute live (signal_execution_block), so routing would only burn
-    research quota and block auto_live orders.
+    Under live broker modes only AVOID routes: mock research cannot execute
+    live (signal_execution_block), and AVOID can never reach the broker either,
+    so paying for its thesis buys nothing. Tradeable verdicts keep the real brain.
     """
     if not brain_router_enabled():
         return False, "router_off"
     cfg = cfg or {}
-    desk_mode = str(cfg.get("mode") or "").strip().lower()
-    if desk_mode in ("auto_live", "live_manual"):
-        return False, "live_mode_no_mock"
     mode = resolve_brain_mode(cfg)
     if mode != "gemini":
         return False, f"mode_{mode}"
     analysis = analysis or {}
     verdict = str(analysis.get("verdict") or "").upper()
+    desk_mode = str(cfg.get("mode") or "").strip().lower()
+    if desk_mode in ("auto_live", "live_manual"):
+        return (True, "verdict_avoid") if verdict == "AVOID" else (False, "live_mode_no_mock")
     vol = analysis.get("volume") or {}
     entry = analysis.get("entry_quality") or {}
     try:
@@ -1627,7 +1721,9 @@ def decide_trade_thesis(
         return out
 
     if mode == "jev":
-        out = jev_trade_thesis(analysis, cfg, timeout_sec=timeout_sec)
+        error = brain_selection_error(mode)
+        out = (_empty_thesis("jev-latest", error) if error
+               else jev_trade_thesis(analysis, cfg, timeout_sec=timeout_sec))
         if out.get("error"):
             # Hard hold — no silent mock fills when jev is configured
             return {
@@ -1711,9 +1807,13 @@ def status_public_extended(cfg: Optional[dict] = None) -> dict[str, Any]:
         base["model"] = "mock-momentum"
     elif mode == "jev":
         base["provider"] = "jev"
-        base["configured"] = bool(typesafe_api_key())
+        base["selection_error"] = brain_selection_error(mode)
+        base["configured"] = bool(typesafe_api_key()) and not base["selection_error"]
         base["model"] = "jev-latest"
     elif mode == "claude":
         import claude_brain
         base.update(provider="claude", configured=claude_brain.is_configured(), model=claude_brain.model_name())
+    if mode == "gemini":
+        base["model"] = (cfg or {}).get("llm_model") or base["model"]
+        base["health"] = brain_health(base["model"])
     return base

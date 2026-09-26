@@ -3,6 +3,7 @@ import copy
 import socket
 import threading
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from types import SimpleNamespace as NS
 
 import pytest
@@ -278,6 +279,16 @@ def test_known_order_identity_survives_error_response(execution, monkeypatch):
     assert len(pending) == 1 and pending[0]["order_id"] == "known"
 
 
+def fresh_stock_quote(identity, con_id=42):
+    """A live two-sided quote that passes the adapter's final pre-send check."""
+    now = datetime.now(timezone.utc)
+    ticker = NS(marketDataType=1, bidSize=100, askSize=100,
+                ticks=[NS(tickType=1, price=100.0, time=now), NS(tickType=2, price=100.02, time=now)])
+    seen = {}
+    ibkr._capture_stock_ticks(ticker, seen)
+    return dict(ibkr._stock_tick_quote(ticker, seen), ok=True, identity=identity, con_id=con_id)
+
+
 def test_ibkr_preserves_identity_after_submit_failure(monkeypatch, gateway):
     identity = ibkr.get_account()["identity"]
     placed = []
@@ -286,6 +297,7 @@ def test_ibkr_preserves_identity_after_submit_failure(monkeypatch, gateway):
         order.orderId, order.clientId = 42, 37
         return NS(order=order)
     monkeypatch.setattr(gateway, "placeOrder", place)
+    monkeypatch.setattr(ibkr, "stock_quote", lambda symbol: fresh_stock_quote(identity))
     monkeypatch.setattr(gateway, "sleep", lambda t: (_ for _ in ()).throw(ConnectionError("post-submit disconnect")))
     response = ibkr.place_from_desk_order({
         "ticker": "TEST", "side": "buy", "shares": 1, "signal_id": "s", "broker_identity": identity, "valid_until": deadline(),

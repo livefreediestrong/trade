@@ -4,8 +4,9 @@
  const usd=n=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:2}).format(n);
  function view(w){
   const p=w.settings,t=w.today||{};
-  const state=w.error?'Needs attention':!w.active?'New entries paused':w.busy?'Reviewing candidates':w.phase==='waiting_for_market'?'Waiting for market':'Paper workday enabled';
-  const next=w.error?'Read the latest issue below, then check status before changing settings.':!w.active?'No new automatic entries. Review saved limits when you are ready to start.':w.busy?'Moss is checking evidence. You can leave this section; no action is needed.':w.phase==='waiting_for_market'?'Waiting for the next regular US market session. Holidays and early closes are respected.':'Moss checks candidates roughly every '+Math.round(p.interval_sec/60*10)/10+' minutes. No eligible setup means no trade; you do not need to intervene.';
+  const waiting=w.phase==='waiting_for_next_cycle'&&Number.isFinite(Date.parse(w.next_at));
+  const state=w.error?'Needs attention':!w.active?'New entries paused':w.busy?'Reviewing candidates':w.phase==='waiting_for_market'?'Waiting for market':waiting?'Waiting for next cycle':'Paper workday enabled';
+  const next=w.error?'Read the latest issue below. Failed background checks retry automatically; new research waits for recovery.':!w.active?'No new automatic entries. Review saved limits when you are ready to start.':w.busy?'Moss is checking evidence. You can leave this section; no action is needed.':w.phase==='waiting_for_market'?'Waiting for the next regular US market session. Holidays and early closes are respected.':waiting?'Next candidate check no earlier than '+new Date(w.next_at).toLocaleTimeString()+'. Due exits and outcome checks continue.':'Moss checks candidates roughly every '+Math.round(p.interval_sec/60*10)/10+' minutes. No eligible setup means no trade; you do not need to intervene.';
   return {state,next,amount:`${usd(p.base_order_usd)} base · ${usd(p.max_order_usd)} maximum`,activity:`${t.cycles||0} cycles · ${t.paper_fills||0} paper fills`,limits:`${p.max_positions} positions · ${p.max_daily_loss_pct}% loss limit · ${p.max_trades_per_day} entry/fill cap`,last:w.error||t.last_result||'No completed candidate result recorded today.',review:`${p.universe==='broad_us'?'Broad US stocks & ETFs plus ':''}Focus list: ${p.symbols.join(', ')}. ${usd(p.base_order_usd)} base / ${usd(p.max_order_usd)} maximum per entry; ${p.max_total_exposure_pct}% total paper exposure; ${p.max_positions} positions; ${p.max_daily_loss_pct}% daily loss limit. Up to ${p.max_model_calls} AI attempts and ${usd(p.model_budget_usd)} recorded desk AI costs per day (unreported charges are not included). Check every ${p.interval_sec}s; evaluate after ${p.horizon_min} minutes. ${p.flatten_before_close?'Attempt fresh-quote exits before close.':'No optional pre-close flattening.'} Personality: ${p.personality==='empirical_bayes'?'adaptive empirical Bayes':'fixed-size Stoic collector'}.`};
  }
  if(typeof module==='object'&&module.exports){module.exports={view};return;}
@@ -70,5 +71,5 @@
  function age(){clearTimeout(timer);if(!active||document.hidden)return;buttons();timer=setTimeout(age,1000);}
  document.addEventListener('visibilitychange',()=>{clearTimeout(timer);if(!document.hidden)age();});
  window.addEventListener('pagehide',()=>{active=false;clearTimeout(timer);});
- window.addEventListener('pageshow',()=>{active=true;age();window.dispatchEvent(new Event('moss:refresh'));});age();
+ window.addEventListener('pageshow',e=>{active=true;age();if(e.persisted)window.dispatchEvent(new Event('moss:refresh'));});age();
 })();

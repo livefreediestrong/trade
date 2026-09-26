@@ -200,6 +200,16 @@ assert.equal($('#stat-pnl').textContent,'-2');
 assert.equal($('#stat-trades').textContent,'3');
 assert.equal($('#daily-recap-headline').textContent,'PAPER');
 assert.equal($('#stat-llm').textContent,'Claude · claude-test');
+delete data.llm;
+renderTop(data);
+assert.equal($('#stat-llm').textContent,'Checking research model…');
+data.llm={brain_mode:'gemini',configured:false};
+renderTop(data);
+assert.equal($('#stat-llm').textContent,'Gemini needs an API key');
+data.llm={brain_mode:'jev',configured:false,jev_key_present:true,selection_error:'JEV is locked until repaired.'};
+renderTop(data);
+assert.equal($('#stat-llm').textContent,'JEV unavailable');
+assert.equal($('#stat-llm').title,'JEV is locked until repaired.');
 assert.equal($('#stat-mode').textContent,'Approve each live broker order');
 assert.equal($('#mode-select').value,'live_manual');
 """)

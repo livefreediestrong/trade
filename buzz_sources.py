@@ -2,7 +2,8 @@
 Tomahawk ticker buzz — Reddit (+ optional Stocktwits) mention aggregator.
 
 Paper-research only. Uses Reddit OAuth when REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET
-are set (oauth.reddit.com); otherwise falls back to public www *.json (often 403).
+are set (oauth.reddit.com). Missing credentials are explicitly disconnected.
+Public JSON is legacy opt-in only, never a fallback after OAuth rejection.
 No login-wall / Matrix session scraping. Fail soft on blocks/timeouts.
 Caches in memory + data/buzz_cache.json for CACHE_TTL_SEC to avoid rate limits.
 
@@ -35,6 +36,8 @@ Therefore:
 from __future__ import annotations
 
 import json
+import copy
+import math
 import os
 import re
 import threading
@@ -43,6 +46,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
+from email.utils import parsedate_to_datetime
+from urllib.parse import urlsplit
 
 import requests
 
@@ -204,6 +209,12 @@ _oauth_expires_at: float = 0.0
 _oauth_mode: str | None = None  # oauth_client_credentials | oauth_password
 _oauth_last_error: str | None = None
 _reddit_degraded_reason: str | None = None
+_reddit_request_lock = threading.RLock()
+_reddit_retry_at = 0.0
+_reddit_last_ok = 0.0
+_reddit_failures = 0
+_reddit_responses: dict[str, tuple[float, Any]] = {}
+_buzz_build_lock = threading.Lock()
 
 
 
@@ -229,7 +240,7 @@ def _reddit_user_agent() -> str:
         # strip leading u/ if operator pasted it
         if username.lower().startswith("u/"):
             username = username[2:]
-        return f"TomahawkDesk/1.0 by u/{username}"
+        return f"windows:tomahawk-desk:v1.1 (by /u/{username})"
     return USER_AGENT
 
 
@@ -254,33 +265,40 @@ def _request_reddit_token() -> tuple[str | None, str | None, float, str | None]:
     auth = (client_id, client_secret)
     last_err: str | None = None
 
+    refresh = _reddit_env("REDDIT_REFRESH_TOKEN")
+    grant = {"grant_type": "refresh_token", "refresh_token": refresh} if refresh else {"grant_type": "client_credentials"}
+
     try:
         r = requests.post(
             REDDIT_TOKEN_URL,
-            data={"grant_type": "client_credentials"},
+            data=grant,
             auth=auth,
             headers=headers,
             timeout=HTTP_TIMEOUT,
+            allow_redirects=False,
         )
         if r.status_code == 200:
             body = r.json() if r.content else {}
             token = (body.get("access_token") or "").strip()
             expires = float(body.get("expires_in") or 3600)
-            if token:
-                return token, "oauth_client_credentials", expires, None
+            if token and math.isfinite(expires) and expires > 0:
+                return token, "oauth_refresh_token" if refresh else "oauth_client_credentials", expires, None
             last_err = "client_credentials: empty access_token"
         else:
             last_err = f"client_credentials HTTP {r.status_code}"
+            if r.status_code in (401, 403, 429) or r.status_code >= 500:
+                _reddit_backoff(last_err, r)
+                return None, None, 0.0, last_err
     except requests.Timeout:
         last_err = "client_credentials timeout"
     except Exception as e:  # noqa: BLE001
-        last_err = f"client_credentials {type(e).__name__}: {e}"
+        last_err = f"Reddit token unavailable ({type(e).__name__})"
 
     username = _reddit_env("REDDIT_USERNAME")
     password = _reddit_env("REDDIT_PASSWORD")
     if username.lower().startswith("u/"):
         username = username[2:]
-    if username and password:
+    if username and password and not refresh:
         try:
             r = requests.post(
                 REDDIT_TOKEN_URL,
@@ -297,7 +315,7 @@ def _request_reddit_token() -> tuple[str | None, str | None, float, str | None]:
                 body = r.json() if r.content else {}
                 token = (body.get("access_token") or "").strip()
                 expires = float(body.get("expires_in") or 3600)
-                if token:
+                if token and math.isfinite(expires) and expires > 0:
                     return token, "oauth_password", expires, None
                 last_err = "password_grant: empty access_token"
             else:
@@ -305,7 +323,7 @@ def _request_reddit_token() -> tuple[str | None, str | None, float, str | None]:
         except requests.Timeout:
             last_err = "password_grant timeout"
         except Exception as e:  # noqa: BLE001
-            last_err = f"password_grant {type(e).__name__}: {e}"
+            last_err = f"Reddit token unavailable ({type(e).__name__})"
 
     return None, None, 0.0, last_err or "reddit_oauth_failed"
 
@@ -315,6 +333,8 @@ def _ensure_reddit_token(*, force: bool = False) -> tuple[str | None, str | None
     global _oauth_token, _oauth_expires_at, _oauth_mode, _oauth_last_error, _reddit_degraded_reason
     with _token_lock:
         now = time.time()
+        if now < _reddit_retry_at:
+            return None, None
         if (
             not force
             and _oauth_token
@@ -325,13 +345,14 @@ def _ensure_reddit_token(*, force: bool = False) -> tuple[str | None, str | None
         _oauth_last_error = err
         if token and mode:
             _oauth_token = token
-            _reddit_degraded_reason = None  # clear on token success
             _oauth_mode = mode
-            _oauth_expires_at = time.time() + max(30.0, float(expires_in) - 60.0)
+            _oauth_expires_at = time.time() + max(1.0, float(expires_in) - min(60, float(expires_in) / 2))
             return _oauth_token, _oauth_mode
         _oauth_token = None
         _oauth_mode = None
         _oauth_expires_at = 0.0
+        if time.time() >= _reddit_retry_at:
+            _reddit_backoff(err or "Reddit token unavailable")
         return None, None
 
 
@@ -339,12 +360,12 @@ def reddit_auth_status() -> dict[str, Any]:
     """Public status for /api/buzz — no secrets."""
     configured = _reddit_oauth_configured()
     username_present = bool(_reddit_env("REDDIT_USERNAME"))
-    with _token_lock:
-        mode = _oauth_mode
-        last_error = _oauth_last_error
-        has_live = bool(_oauth_token) and time.time() < _oauth_expires_at
+    # Status is observational: never wait behind a token HTTP request.
+    mode = _oauth_mode
+    last_error = _oauth_last_error
+    has_live = bool(_oauth_token) and time.time() < _oauth_expires_at
     if not configured:
-        out_mode = "public_json"
+        out_mode = "public_json" if _public_reddit_enabled() else "disabled"
         if not last_error:
             last_error = OAUTH_MISSING_MSG
     elif mode and has_live:
@@ -353,11 +374,22 @@ def reddit_auth_status() -> dict[str, Any]:
         out_mode = mode
     else:
         out_mode = "none"
+    retry = max(0, math.ceil(_reddit_retry_at - time.time()))
+    state = ("needs_credentials" if not configured and out_mode == "disabled" else
+             "cooldown" if retry else "connected" if has_live and _reddit_last_ok and not _reddit_degraded_reason else
+             "error" if _reddit_degraded_reason else "ready" if configured else "public_opt_in")
     return {
         "configured": configured,
         "mode": out_mode,
         "username_present": username_present,
         "last_error": last_error,
+        "state": state, "retry_in_sec": retry,
+        "last_success_at": _reddit_last_ok or None,
+        "message": ("Reddit is not connected. Approved API access and REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET are required." if state == "needs_credentials" else
+                    f"Reddit is cooling down; automatic retry in {retry}s." if retry else
+                    "Reddit connected; tokens renew automatically." if state == "connected" else
+                    _reddit_degraded_reason or "Reddit credentials loaded; awaiting the next source check."),
+        "setup_url": "https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-Data-API-Wiki",
     }
 
 
@@ -525,72 +557,90 @@ def _get_json(url: str, *, params: dict | None = None, headers: dict | None = No
         return None, f"{type(e).__name__}: {e}"
 
 
-def _reddit_get(path_or_url: str, *, params: dict | None = None) -> tuple[Any | None, str | None]:
-    """GET Reddit listing/comments via OAuth when configured, else public www JSON."""
-    global _reddit_degraded_reason
-    if _reddit_oauth_configured():
-        token, _mode = _ensure_reddit_token()
-        oauth_err = None
-        if token:
-            url = _to_oauth_url(path_or_url)
-            headers = {
-                "Authorization": f"bearer {token}",
-                "User-Agent": _reddit_user_agent(),
-                "Accept": "application/json",
-            }
+def _public_reddit_enabled() -> bool:
+    return _reddit_env("REDDIT_PUBLIC_JSON").lower() in ("1", "true", "yes", "on")
+
+
+def _reddit_backoff(reason: str, response=None) -> None:
+    """One shared cooldown for every Reddit consumer; never sleep an HTTP worker."""
+    global _reddit_retry_at, _reddit_failures, _reddit_degraded_reason
+    _reddit_failures = min(8, _reddit_failures + 1)
+    delay = min(900, 15 * 2 ** (_reddit_failures - 1))
+    headers = getattr(response, "headers", {}) or {}
+    for key in ("Retry-After", "X-Ratelimit-Reset"):
+        raw = headers.get(key)
+        try:
+            seconds = float(raw)
+        except (TypeError, ValueError):
             try:
-                r = requests.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT)
-                if r.status_code == 401:
-                    token, _mode = _ensure_reddit_token(force=True)
-                    if token:
-                        headers["Authorization"] = f"bearer {token}"
-                        r = requests.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT)
-                    else:
-                        with _token_lock:
-                            oauth_err = _oauth_last_error or "reddit_oauth_401_refresh_failed"
-                        r = None  # type: ignore
-                if r is not None and r.status_code == 200:
-                    _reddit_degraded_reason = None  # clear on successful OAuth fetch
-                    return r.json(), None
-                if r is not None:
-                    oauth_err = f"HTTP {r.status_code} for {url}"
-            except requests.Timeout:
-                oauth_err = f"timeout for {url}"
-            except requests.RequestException as e:
-                oauth_err = f"{type(e).__name__}: {e}"
-            except Exception as e:  # noqa: BLE001
-                oauth_err = f"{type(e).__name__}: {e}"
-        else:
-            with _token_lock:
-                oauth_err = _oauth_last_error or "reddit_oauth_failed"
-        # OAuth fail → public JSON fallback (may 403; caller marks reddit_degraded)
-        # Fall through to public path below; stash err on thread-local via module flag
-        _reddit_degraded_reason = oauth_err
+                seconds = parsedate_to_datetime(str(raw)).timestamp() - time.time() if key == "Retry-After" else 0
+            except (TypeError, ValueError, OverflowError):
+                seconds = 0
+        if math.isfinite(seconds):
+            delay = max(delay, seconds)
+    if getattr(response, "status_code", None) in (401, 403):
+        delay = max(delay, 900)
+    _reddit_retry_at = max(_reddit_retry_at, time.time() + delay)
+    _reddit_degraded_reason = reason
 
-    # Public www *.json scraping: off by default. Reddit's Data API terms require
-    # OAuth for programmatic access, and the public endpoint mostly 403s anyway.
-    # Set REDDIT_CLIENT_ID/SECRET (preferred) or opt in with REDDIT_PUBLIC_JSON=1.
-    if (os.environ.get("REDDIT_PUBLIC_JSON") or "").strip().lower() not in ("1", "true", "yes", "on"):
-        return None, (
-            "Reddit is off: add REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET to .env "
-            "(free at reddit.com/prefs/apps) to turn it on."
-        )
 
-    # Public www *.json (often 403 from datacenter IPs).
-    if path_or_url.startswith("http"):
-        url = path_or_url
-        if not url.endswith(".json") and "/comments/" not in url and ".json?" not in url:
-            # listing paths already include .json from callers
-            pass
-    elif path_or_url.startswith("/"):
-        url = "https://www.reddit.com" + path_or_url
-        if not url.endswith(".json"):
-            url = url.rstrip("/") + ".json"
-    else:
-        url = "https://www.reddit.com/" + path_or_url.lstrip("/")
-        if not url.endswith(".json"):
-            url = url.rstrip("/") + ".json"
-    return _get_json(url, params=params, headers=_public_headers())
+def _reddit_get(path_or_url: str, *, params: dict | None = None) -> tuple[Any | None, str | None]:
+    """Shared, bounded Reddit reader. Renew once on 401; respect provider cooldowns."""
+    global _reddit_last_ok, _reddit_failures, _reddit_degraded_reason, _oauth_last_error
+    parsed = urlsplit(path_or_url)
+    if parsed.netloc and (parsed.scheme != "https" or parsed.netloc not in ("www.reddit.com", "oauth.reddit.com", "reddit.com")):
+        return None, "Unsupported Reddit source URL"
+    with _reddit_request_lock:
+        configured = _reddit_oauth_configured()
+        if not configured and not _public_reddit_enabled():
+            return None, reddit_auth_status()["message"]
+        url = _to_oauth_url(parsed.path if parsed.netloc else path_or_url)
+        key = json.dumps([url, params or {}, configured], sort_keys=True)
+        cached = _reddit_responses.get(key)
+        if cached and 0 <= time.time() - cached[0] < 60:
+            return copy.deepcopy(cached[1]), None
+        if time.time() < _reddit_retry_at:
+            return None, reddit_auth_status()["message"]
+        if not configured:
+            # Explicit legacy opt-in only. Never fall back after OAuth rejection.
+            return _get_json("https://www.reddit.com" + urlsplit(url).path + ".json", params=params, headers=_public_headers())
+        token, _mode = _ensure_reddit_token()
+        if not token:
+            return None, _oauth_last_error or reddit_auth_status()["message"]
+        headers = {"Authorization": f"bearer {token}", "User-Agent": _reddit_user_agent(), "Accept": "application/json"}
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT, allow_redirects=False)
+            if response.status_code == 401:
+                token, _mode = _ensure_reddit_token(force=True)
+                if token:
+                    headers["Authorization"] = f"bearer {token}"
+                    response = requests.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT, allow_redirects=False)
+            if response.status_code != 200:
+                reason = f"Reddit HTTP {response.status_code}" + ("; verify approved API access and credentials" if response.status_code in (401, 403) else "")
+                _reddit_backoff(reason, response)
+                return None, reason
+            body = response.json()
+            if not isinstance(body, (dict, list)):
+                raise ValueError("Invalid Reddit response")
+            _reddit_last_ok, _reddit_failures = time.time(), 0
+            _reddit_degraded_reason = _oauth_last_error = None
+            _reddit_responses[key] = (time.time(), copy.deepcopy(body))
+            for old in list(_reddit_responses):
+                if time.time() - _reddit_responses[old][0] >= 60:
+                    del _reddit_responses[old]
+            while len(_reddit_responses) > 32:
+                del _reddit_responses[next(iter(_reddit_responses))]
+            try:
+                remaining = float((getattr(response, "headers", {}) or {}).get("X-Ratelimit-Remaining", 100))
+                if math.isfinite(remaining) and remaining < 1:
+                    _reddit_backoff("Reddit rate window exhausted", response)
+            except (TypeError, ValueError):
+                pass
+            return body, None
+        except Exception as exc:
+            reason = f"Reddit unavailable ({type(exc).__name__}); retrying automatically"
+            _reddit_backoff(reason)
+            return None, reason
 
 
 def _permalink_url(permalink: str | None, fallback_id: str | None = None) -> str:
@@ -634,8 +684,10 @@ def fetch_post_comments(
     *,
     limit: int = 200,
     article_id: str | None = None,
+    sort: str = "confidence",
+    depth: int = 4,
 ) -> tuple[list[dict], str | None]:
-    """Fetch comment bodies for a post. Fail soft."""
+    """Fetch comment bodies for a post. Fail soft. sort="new" reads the live flow."""
     aid = _article_id_from_permalink(permalink, article_id)
     if not aid and not permalink:
         return [], "no permalink"
@@ -651,7 +703,7 @@ def fetch_post_comments(
             path = path.rstrip("/") + ".json"
     data, err = _reddit_get(
         path,
-        params={"limit": limit, "raw_json": 1, "depth": 4, "sort": "confidence"},
+        params={"limit": limit, "raw_json": 1, "depth": depth, "sort": sort},
     )
     if err or not isinstance(data, list) or len(data) < 2:
         return [], err or "bad comments json"
@@ -659,7 +711,9 @@ def fetch_post_comments(
     children = (comments_listing.get("data") or {}).get("children") or []
     out: list[dict] = []
 
-    def walk(nodes: list, depth: int = 0) -> None:
+    max_depth = depth
+
+    def walk(nodes: list, level: int = 0) -> None:
         for n in nodes:
             if not isinstance(n, dict):
                 continue
@@ -674,11 +728,13 @@ def fetch_post_comments(
                             "score": d.get("score") or 0,
                             "author": d.get("author"),
                             "id": d.get("id"),
+                            "created_utc": d.get("created_utc"),
+                            "permalink": d.get("permalink"),
                         }
                     )
                 replies = d.get("replies")
-                if isinstance(replies, dict) and depth < 4:
-                    walk((replies.get("data") or {}).get("children") or [], depth + 1)
+                if isinstance(replies, dict) and level < max_depth:
+                    walk((replies.get("data") or {}).get("children") or [], level + 1)
             elif kind == "more":
                 continue
 
@@ -767,8 +823,8 @@ def aggregate_reddit(
     sources_ok: list[dict] = []
     megathreads: list[dict] = []
 
-    if not _reddit_oauth_configured():
-        errors.append(OAUTH_MISSING_MSG)
+    if not _reddit_oauth_configured() and not _public_reddit_enabled():
+        return agg, megathreads, [reddit_auth_status()["message"]], sources_ok
 
     wsb_posts_hot: list[dict] = []
     wsb_posts_new: list[dict] = []
@@ -972,7 +1028,7 @@ def _load_disk_cache() -> dict[str, Any] | None:
         if not CACHE_PATH.is_file():
             return None
         raw = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict):
+        if not isinstance(raw, dict) or not math.isfinite(float(raw.get("cached_at_epoch"))):
             return None
         return raw
     except Exception:
@@ -981,8 +1037,10 @@ def _load_disk_cache() -> dict[str, Any] | None:
 
 def _save_disk_cache(payload: dict[str, Any]) -> None:
     try:
-        DATA_DIR.mkdir(exist_ok=True)
-        CACHE_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary = CACHE_PATH.with_suffix(f".{threading.get_ident()}.tmp")
+        temporary.write_text(json.dumps(payload, allow_nan=False), encoding="utf-8")
+        temporary.replace(CACHE_PATH)
     except Exception:
         pass
 
@@ -994,7 +1052,8 @@ def _cache_age_sec(payload: dict[str, Any] | None) -> float | None:
     if ts is None:
         return None
     try:
-        return max(0.0, time.time() - float(ts))
+        age = time.time() - float(ts)
+        return age if math.isfinite(age) else None
     except (TypeError, ValueError):
         return None
 
@@ -1049,14 +1108,14 @@ def _build_payload(
 
     epoch = time.time()
     auth_mode = _resolve_auth_mode()
-    degraded = bool(_reddit_degraded_reason)
+    degraded = bool(_reddit_degraded_reason) or auth_mode == "disabled"
     # If OAuth configured but we fell back to public, mark degraded (demote fake WSB heat)
     if _reddit_oauth_configured() and auth_mode in ("public_json", "none"):
         degraded = True
         if auth_mode == "public_json":
             pass
         else:
-            auth_mode = "public_json" if any("reddit" in (s or "") for s in sources_ok) else "none"
+            auth_mode = "public_json" if any("reddit" in str(s.get("source") or "") for s in sources_ok) else "none"
     if degraded:
         # Demote WSB-sourced mention scores so heat lane does not look authoritative
         for row in tickers:
@@ -1117,9 +1176,9 @@ _live_chat_paste: dict[str, Any] = {
     "line_count": 0,
 }
 LIVE_CHAT_STATUS_NOTE = (
-    "Live Chat needs Reddit login — connect later. "
-    "Matrix at matrix.redditspace.com requires a session token; "
-    "no public anonymous chat API. Paste a chat export below to bridge."
+    "Community Live Chat is not connected by this reader. "
+    "Connecting the post/comment API does not connect Live Chat. "
+    "You can paste a chat export below; it expires after 30 minutes."
 )
 
 
@@ -1204,14 +1263,12 @@ def _merge_live_chat_paste(
     # Paste TTL — expire stale paste
     rows = paste.get("tickers") or []
     parsed_at = paste.get("parsed_at")
-    expired = False
     if parsed_at:
         try:
             ts = datetime.fromisoformat(str(parsed_at).replace("Z", "+00:00"))
             age = (datetime.now(timezone.utc) - ts).total_seconds()
             if age > PASTE_TTL_SEC:
                 rows = []
-                expired = True
         except Exception:
             pass
     weight = SOURCE_WEIGHT.get("wsb_live_chat", 1.35)
@@ -1261,23 +1318,29 @@ def _buzz_cache_key(watchlist: list[str] | None, focus_liquid: bool) -> str:
 
 def get_cached_buzz() -> dict[str, Any] | None:
     """Return in-memory or disk cache without network. May be stale."""
-    global _mem_cache, _mem_cached_at
+    global _mem_cache, _mem_cached_at, _mem_cache_key
     with _cache_lock:
         if _mem_cache is not None:
             age = time.time() - _mem_cached_at
             out = dict(_mem_cache)
             out["cache_age_sec"] = round(age, 1)
-            out["stale"] = age > CACHE_TTL_SEC
+            out["stale"] = not 0 <= age <= CACHE_TTL_SEC
+            out["reddit_auth"] = reddit_auth_status()
+            out["auth_mode"] = out["reddit_auth"]["mode"]
             return out
     disk = _load_disk_cache()
     if disk:
-        age = _cache_age_sec(disk) or 99999
+        age = _cache_age_sec(disk)
+        age = 99999 if age is None else age
         with _cache_lock:
             _mem_cache = disk
+            _mem_cache_key = disk.get("cache_key")
             _mem_cached_at = float(disk.get("cached_at_epoch") or (time.time() - age))
         out = dict(disk)
         out["cache_age_sec"] = round(age, 1)
-        out["stale"] = age > CACHE_TTL_SEC
+        out["stale"] = not 0 <= age <= CACHE_TTL_SEC
+        out["reddit_auth"] = reddit_auth_status()
+        out["auth_mode"] = out["reddit_auth"]["mode"]
         return out
     return None
 
@@ -1297,7 +1360,12 @@ def fetch_ticker_buzz(
     *,
     focus_liquid: bool = False,
 ) -> dict[str, Any]:
-    """Main entry: return buzz dict, using cache unless force or expired.
+    with _buzz_build_lock:
+        return _fetch_ticker_buzz(watchlist, force, focus_liquid=focus_liquid)
+
+
+def _fetch_ticker_buzz(watchlist=None, force=False, *, focus_liquid=False) -> dict[str, Any]:
+    """Return buzz dict, using cache unless force or expired.
 
     Cache is keyed by focus_liquid + watchlist; focus/watchlist changes invalidate.
     """
@@ -1351,7 +1419,12 @@ def kick_background_refresh(
             with _refresh_lock:
                 _refresh_inflight = False
 
-    threading.Thread(target=worker, name="buzz-refresh", daemon=True).start()
+    try:
+        threading.Thread(target=worker, name="buzz-refresh", daemon=True).start()
+    except Exception:
+        with _refresh_lock:
+            _refresh_inflight = False
+        return False
     return True
 
 

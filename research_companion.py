@@ -89,8 +89,11 @@ def historical_observation(symbol, bars, source, now):
 
 def memory_summary(events):
     groups = desk_workbench.calibration(events)
-    qualified = research_learning.train(events)["qualified_samples"]
+    trained = research_learning.train(events)
+    qualified = trained["qualified_samples"]
     return {"observations": len(events), "reviewed_outcomes": qualified, "groups": groups,
+            "capacity": 5000, "excluded_outcomes": trained["excluded"], "evidence_hash": trained["evidence_hash"],
+            "active_groups": sum(bool(w["active_for_ranking"]) for w in trained["weights"]),
             "note": "No qualified scored outcomes yet. I can collect evidence, but I cannot infer an edge." if not qualified else
                     "Past outcomes train research-ranking parameters. They do not establish profitability or fine-tune the language model."}
 
@@ -126,12 +129,16 @@ class Companion:
         self.last_attempt = 0.0
         self.stop = threading.Event()
         self._threads = {}
+        self.scheduler_errors = {}
+        self._memory_cache = None
         self.paper = PaperWorkday(desk)
         self.trades = TradeJournal(desk)
         from agent_review import AgentReview
         self.review = AgentReview(desk, self)
         from companion_news import HeadlineDesk
         self.news = HeadlineDesk(desk)
+        from after_close_review import AfterCloseReview
+        self.after_close = AfterCloseReview(desk, self)
 
     @property
     def path(self):
@@ -150,7 +157,31 @@ class Companion:
 
     def events(self):
         raw = self.desk._load_json(self.desk.DECISIONS_PATH, {})
-        return (raw.get("events", []) if isinstance(raw, dict) else raw)[-500:]
+        events = raw.get("events", []) if isinstance(raw, dict) else raw
+        if not isinstance(events, list) or any(not isinstance(e, dict) for e in events):
+            raise ValueError("Research memory is unreadable; preserve it for recovery")
+        return events[:5000]  # DecisionRing stores newest first.
+
+    def memory_status(self):
+        """Reuse the same evidence summary between polls; corrections invalidate it."""
+        path = self.desk.DECISIONS_PATH
+        if str(path.resolve()) in self.desk._CORRUPT_PATHS:
+            return {"observations": 0, "reviewed_outcomes": 0, "groups": [], "available": False,
+                    "note": "Research memory needs recovery. Existing records have been preserved."}
+        try:
+            stat = path.stat()
+            key = (str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+        except FileNotFoundError:
+            key = (str(path.resolve()), None, 0)
+        cached = self._memory_cache
+        if cached and cached[0] == key and 0 <= time.monotonic() - cached[1] < 30:
+            return copy.deepcopy(cached[2])
+        value = dict(memory_summary(self.events()), available=True)
+        if str(path.resolve()) in self.desk._CORRUPT_PATHS:
+            return {"observations": 0, "reviewed_outcomes": 0, "groups": [], "available": False,
+                    "note": "Research memory needs recovery. Existing records have been preserved."}
+        self._memory_cache = (key, time.monotonic(), copy.deepcopy(value))
+        return value
 
     def status(self):
         with self.lock:
@@ -159,10 +190,12 @@ class Companion:
             now = now_utc()
             return {"ok": True, "settings": saved["settings"], "plan": saved["plan"],
                     "busy": self.busy, "error": self.last_error, "market_open": paper_loop.is_rth(now),
+                    "scheduler_errors": dict(self.scheduler_errors),
                     "next_session": next_session(now), "briefs": saved.get("briefs", [])[:30],
-                    "notebook_count": len(saved.get("briefs", [])), "memory": memory_summary(self.events()),
+                    "notebook_count": len(saved.get("briefs", [])), "memory": self.memory_status(),
                     "paper_workday": self.paper.status(), "actual_trades": self.trades.status(),
                     "agent_review": self.review.status(),
+                    "after_close": self.after_close.status(now),
                     "execution_settings": {k: cfg.get(k) for k in ("mode", "session_active", "kill_switch", "rth_only", "risk_preset", "live_agent")},
                     "live_automation": "not_armed", "desk_execution_mode": cfg.get("mode"),
                     "schedule": "Once per market session while the app is running; weekends and exchange holidays skipped. Missed days are not fabricated.",
@@ -189,7 +222,13 @@ class Companion:
             self.last_attempt = time.monotonic()
             self.busy = True
             self.last_error = None
-        threading.Thread(target=self._work, args=(scheduled,), name="moss-research", daemon=True).start()
+        try:
+            threading.Thread(target=self._work, args=(scheduled,), name="moss-research", daemon=True).start()
+        except Exception:
+            with self.lock:
+                self.busy = False
+                self.last_error = "Could not start notebook research; retry after the cooldown."
+            return False
         return True
 
     def _work(self, scheduled=False):
@@ -315,14 +354,21 @@ class Companion:
                 self.busy = False
 
     def start(self):
+        if self.stop.is_set():
+            return  # An explicit stop is not a crashed worker.
         def loop():
             while not self.stop.wait(30):
-                try:
-                    self.news.refresh()
-                    self.review.tick()
-                    self.run(scheduled=True)
-                except Exception:
-                    self.last_error = "Notebook unavailable; scheduled research paused."
+                # Optional feeds/reviews cannot starve the daily notebook.
+                for name, job in (("news", self.news.refresh), ("review", self.review.tick),
+                                  ("after_close", self.after_close.tick),
+                                  ("notebook", lambda: self.run(scheduled=True))):
+                    try:
+                        job()
+                        with self.lock:
+                            self.scheduler_errors.pop(name, None)
+                    except Exception as exc:
+                        with self.lock:
+                            self.scheduler_errors[name] = f"Scheduled {name} unavailable ({type(exc).__name__}); retrying on the next check."
         def paper_workday():
             while not self.stop.wait(5):
                 try:
@@ -368,10 +414,21 @@ def register(app, desk):
         service.news.refresh()
         return jsonify(service.news.snapshot())
 
+    @bp.get("/api/companion/after-close/<day>")
+    def after_close_report(day):
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            raise ValueError("Use YYYY-MM-DD")
+        with service.after_close.lock:
+            report = service.after_close.load()["reports"].get(day)
+        if report is None:
+            return jsonify(ok=False, error="No nightly report for this session"), 404
+        from narrative_checks import checked_report
+        return jsonify(ok=True, report=checked_report(report))
+
     @bp.post("/api/companion/research")
     def research():
         started = service.run()
-        return jsonify(ok=started, error=None if started else "Research is running or cooling down for one minute."), 202 if started else 409
+        return jsonify(ok=started, error=None if started else service.last_error or "Research is running or cooling down for one minute."), 202 if started else 409
 
     @bp.post("/api/companion/settings")
     def settings():

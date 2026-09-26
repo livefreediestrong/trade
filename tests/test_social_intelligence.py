@@ -38,6 +38,10 @@ def test_social_snapshot_normalizes_and_summarizes_rows(monkeypatch):
 
     monkeypatch.setattr(social_intelligence.requests, "get", lambda *a, **k: Response())
     monkeypatch.setenv("SOCIAL_SUBREDDITS", "wallstreetbets")
+    # Reddit goes through buzz_sources: OAuth when configured, public JSON only by opt-in.
+    for name in ("REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET", "X_BEARER_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("REDDIT_PUBLIC_JSON", "1")
     result = social_intelligence.snapshot(["AAPL"], force=True)
     assert result["ok"] is True
     assert result["pulse"][0]["ticker"] == "AAPL"

@@ -17,7 +17,7 @@ import math
 import time
 from urllib.parse import quote
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import requests
 

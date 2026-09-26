@@ -6,16 +6,20 @@ Never places orders itself — callers feed desk ingest / place_from_desk_order.
 from __future__ import annotations
 
 import copy
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal, ROUND_DOWN, ROUND_UP
+from datetime import datetime
+from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from order_terms import (
     canonical_bag_order,
     canonical_option_order,
-    option_notional,
+    option_max_loss,
     positive,
+    round_option_price,
 )
+
+_MARKET_TZ = ZoneInfo("America/New_York")
 from trade_planner import number
 
 STRATEGIES = {
@@ -145,7 +149,8 @@ def risk_ready_error(book: dict | None) -> str | None:
 
 
 def pick_expiry(expirations: list[str], dte_min: int, dte_max: int, today=None) -> str | None:
-    today = today or datetime.now(timezone.utc).date()
+    # DTE counts US market days; the UTC date rolls over at ~8pm ET.
+    today = today or datetime.now(_MARKET_TZ).date()
     best = None
     best_score = 10**9
     for raw in expirations or []:
@@ -250,7 +255,9 @@ def build_option_candidate(
         for cls in chain["classes"]:
             strikes.extend(cls.get("strikes") or [])
     strikes = [float(s) for s in strikes]
-    contracts = min(int(auto_cfg["max_contracts"]), max(1, int(signal.get("suggested_shares") or 1)))
+    # Stock share counts do not translate to contracts; start from the configured
+    # cap and let execution_terms_option size down to the max-loss budget.
+    contracts = int(auto_cfg["max_contracts"])
     # Cap short covered calls by shares.
     if strategy == "short_call" and not auto_cfg.get("allow_naked_short"):
         contracts = min(contracts, max(1, int(stock_shares // 100)))
@@ -325,15 +332,28 @@ def execution_terms_option(signal, cfg, premium, execution_quote, max_order_usd:
         offset = Decimal(str(policy.get("limit_offset_bps") or 5)) / 10000
         buying = signal.get("side") == "buy"
         limit = mark * (1 + offset if buying else 1 - offset)
-        quantum = Decimal(".01") if limit >= 1 else Decimal(".0001")
-        limit = limit.quantize(quantum, rounding=ROUND_DOWN if buying else ROUND_UP)
+        limit = round_option_price(limit, buying=buying, combo=asset == "BAG")
+        if limit <= 0:
+            raise ValueError("Option limit premium rounds below one tick")
         options["limit_price"] = float(limit)
-        bound = max(mark, limit)
+        # Size on the worse premium for the risk that is being taken: the most
+        # paid for a debit, the least received for a credit/short.
+        bound = max(mark, limit) if buying else min(mark, limit)
     budget = Decimal(str(max_order_usd if max_order_usd is not None else policy.get("max_order_usd") or 0))
-    affordable = int(budget / (bound * 100)) if bound > 0 else 0
+    # Budget the worst-case loss, not the premium: a credit spread risks
+    # (width - credit) and a short put risks (strike - premium) per share.
+    per_contract = Decimal(str(option_max_loss({
+        "contracts": 1, "asset_type": asset, "option_intent": signal.get("option_intent"),
+        "option_strategy": signal.get("option_strategy"), "right": signal.get("right"),
+        "strike": signal.get("strike"), "long_strike": signal.get("long_strike"),
+        "short_strike": signal.get("short_strike"), "covered": signal.get("covered"),
+    }, float(bound))))
+    affordable = int(budget / per_contract) if per_contract > 0 else 0
     contracts = min(contracts, max(0, affordable), int(auto_cfg["max_contracts"]))
+    if asset == "BAG":
+        contracts = min(contracts, 10)  # canonical_bag_order's per-ticket cap
     if contracts < 1:
-        raise ValueError("Option budget below one contract notional (premium x 100)")
+        raise ValueError(f"Option budget below one contract's maximum loss (${per_contract:.2f})")
     base = {
         "side": signal.get("side"),
         "suggested_shares": contracts,
@@ -379,7 +399,9 @@ def status_payload(cfg) -> dict[str, Any]:
         "armed": bool(auto_cfg.get("enabled")) and bool(((cfg or {}).get("live_agent") or {}).get("enabled")),
         "notes": [
             "×100 notional via option_notional",
-            "risk_ready (verified day P&L) required for new auto options risk",
+            "risk_ready (verified day P&L) required to convert a stock idea; the desk broker gate re-checks it before submission",
+            "Budget and max position size use worst-case loss (credit width, short strike), not premium",
+            "Delayed (non-live) option quotes block auto conversion",
             "Naked STO needs allow_naked_short; covered short calls need long shares",
             "Assignment / early exercise not simulated",
         ],

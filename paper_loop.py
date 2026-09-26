@@ -29,7 +29,7 @@ NY_TZ = ZoneInfo("America/New_York") if ZoneInfo else None
 RTH_OPEN = dtime(9, 30)
 RTH_CLOSE = dtime(16, 0)
 
-DECISIONS_MAX = 500
+DECISIONS_MAX = 5000
 MIN_LOOP_INTERVAL_SEC = 30
 DEFAULT_LOOP_INTERVAL_SEC = 60
 
@@ -278,9 +278,11 @@ class DecisionRing:
         self._lock = threading.RLock()
         self._seq = 0
         self._events: list[dict[str, Any]] = []
+        self._load_error = None
         self._load()
 
     def _load(self) -> None:
+        self._load_error = None
         if not self.path.exists():
             self._events = []
             self._seq = 0
@@ -288,17 +290,21 @@ class DecisionRing:
         try:
             import json
 
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            raw = json.loads(self.path.read_text(encoding="utf-8-sig"))
             if isinstance(raw, dict):
+                if not isinstance(raw.get("events", []), list):
+                    raise ValueError("Invalid event list")
                 self._events = list(raw.get("events") or [])
                 self._seq = int(raw.get("seq") or 0)
             elif isinstance(raw, list):
                 self._events = list(raw)
                 self._seq = max((int(e.get("seq") or 0) for e in self._events), default=0)
             else:
-                self._events = []
-                self._seq = 0
+                raise ValueError("Invalid research memory")
+            if any(not isinstance(e, dict) for e in self._events):
+                raise ValueError("Invalid research event")
         except Exception:
+            self._load_error = "Research memory is unreadable; preserved for recovery"
             # Fail closed: backup corrupt file; do not silent-overwrite with empty
             try:
                 bak = self.path.with_suffix(self.path.suffix + ".corrupt.bak")
@@ -312,14 +318,19 @@ class DecisionRing:
     def _persist(self) -> None:
         import json
 
+        if self._load_error:
+            raise ValueError(self._load_error)
+
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         payload = {"seq": self._seq, "events": self._events}
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.write_text(json.dumps(payload, separators=(",", ":"), allow_nan=False), encoding="utf-8")
         tmp.replace(self.path)
 
     def append(self, event: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
+            if self._load_error:
+                raise ValueError(self._load_error)
             import copy
             import json
             self._seq += 1
@@ -554,8 +565,13 @@ class PaperLoop:
                 return
             self._stop.clear()
             self._running_flag = True
-            self._thread = threading.Thread(target=self._run, name="paper-loop", daemon=True)
-            self._thread.start()
+            try:
+                self._thread = threading.Thread(target=self._run, name="paper-loop", daemon=True)
+                self._thread.start()
+            except Exception:
+                self._running_flag = False
+                self._last_error = "Could not start the paper loop; try starting it again."
+                raise
 
     def stop(self) -> None:
         self._running_flag = False
@@ -1138,7 +1154,6 @@ class PaperLoop:
 
             decision = "hold"
             late = bool(decision_late)
-            hold = True
             filled = False
             fill_info = None
             result = None  # execute_loop_decision payload when fill path runs
@@ -1150,14 +1165,12 @@ class PaperLoop:
             # Late / miss tick deadline → hold, do NOT fill, cancel stale intent
             if decision_late:
                 late = True
-                hold = True
                 decision = "hold"
                 error = "decision_late"
                 intent_status = "late"
                 self._bump_total("late_blocks", 1)
                 _cancel_symbol(ticker, "decision_late")
             elif llm_error:
-                hold = True
                 decision = "hold"
                 error = str(llm_error)
                 intent_status = "error"
@@ -1166,7 +1179,6 @@ class PaperLoop:
                 late = True  # entry lateness label (separate from decision_late)
                 if raw_side == "flat":
                     decision = "hold"
-                    hold = True
                     intent_status = "held"
                 else:
                     # still may try fill path unless allow_late gates inside execute
@@ -1175,7 +1187,6 @@ class PaperLoop:
             if not decision_late and not llm_error:
                 # Confidence gate — force hold, no fill
                 if low_confidence:
-                    hold = True
                     decision = "hold"
                     error = "low_confidence"
                     intent_status = "held"
@@ -1184,7 +1195,6 @@ class PaperLoop:
 
                 # Soft advisory KILL (only when ADVISORY_SOFT_SIZE=1) → hold
                 if soft_kill and not low_confidence:
-                    hold = True
                     decision = "hold"
                     error = error or "advisory_kill"
                     intent_status = "held"
@@ -1194,7 +1204,6 @@ class PaperLoop:
                 shadow_gate_fn = deps.get("shadow_gate_enabled")
                 if shadow and not shadow.get("coherent") and shadow_gate_fn and shadow_gate_fn():
                     gate_shadow = True
-                    hold = True
                     decision = "hold"
                     error = "shadow_incoherent"
                     intent_status = "held"
@@ -1203,7 +1212,6 @@ class PaperLoop:
                 gate_conf = low_confidence or soft_kill
                 if not gate_shadow and not gate_conf and raw_side == "flat":
                     decision = "hold"
-                    hold = True
                     intent_status = "held"
                 elif not gate_shadow and not gate_conf and raw_side in ("buy", "sell"):
                     gen_snap = self._generation
@@ -1265,7 +1273,6 @@ class PaperLoop:
                     )
                     if result.get("abstain"):
                         decision = "hold"
-                        hold = True
                         error = reason
                         filled = False
                         fill_info = result.get("prior_fill") if result.get("fill_reversed") else None
@@ -1276,7 +1283,6 @@ class PaperLoop:
                     elif result.get("ok") and (result.get("pending") or result.get("queued")):
                         # Ask me first — enqueued for Waiting Approve/Skip
                         decision = raw_side
-                        hold = True
                         filled = False
                         fill_info = None
                         intent_status = "pending"
@@ -1292,7 +1298,6 @@ class PaperLoop:
                             size_at_price = f"{sh}@{px}"
                     elif result.get("ok") and result.get("fill"):
                         decision = raw_side
-                        hold = False
                         filled = True
                         fill_info = result.get("fill")
                         intent_status = "filled"
@@ -1304,7 +1309,6 @@ class PaperLoop:
                             )
                     else:
                         decision = "hold"
-                        hold = True
                         filled = False
                         error = reason or "fill_blocked"
                         intent_status = "held"

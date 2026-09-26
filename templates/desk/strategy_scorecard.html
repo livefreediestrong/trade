@@ -1,0 +1,12 @@
+<section id="strategy-scorecard" class="company-check desk-module" aria-labelledby="scorecard-title">
+ <h2 id="scorecard-title">Strategy scorecard</h2>
+ <p>How each kind of call has done, after estimated trading costs. A setup needs at least 30 scored calls before its record means much. Display only; Fox already stops setups whose record is losing.</p>
+ <label for="scorecard-days">Period</label>
+ <select id="scorecard-days"><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option></select>
+ <p id="scorecard-status" role="status" class="hint-line keep-visible">Reading the scorecard…</p>
+ <div class="cc-table-wrap"><table id="scorecard-table" class="scorecard-table" hidden>
+  <thead><tr><th>Kind of call</th><th>Calls</th><th title="Share of scored calls that made money after estimated costs">Won after costs</th><th title="Average price move in basis points after estimated costs. 100 bps = 1%.">Average after costs</th><th>What it means</th></tr></thead>
+  <tbody id="scorecard-rows"></tbody>
+ </table></div>
+ <p id="scorecard-note" class="hint-line keep-visible"></p>
+</section>

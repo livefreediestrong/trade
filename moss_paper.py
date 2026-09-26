@@ -70,6 +70,7 @@ class PaperWorkday:
         self.last_error = None
         self.next_attempt = 0.
         self.last_housekeeping = 0.
+        self.housekeeping_errors = {}
 
     @property
     def path(self):
@@ -100,9 +101,16 @@ class PaperWorkday:
         with self.lock:
             raw = self.load()
             today = raw["days"].get(now.astimezone(paper_loop.NY_TZ).date().isoformat(), {})
+            error = "; ".join(self.housekeeping_errors.values()) or self.last_error
         active = p["enabled"] and cfg.get("paper_research_enabled") and cfg.get("paper_auto_approve")
-        return {"settings": p, "active": bool(active), "busy": self.busy, "error": self.last_error,
-                "phase": "paused" if not active else "collecting" if paper_loop.is_rth(now) else "waiting_for_market",
+        last = policy.aware(raw.get("last_cycle_at"))
+        next_at = last + timedelta(seconds=p["interval_sec"]) if last else None
+        phase = ("paused" if not active else "waiting_for_market" if not paper_loop.is_rth(now) else
+                 "error" if error else "researching" if self.busy else
+                 "waiting_for_next_cycle" if next_at and next_at > now else "ready")
+        return {"settings": p, "active": bool(active), "busy": self.busy, "error": error,
+                "phase": phase, "last_cycle_at": raw.get("last_cycle_at"),
+                "next_at": next_at.isoformat() if active and next_at else None,
                 "today": today, "evaluation": raw.get("evaluation"), "universe":market_universe.status(self.desk),
                 "schedule": "Every market day, 9:30 ET through the exchange close; holidays and early closes observed. Runs while the app and PC are on.",
                 "scope": "Local paper fills only. Live execution settings are never changed."}
@@ -116,9 +124,18 @@ class PaperWorkday:
             self.last_housekeeping = time.monotonic()
             # Existing outcome checker has its own nonblocking lock. Observe due
             # horizons even when new paper entries have been paused.
-            self.desk.check_decision_outcomes()
-            self.close_due(cfg, now)
-            self.close_report(now)
+            for name, job in (("outcomes", self.desk.check_decision_outcomes),
+                              ("exits", lambda: self.close_due(cfg, now)),
+                              ("report", lambda: self.close_report(now))):
+                try:
+                    job()
+                    with self.lock:
+                        self.housekeeping_errors.pop(name, None)
+                except Exception as exc:
+                    with self.lock:
+                        self.housekeeping_errors[name] = f"Paper {name} check failed ({type(exc).__name__}); new research waits for recovery."
+        if self.housekeeping_errors:
+            return
         if not (p["enabled"] and cfg.get("paper_research_enabled") and cfg.get("paper_auto_approve") and paper_loop.is_rth(now)):
             return
         with self.lock:
@@ -132,7 +149,12 @@ class PaperWorkday:
             self.save(raw)  # reserve before I/O; restart cannot repeat the cycle
             self.busy = True
             self.next_attempt = time.monotonic()+p["interval_sec"]
-        threading.Thread(target=self.work, name="moss-paper-research", daemon=True).start()
+        try:
+            threading.Thread(target=self.work, name="moss-paper-research", daemon=True).start()
+        except Exception:
+            with self.lock:
+                self.busy = False
+                self.last_error = "Could not start paper research; retrying after the saved interval."
 
     def work(self):
         from desk_operations import record_trace, utc

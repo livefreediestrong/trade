@@ -1,0 +1,18 @@
+<small id="app-version" style="display:block;margin-top:6px;font:10px var(--mono);color:var(--muted)">Version · …</small>
+<script>
+  (() => {
+    const label = document.getElementById('app-version');
+    fetch('/api/health', {cache: 'no-store'})
+      .then(response => {
+        if (!response.ok) throw new Error('Version unavailable');
+        return response.json();
+      })
+      .then(({code}) => {
+        if (!/^[a-f0-9]{16}$/.test(code?.started || '')) throw new Error('Version unavailable');
+        label.textContent = 'Version · ' + code.started.slice(0, 8);
+        label.title = 'Running app build: ' + code.started +
+          (code.stale ? '. Updated files are waiting for a restart.' : '');
+      })
+      .catch(() => { label.textContent = 'Version unavailable'; });
+  })();
+</script>

@@ -55,9 +55,36 @@ function Test-DeskResponse($Response, [int]$Port) {
                 [string]::Equals($data, $expectedData, [StringComparison]::OrdinalIgnoreCase))
     } catch { return $false }
 }
-function Test-Desk([string]$Url, [int]$Port) {
-    try { return Test-DeskResponse (Invoke-RestMethod "${Url}api/health" -TimeoutSec 3) $Port }
-    catch { return $false }
+function Get-DeskHealth([string]$Url, [int]$Port) {
+    # Health of THIS checkout's desk, or $null (unreachable or another installation).
+    try { $response = Invoke-RestMethod "${Url}api/health" -TimeoutSec 3 } catch { return $null }
+    if (Test-DeskResponse $response $Port) { return $response }
+    return $null
+}
+function Test-Desk([string]$Url, [int]$Port) { return ($null -ne (Get-DeskHealth $Url $Port)) }
+function Confirm-DeskRestart([string]$Message) {
+    # Headless runs (watchdog, -NoDialogs) never restart a running desk.
+    if ($NoDialogs) { return $false }
+    Add-Type -AssemblyName PresentationFramework
+    return ([System.Windows.MessageBox]::Show($Message, 'Daytrade Signal Desk', 'YesNo', 'Question') -eq 'Yes')
+}
+function Request-DeskRestart([string]$Url, [int]$Port) {
+    # The desk refuses while a broker order is unresolved; otherwise it exits and frees the port.
+    try {
+        Invoke-RestMethod "${Url}api/desk/shutdown" -Method Post -ContentType 'application/json' `
+            -Body (@{ confirm = 'RESTART' } | ConvertTo-Json -Compress) -TimeoutSec 10 | Out-Null
+    } catch {
+        $detail = $null
+        try { $detail = ($_.ErrorDetails.Message | ConvertFrom-Json).error } catch {}
+        if (-not $detail) { $detail = $_.Exception.Message }
+        return @{ ok = $false; message = "The desk kept running the previous version: $detail" }
+    }
+    $deadline = (Get-Date).AddSeconds(20)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)) { return @{ ok = $true } }
+        Start-Sleep -Milliseconds 500
+    }
+    return @{ ok = $false; message = 'The desk accepted the restart but was still running after 20 seconds.' }
 }
 function Test-BrokerPort([string]$Server, [int]$Port) {
     $socket = New-Object Net.Sockets.TcpClient
@@ -86,22 +113,58 @@ function Find-Gateway {
     return ($candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName)
 }
 function Get-GatewayStampPath { Join-Path (Get-LaunchDataRoot) 'gateway_launch.json' }
+function Get-GatewayStamp {
+    try { return (Get-Content -LiteralPath (Get-GatewayStampPath) -Raw -ErrorAction Stop | ConvertFrom-Json) } catch { return $null }
+}
+function Get-GatewayLaunchCount([double]$WindowSec, [string]$Key = 'launches') {
+    # Launches recorded by any desk component (broker_ibkr.ensure_gateway, this launcher, Ensure-IBGateway).
+    $stamp = Get-GatewayStamp
+    if (-not $stamp) { return 0 }
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    return @(@($stamp.$Key) | Where-Object { $null -ne $_ -and ($now - [double]$_) -ge 0 -and ($now - [double]$_) -lt $WindowSec }).Count
+}
 function Test-RecentGatewayLaunch([int]$CooldownSec = 180) {
     # Shared with broker_ibkr.ensure_gateway so no two components launch Gateway back to back.
+    $stamp = Get-GatewayStamp
+    if (-not $stamp) { return $false }
     try {
-        $stamp = Get-Content -LiteralPath (Get-GatewayStampPath) -Raw -ErrorAction Stop | ConvertFrom-Json
         $age = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [double]$stamp.at
         return ($age -ge 0 -and $age -lt $CooldownSec)
     } catch { return $false }
 }
-function Set-GatewayLaunchStamp([string]$Exe) {
+function Set-GatewayLaunchStamp([string]$Exe, [string]$Source = 'launcher', [switch]$Automatic) {
+    # Merge into the shared record: keep api_seen_at (sign-in history) and the launch counts.
     try {
         $path = Get-GatewayStampPath
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
-        @{ at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); exe = $Exe; source = 'launcher' } |
-            ConvertTo-Json -Compress | Set-Content -LiteralPath $path -Encoding ASCII
+        $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $data = [ordered]@{}
+        $stamp = Get-GatewayStamp
+        if ($stamp) { foreach ($property in $stamp.PSObject.Properties) { $data[$property.Name] = $property.Value } }
+        $launches = @(@($data['launches']) | Where-Object { $null -ne $_ -and ($now - [double]$_) -lt 86400 })
+        $data['launches'] = @($launches) + @($now)
+        if ($Automatic) {
+            $auto = @(@($data['automatic_launches']) | Where-Object { $null -ne $_ -and ($now - [double]$_) -lt 86400 })
+            $data['automatic_launches'] = @($auto) + @($now)
+        }
+        $data['at'] = $now; $data['exe'] = $Exe; $data['source'] = $Source; $data['pid'] = $null
+        $data | ConvertTo-Json -Compress | Set-Content -LiteralPath $path -Encoding ASCII
     } catch {}
 }
+function Get-GatewayCheck {
+    # ok = $false when Windows could not be asked: a failed check must never read as "not running",
+    # or every launcher run would open another login window.
+    try { $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop) } catch { return @{ ok = $false; running = @() } }
+    $running = @($processes | Where-Object {
+        $_.Name -in @('ibgateway.exe', 'tws.exe') -or "$($_.Name)" -match '(?i)^(ib(kr)?gateway|tws)[\w.-]*\.exe$' -or
+        ($_.Name -in @('java.exe', 'javaw.exe') -and "$($_.CommandLine)" -match '(?i)ibgateway|ibcalpha|\\jts\\|/jts/|jclient|twslaunch')
+    })
+    # Login windows are titled "IBKR Gateway" (10.51+), "IB Gateway" or "Trader Workstation".
+    $running += @(Get-Process -ErrorAction SilentlyContinue | Where-Object { "$($_.Name)" -notin @('chrome','msedge','firefox','brave','opera','explorer','Code','notepad','notepad++','powershell','pwsh','cmd','WindowsTerminal','OUTLOOK','WINWORD') -and "$($_.MainWindowTitle)" -match '(?i)^\s*(IBKR|IB)\s+Gateway\b|^\s*Trader Workstation\b' })
+    return @{ ok = $true; running = $running }
+}
+function Get-RunningGateway { (Get-GatewayCheck).running }
+function Test-GatewayAutolaunchDisabled { (Get-LaunchSetting 'IB_GATEWAY_AUTOLAUNCH' '1') -match '^(?i)(0|false|no|off)$' }
 function Start-ConfiguredBroker {
     if ($NoBroker -or (Get-LaunchSetting 'BROKER_PROVIDER' 'alpaca') -ne 'ibkr') {
         return @{ state = 'not_needed'; message = 'Desk ready.' }
@@ -114,20 +177,38 @@ function Start-ConfiguredBroker {
     if ($server -notin @('127.0.0.1', 'localhost', '::1')) {
         return @{ state = 'remote_unavailable'; message = "Desk ready. Start the configured remote Gateway on ${server}:$port." }
     }
+    $signIn = @{ state = 'sign_in_required'; message = "Desk ready. Complete sign-in in IB Gateway. If already signed in, enable its API on port $port. Broker execution stays blocked until the account is verified." }
+    if (Test-GatewayAutolaunchDisabled) {
+        return @{ state = 'sign_in_required'; message = "Desk ready. Gateway launching is off (IB_GATEWAY_AUTOLAUNCH=0): start IB Gateway yourself and sign in." }
+    }
     $gateway = Find-Gateway
     if (-not $gateway) {
         return @{ state = 'not_installed'; message = 'Desk ready. Install IB Gateway from Interactive Brokers, or set IB_GATEWAY_EXE to its installed path.' }
     }
-    # Any running Gateway/TWS (any version or path) counts: its API port stays closed
+    # Any running Gateway/TWS (any version, path or window) counts: its API port stays closed
     # until sign-in, so a closed port must never stack another login window.
-    $existing = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -in @('ibgateway.exe', 'tws.exe') })
-    if ($existing.Count -eq 0 -and -not (Test-RecentGatewayLaunch)) {
-        # Interactive sign-in window: the user completes login and 2FA.
-        Set-GatewayLaunchStamp $gateway
-        Start-Process -FilePath $gateway -WorkingDirectory (Split-Path -Parent $gateway) -WindowStyle Normal | Out-Null
+    $check = Get-GatewayCheck
+    if (-not $check.ok) {
+        return @{ state = 'sign_in_required'; message = "Desk ready. Windows could not list running programs, so IB Gateway was not started again. Sign in to the open Gateway window, or start Gateway yourself." }
     }
-    return @{ state = 'sign_in_required'; message = "Desk ready. Complete sign-in in IB Gateway. If already signed in, enable its API on port $port. Broker execution stays blocked until the account is verified." }
+    if (@($check.running).Count -gt 0 -or (Test-RecentGatewayLaunch)) { return $signIn }
+    if ((Get-GatewayLaunchCount 1800) -ge 3) {
+        return @{ state = 'sign_in_required'; message = "Desk ready. IB Gateway was already started 3 times in 30 minutes, so it was not started again. Close extra Gateway windows and sign in to one." }
+    }
+    # One launch at a time across the desk, this launcher and the daily task (same name in broker_ibkr.py).
+    $mutex = New-Object Threading.Mutex($false, 'Local\TomahawkGatewayLaunch')
+    $held = $false
+    try {
+        try { $held = $mutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $held = $true }
+        if (-not $held -or (Test-RecentGatewayLaunch)) { return $signIn }
+        # Interactive sign-in window: the user completes login and 2FA.
+        Set-GatewayLaunchStamp $gateway 'launcher'
+        Start-Process -FilePath $gateway -WorkingDirectory (Split-Path -Parent $gateway) -WindowStyle Normal | Out-Null
+    } finally {
+        if ($held) { $mutex.ReleaseMutex() }
+        $mutex.Dispose()
+    }
+    return $signIn
 }
 function Invoke-SetupCommand([string]$Executable, [string[]]$Arguments, [string]$LogPath) {
     # Capture native stderr without PowerShell treating an expected import failure as fatal.
@@ -156,6 +237,54 @@ function Ensure-DeskPython([string]$LogDir) {
     }
     return $python
 }
+# One desk shortcut: "Daytrade Signal Desk" -> wscript.exe Launch.vbs, on the Desktop
+# and in the Start menu. Other shortcuts that start THIS checkout (older launch
+# scripts, Launch.bat, Start-Tomahawk.ps1, a second copy) are folded into it.
+# Shortcuts for anything else are never touched. Never blocks startup.
+$DeskShortcutName = 'Daytrade Signal Desk'
+$LegacyLaunchers = @('Launch.vbs', 'Launch.bat', 'Start-Tomahawk.ps1', 'run.bat', 'force_restart.ps1',
+    'install_and_restart.ps1', 'restart_signal_desk.ps1')
+function Test-DeskShortcutTarget([string]$Text) {
+    if (-not $Text) { return $false }
+    $rootFull = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    foreach ($name in $LegacyLaunchers) {
+        if ($Text.IndexOf((Join-Path $rootFull $name), [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+    }
+    return $false
+}
+function Repair-DeskShortcut([string[]]$Folders = @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {
+    $vbs = Join-Path $Root 'Launch.vbs'
+    if (-not (Test-Path -LiteralPath $vbs)) { return @() }
+    $shell = New-Object -ComObject WScript.Shell
+    $icon = Join-Path $Root 'static\desk.ico'
+    $changes = @()
+    foreach ($folder in $Folders) {
+        if (-not $folder -or -not (Test-Path -LiteralPath $folder)) { continue }
+        $canonical = Join-Path $folder "$DeskShortcutName.lnk"
+        foreach ($file in @(Get-ChildItem -LiteralPath $folder -Filter '*.lnk' -File -ErrorAction SilentlyContinue)) {
+            if ($file.FullName -ieq $canonical) { continue }
+            $link = $shell.CreateShortcut($file.FullName)
+            if ((Test-DeskShortcutTarget $link.TargetPath) -or (Test-DeskShortcutTarget $link.Arguments)) {
+                Remove-Item -LiteralPath $file.FullName -Force
+                $changes += "Replaced shortcut '$($file.BaseName)' with '$DeskShortcutName'."
+            }
+        }
+        $link = $shell.CreateShortcut($canonical)
+        $target = Join-Path $env:WINDIR 'System32\wscript.exe'
+        $arguments = '"' + $vbs + '"'
+        if ($link.TargetPath -ine $target -or $link.Arguments -ne $arguments -or $link.WorkingDirectory -ine $Root) {
+            $existed = Test-Path -LiteralPath $canonical
+            $link.TargetPath = $target
+            $link.Arguments = $arguments
+            $link.WorkingDirectory = $Root
+            $link.Description = 'Start or open the Tomahawk trading desk'
+            if (Test-Path -LiteralPath $icon) { $link.IconLocation = "$icon,0" }
+            $link.Save()
+            $changes += $(if ($existed) { "Pointed '$DeskShortcutName' at Launch.vbs." } else { "Added the '$DeskShortcutName' shortcut." })
+        }
+    }
+    return $changes
+}
 function Invoke-DeskLauncher {
     $port = [int](Get-LaunchSetting 'TOMAHAWK_PORT' '5056')
     if ($port -lt 1 -or $port -gt 65535) { throw 'TOMAHAWK_PORT is invalid.' }
@@ -167,6 +296,29 @@ function Invoke-DeskLauncher {
     try {
         try { $owned = $mutex.WaitOne(60000) } catch [Threading.AbandonedMutexException] { $owned = $true }
         if (-not $owned) { throw 'Another launch is still starting the desk. Wait a moment and reopen the shortcut.' }
+        if (-not $NoDialogs) {
+            # Your own launches keep one correct desk shortcut; headless runs never touch shortcuts.
+            try { Repair-DeskShortcut | ForEach-Object { Write-Output $_ } } catch { Write-Output "Shortcut check skipped: $($_.Exception.Message)" }
+        }
+        # A desk started before an update keeps serving the old code; offer to restart it.
+        $updateNote = $null
+        $health = Get-DeskHealth $url $port
+        if ($health -and $health.code -and $health.code.stale) {
+            $question = "This folder has updated desk code, but the running desk started before the update and still serves the old version.`n`n" +
+                "Restart the desk now to load it? Orders already at the broker are not affected, and the desk will not stop while a broker order is unresolved."
+            if (Confirm-DeskRestart $question) {
+                $restart = Request-DeskRestart $url $port
+                if (-not $restart.ok) {
+                    $updateNote = $restart.message
+                    if (-not $NoDialogs) {
+                        Add-Type -AssemblyName PresentationFramework
+                        [System.Windows.MessageBox]::Show($updateNote, 'Daytrade Signal Desk') | Out-Null
+                    }
+                }
+            } else {
+                $updateNote = 'Updated desk code is waiting. Reopen the shortcut and choose Yes to restart the desk and load it.'
+            }
+        }
         if (-not (Test-Desk $url $port)) {
             if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) {
                 throw "Port $port belongs to another application or a different Tomahawk installation. It was left running. Set a different TOMAHAWK_PORT or close that application."
@@ -187,10 +339,11 @@ function Invoke-DeskLauncher {
         }
         try { $broker = Start-ConfiguredBroker }
         catch { $broker = @{ state = 'startup_error'; message = "Desk ready; Gateway needs attention: $($_.Exception.Message)" } }
-        @{ checked_at = [DateTime]::UtcNow.ToString('o'); gateway = $broker.state; message = $broker.message } |
+        $message = if ($updateNote) { "$($broker.message) $updateNote" } else { $broker.message }
+        @{ checked_at = [DateTime]::UtcNow.ToString('o'); gateway = $broker.state; message = $message } |
             ConvertTo-Json | Set-Content -LiteralPath (Join-Path $data 'launcher-status.json') -Encoding UTF8
         if (-not $NoBrowser) { Start-Process $url | Out-Null }
-        Write-Output $broker.message
+        Write-Output $message
     } finally {
         if ($owned) { $mutex.ReleaseMutex() }
         $mutex.Dispose()

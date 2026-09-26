@@ -274,9 +274,13 @@ def register(app, desk):
                 max_pos = float(ks["max_position_size_usd"]) if ks.get("max_position_size_usd") is not None else None
             except (TypeError, ValueError):
                 max_pos = None
-            if not reducing and max_pos is not None and notional > max_pos:
-                return jsonify(ok=False, error=f"Option notional ${notional:,.2f} exceeds max position ${max_pos:,.2f}"), 409
-            ok, error = desk._broker_session_gate(current, notional, reducing=reducing)
+            # Same measure as execution: worst-case loss (strike risk for shorts), not premium.
+            risk = notional if reducing else order_terms.option_max_loss(
+                {"contracts": ticket["contracts"], "option_intent": intent, "right": ticket["right"],
+                 "strike": ticket["strike"], "covered": covered}, premium)
+            if not reducing and max_pos is not None and risk > max_pos:
+                return jsonify(ok=False, error=f"Option worst-case loss ${risk:,.2f} exceeds max position ${max_pos:,.2f}"), 409
+            ok, error = desk._broker_session_gate(current, risk, reducing=reducing)
             if ok and not reducing:
                 ok, error = desk._broker_risk_gate(current, ledger, day_pnl, equity)
             if not ok:

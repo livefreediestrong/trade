@@ -4,15 +4,17 @@ from __future__ import annotations
 import asyncio
 import atexit
 import functools
+import itertools
 import math
 import os
 import queue
+import random
 import re
 import threading
 import time
 from concurrent.futures import Future
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, time as dtime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -21,7 +23,8 @@ from zoneinfo import ZoneInfo
 _API_LOCK = threading.RLock()
 _VERIFIED: dict[str, Any] = {}
 _DEAD = {"cancelled", "canceled", "apicancelled", "inactive"}
-_TASKS = queue.Queue()
+_TASKS = queue.PriorityQueue()
+_TASK_SEQUENCE = itertools.count()
 _WORKER = None
 _WORKER_LOCK = threading.Lock()
 _STOP = threading.Event()
@@ -95,14 +98,24 @@ def _api_responsive(ib):
     if _SERVER_UNAVAILABLE or _RESYNC_REQUIRED or not ib.isConnected():
         return False
     if _API_PULSE.get("client") == id(ib) and time.monotonic() - _API_PULSE["at"] <= 15:
-        return True
+        return not _API_PULSE.get("clock_error")
     try:
-        if ib.reqCurrentTime() is None:
+        sent = datetime.now(timezone.utc)
+        started = time.monotonic()
+        server_time = ib.reqCurrentTime()
+        if server_time is None:
             raise ValueError("Gateway returned no current-time response")
         if _SERVER_UNAVAILABLE or _RESYNC_REQUIRED or not ib.isConnected():
             return False
-        _API_PULSE.update(client=id(ib), at=time.monotonic())
-        return True
+        elapsed = time.monotonic()-started
+        skew = None
+        if isinstance(server_time, datetime) and server_time.tzinfo is not None:
+            # reqCurrentTime is second precision. Exclude the entire measured
+            # round-trip plus one second before identifying clock drift.
+            skew = max(0.0, abs((server_time-sent).total_seconds())-elapsed-1.0)
+        _API_PULSE.update(client=id(ib), at=time.monotonic(), clock_skew_lower_bound_sec=skew,
+                          clock_error="Local clock differs from broker time by more than 5 seconds" if skew is not None and skew > 5 else None)
+        return not _API_PULSE.get("clock_error")
     except Exception:
         _API_PULSE.clear()
         return False
@@ -121,7 +134,8 @@ def _pnl_update(pnl):
             subscription["callbacks"] = subscription.get("callbacks", 0) + 1
             subscription["day"] = _pnl_day()
             _PNL_WATCH.update(ui_status=None, soft_reconnect_count=0, pending_soft_reconnect=False,
-                              pending_reason=None, last_error_code=None)
+                              pending_reason=None, last_error_code=None,
+                              last_scheduled_refresh_at=time.monotonic())
 
 
 def _server_error(req_id, code, message, *args):
@@ -168,7 +182,7 @@ def _api_worker():
     try:
         while not _STOP.is_set():
             try:
-                fn, args, kwargs, future = _TASKS.get(timeout=0.1)
+                _, _, fn, args, kwargs, future = _TASKS.get(timeout=0.1)
             except queue.Empty:
                 pass
             else:
@@ -182,12 +196,22 @@ def _api_worker():
                 try:
                     _CLIENT.sleep(0.05)
                 except Exception as exc:
-                    _CONNECTION.update(connected=False, error=str(exc)[:200])
+                    _CONNECTION.update(connected=False, error=friendly_connection_error(str(exc))[:240])
                     _VERIFIED.clear()
     finally:
         if _CLIENT is not None:
             _CLIENT.disconnect()
         asyncio.get_event_loop().close()
+
+
+def _task_priority(name, args, kwargs):
+    if name == "_poll" and (kwargs.get("cancel") or (len(args) > 3 and args[3])):
+        return 0
+    if name in ("place_from_desk_order", "find_order_by_signal", "_poll"):
+        return 1
+    if name in ("get_account", "get_positions", "get_open_orders"):
+        return 2
+    return 3
 
 
 def _on_api_thread(fn):
@@ -202,7 +226,7 @@ def _on_api_thread(fn):
                 _WORKER = threading.Thread(target=_api_worker, name="ibkr-api", daemon=True)
                 _WORKER.start()
         future = Future()
-        _TASKS.put((fn, args, kwargs, future))
+        _TASKS.put((_task_priority(fn.__name__, args, kwargs), next(_TASK_SEQUENCE), fn, args, kwargs, future))
         # Never retry a possibly submitted order when the HTTP caller times out.
         return future.result()
     return call
@@ -253,6 +277,7 @@ def _ib():
         _SERVER_UNAVAILABLE = False
         _RECONNECT_AFTER, _FAILED_SETTINGS = 0.0, None
         _CONNECTION.update(connected=True, error=None)
+        _note_gateway_api_up()
         return client
     except Exception as exc:
         client.disconnect()
@@ -265,6 +290,7 @@ def _ib():
                 "Another desk/process holds this id — stop the other connection "
                 "or set IB_CLIENT_ID to a free id. Gateway was left alone."
             )
+        message = friendly_connection_error(message)
         _CONNECTION.update(connected=False, error=message[:240])
         # A dashboard refresh asks for several broker snapshots. One Gateway
         # outage must not queue a fresh five-second connection for each one.
@@ -290,6 +316,21 @@ def _live() -> bool:
 
 def is_configured() -> bool:
     return os.environ.get("BROKER_PROVIDER", "alpaca").strip().lower() == "ibkr"
+
+
+def friendly_connection_error(message: str) -> str:
+    """Plain words for socket failures (e.g. "[WinError 1225] The remote computer refused
+    the network connection"); other messages are returned unchanged."""
+    text = str(message or "")
+    low = text.lower()
+    endpoint = _settings()["endpoint"]
+    if any(k in low for k in ("1225", "10061", "refused", "errno 111", "connectionrefused")):
+        return (f"IB Gateway is not accepting connections on {endpoint}. Start IB Gateway and sign in, "
+                "or check its API port under Configure > Settings > API.")
+    if any(k in low for k in ("timed out", "timeout", "10060")):
+        return (f"IB Gateway did not answer on {endpoint} in time. It may still be starting or waiting "
+                "for sign-in; if it stays like this, check that its API is enabled.")
+    return text
 
 
 def _settings() -> dict[str, Any]:
@@ -332,7 +373,7 @@ def verify_execution_context() -> dict[str, Any]:
             return {"ok": True, "identity": _identity(ib)}
     except Exception as exc:
         _VERIFIED.clear()
-        return {"ok": False, "error": str(exc)[:200]}
+        return {"ok": False, "error": friendly_connection_error(str(exc))[:240]}
 
 
 def paper_mode() -> bool | None:
@@ -444,7 +485,6 @@ def stock_quote(symbol: str) -> dict[str, Any]:
             if not ib.qualifyContracts(contract) or not contract.conId:
                 return {"ok": False, "error": "Underlying stock could not be qualified",
                         "symbol": symbol, "fresh": False, "identity": identity}
-            started = datetime.now(timezone.utc)
             # Live API subscription is often unpaid (Error 10089); delayed is available.
             # Prefer delayed (3) so agent quotes succeed without fighting PnL/account feeds.
             try:
@@ -452,51 +492,31 @@ def stock_quote(symbol: str) -> dict[str, Any]:
             except Exception:
                 pass
             ticker = ib.reqMktData(contract, "", False, False)
+            observed = {}
+            def capture(updated):
+                _capture_stock_ticks(updated, observed)
+            updates = getattr(ticker, "updateEvent", None)
+            if updates is not None:
+                updates += capture
             try:
-                price = None
-                stamp = None
+                _capture_stock_ticks(ticker, observed)
                 for _ in range(25):
                     ib.sleep(0.15)
-                    for candidate in (ticker.last, ticker.marketPrice(), ticker.close, ticker.bid, ticker.ask):
-                        try:
-                            value = _number(candidate)
-                            if value > 0:
-                                price = value
-                                break
-                        except (ValueError, TypeError):
-                            continue
-                    if price is not None:
-                        # Prefer exchange tick time when present; else receipt time for live stream.
-                        for tick in reversed(list(ticker.ticks or [])):
-                            if getattr(tick, "time", None) is not None and getattr(tick.time, "tzinfo", None):
-                                stamp = tick.time
-                                break
-                        if stamp is None:
-                            stamp = datetime.now(timezone.utc)
+                    _capture_stock_ticks(ticker, observed)
+                    if "bid" in observed and "ask" in observed:
                         break
+                quote = _stock_tick_quote(ticker, observed)
+                price, stamp = quote.get("price"), quote.get("market_time")
                 if price is None or stamp is None:
                     return {"ok": False, "error": "No IBKR trade/quote tick yet", "symbol": symbol,
                             "fresh": False, "identity": identity, "source": "IBKR mkt data"}
-                age = (datetime.now(timezone.utc) - stamp).total_seconds()
-                fresh = -15 <= age <= 120
-                # ib_insync stamps ticks with local *receipt* time. For delayed
-                # (3) / delayed-frozen (4) data the prices are ~15 min behind the
-                # market even though age_sec looks near zero, so callers can
-                # prefer a real-time source. Not a block: delayed stays usable.
-                data_type = getattr(ticker, "marketDataType", None)
-                delayed = data_type in (3, 4)
                 return {
-                    "ok": True, "symbol": symbol, "price": price, "fresh": fresh,
-                    "market_time": stamp.isoformat(), "received_at": datetime.now(timezone.utc).isoformat(),
-                    "age_sec": round(age, 1),
-                    "source": ("IBKR delayed mkt data" if delayed else
-                               "IBKR live mkt data" if data_type in (1, 2) else "IBKR mkt data"),
-                    "delayed": delayed,
-                    "bid": _safe_num(ticker.bid), "ask": _safe_num(ticker.ask),
-                    "last": _safe_num(ticker.last), "market_data_type": data_type,
+                    "ok": True, "symbol": symbol, **quote,
                     "identity": identity, "con_id": int(contract.conId),
                 }
             finally:
+                if updates is not None:
+                    updates -= capture
                 try:
                     ib.cancelMktData(contract)
                 except Exception:
@@ -511,6 +531,64 @@ def _safe_num(v):
         return _number(v)
     except (ValueError, TypeError):
         return None
+
+
+def _capture_stock_ticks(ticker, observed):
+    """Ignore close, volume and cached ticker fields when establishing freshness."""
+    names = {1: "bid", 2: "ask", 4: "last", 66: "bid", 67: "ask", 68: "last"}
+    for tick in list(getattr(ticker, "ticks", None) or []):
+        name = names.get(getattr(tick, "tickType", None))
+        stamp = getattr(tick, "time", None)
+        value = _safe_num(getattr(tick, "price", None))
+        if name and isinstance(stamp, datetime) and stamp.tzinfo and value is not None and value > 0:
+            if name not in observed or stamp >= observed[name][1]:
+                observed[name] = (value, stamp)
+
+
+def _stock_tick_quote(ticker, observed, now=None):
+    now = now or datetime.now(timezone.utc)
+    kind = getattr(ticker, "marketDataType", None)
+    row = {"market_data_type": kind, "delayed": kind in (3, 4), "frozen": kind in (2, 4),
+           "source": {1: "IBKR live mkt data", 2: "IBKR frozen mkt data", 3: "IBKR delayed mkt data",
+                      4: "IBKR delayed frozen mkt data"}.get(kind, "IBKR unknown mkt data"),
+           "time_kind": "local_receipt", "exchange_time": None, "received_at": now.isoformat(),
+           "bid_size": _safe_num(getattr(ticker, "bidSize", None)), "ask_size": _safe_num(getattr(ticker, "askSize", None))}
+    for name in ("bid", "ask", "last"):
+        row[name] = observed.get(name, (None, None))[0]
+        row[name + "_time"] = observed[name][1].isoformat() if name in observed else None
+    if row["bid"] and row["ask"] and row["bid"] <= row["ask"]:
+        price, stamp = (row["bid"]+row["ask"])/2, min(observed["bid"][1], observed["ask"][1])
+    else:
+        price, stamp = observed.get("last", (None, None))
+    age = (now-stamp).total_seconds() if stamp else None
+    row.update(price=price, market_time=stamp.isoformat() if stamp else None, age_sec=round(age, 1) if age is not None else None,
+               fresh=kind in (1, 3) and age is not None and 0 <= age <= 15)
+    return row
+
+
+def _stock_execution_error(quote, order, identity, con_id):
+    if not quote.get("ok") or quote.get("identity") != identity or quote.get("con_id") != con_id:
+        return "Final stock quote or its account/contract identity is unavailable"
+    if not quote.get("fresh") or quote.get("frozen") or quote.get("market_data_type") not in (1, 3):
+        return "Final stock quote is stale, frozen or unverified"
+    # The owner's delayed-stock policy is retained. The timestamp describes the
+    # receipt, never exchange freshness. A delayed book cannot prove live depth.
+    for name in ("bid", "ask"):
+        try:
+            stamp = datetime.fromisoformat(quote[name+"_time"])
+            if stamp.tzinfo is None or not 0 <= (datetime.now(timezone.utc)-stamp).total_seconds() <= 15:
+                raise ValueError()
+        except (ValueError, TypeError, KeyError):
+            return "Final stock bid/ask receipt is missing or older than 15 seconds"
+    bid, ask = _safe_num(quote.get("bid")), _safe_num(quote.get("ask"))
+    if bid is None or ask is None or bid <= 0 or ask < bid:
+        return "Final stock market is one-sided or crossed"
+    if (ask-bid)/((ask+bid)/2)*10000 > 50:
+        return "Final stock spread exceeds the 50 bps execution ceiling"
+    size = _safe_num(quote.get("ask_size" if order.get("side") == "buy" else "bid_size"))
+    if order.get("type", "market") == "market" and (size is None or size < float(order.get("shares") or 0)):
+        return "Market order exceeds verified displayed size; use a reviewed limit order"
+    return None
 
 
 
@@ -643,8 +721,7 @@ def _recover_initial_pnl(ib, account, subscription):
     elif "account_download" not in recovery and now - recovery["positions_at"] >= 15:
         stage = "account_download"
         method = getattr(ib, "reqAccountUpdates", None)
-        raw_method = getattr(getattr(ib, "client", None), "reqAccountUpdates", None)
-        if not callable(method) or not callable(raw_method):
+        if not callable(method):
             recovery[stage] = "unsupported"
             return False
     if stage is None:
@@ -655,8 +732,9 @@ def _recover_initial_pnl(ib, account, subscription):
         if stage == "positions":
             method()
         else:
-            raw_method(False, account)
-            ib.sleep(0.1)
+            # Re-request the download without stopping a healthy account feed.
+            # Gateway's exported trace shows STOP_UPDATE itself emits 2100;
+            # treating that self-generated warning as failure replaced P&L again.
             if _SERVER_UNAVAILABLE or _RESYNC_REQUIRED or not ib.isConnected():
                 raise ConnectionError("Gateway connection changed during account refresh")
             method(account)
@@ -753,7 +831,7 @@ def _soft_reconnect_backoff_sec(count: int) -> float:
     """Exponential cooldown between soft reconnects (API only; Gateway untouched)."""
     n = max(1, int(count))
     delay = _SOFT_RECONNECT_BACKOFF_BASE * (2 ** min(n - 1, 4))
-    return float(min(_SOFT_RECONNECT_BACKOFF_MAX, delay))
+    return float(min(_SOFT_RECONNECT_BACKOFF_MAX, delay * random.uniform(1.0, 1.2)))
 
 
 def _arm_soft_reconnect(reason: str):
@@ -795,6 +873,13 @@ def refresh_broker_pnl(*, soft_reconnect: bool = True) -> dict[str, Any]:
     """
     actions: list[str] = []
     try:
+        if _SERVER_UNAVAILABLE and _CLIENT is not None and _CLIENT.isConnected():
+            # 1100 is upstream of the still-open API socket. Give Gateway time
+            # to report 1101/1102 instead of canceling retained subscriptions.
+            return {"ok": False, "risk_ready": False, "account": {},
+                    "error": "Waiting for IBKR server connectivity to recover",
+                    "refresh": {"ok": False, "held": True, "actions": [],
+                                "gateway_restarted": False, "soft_reconnect": soft_reconnect}}
         if soft_reconnect:
             actions.extend(_arm_soft_reconnect("manual_soft_reconnect"))
             # Rebuild the API socket before reading the account. Required so
@@ -880,7 +965,7 @@ def get_account() -> dict[str, Any]:
                 except (ValueError, TypeError):
                     pass
             if (_ACCOUNT_UNSUBSCRIBED or _PNL_WATCH.get("pending_resubscribe")) and now >= _ACCOUNT_RESUBSCRIBE_AFTER:
-                actions = _resubscribe_account_and_pnl(ib, account)
+                _resubscribe_account_and_pnl(ib, account)
                 _PNL_WATCH["pending_resubscribe"] = False
                 if account not in _PNL_UPDATED:
                     # Stay on this socket; schedule soft reconnect only after backoff.
@@ -994,6 +1079,7 @@ def get_account() -> dict[str, Any]:
             if daily is None and _recover_initial_pnl(ib, account, _PNL[key]):
                 # Download completion is not P&L evidence. Accept only a real
                 # callback for this request; final lifecycle checks still apply.
+                pnl = _PNL[key]["value"]  # Recovery may have replaced the subscription object.
                 if account in _PNL_UPDATED and _PNL[key].get("day") == _pnl_day():
                     try:
                         daily = _number(pnl.dailyPnL)
@@ -1303,6 +1389,8 @@ def _submission_risk_error(ib, order, identity):
         return "Broker equity changed during preflight; request a fresh review"
     if authorization["reducing"]:
         return None  # Deliberate exception for an already verified reducing order.
+    if _API_PULSE.get("clock_error"):
+        return _API_PULSE["clock_error"]
     daily = authorization.get("day_pnl")
     if isinstance(daily, bool) or not isinstance(daily, (int, float)) or not math.isfinite(daily):
         return "Verified daily P&L required before broker submission"
@@ -1382,8 +1470,9 @@ def _place_option_from_desk(ib, order, identity, ref):
     """Live options: single-leg OPT (BTO/STC/STO/BTC). Calls and puts.
 
     Covered STO (calls): requires long underlying shares >= contracts*100.
-    Naked STO: requires allow_naked on the order plus buying_power >= premium*100*contracts
-    (honest floor — not full IBKR margin). BTC verifies short OPT by con_id.
+    Covered STO (calls) also subtracts shares already pledged to short or working calls.
+    Naked STO: requires allow_naked on the order plus buying_power >= worst-case loss
+    (strike-based floor — not full IBKR margin). BTC verifies short OPT by con_id.
     """
     intent = str(order.get("option_intent") or order.get("position_intent") or "").upper()
     if order.get("asset_type") == "BAG" or order.get("legs"):
@@ -1467,22 +1556,42 @@ def _place_option_from_desk(ib, order, identity, ref):
         covered = bool(order.get("covered"))
         allow_naked = bool(order.get("allow_naked") or order.get("allow_naked_short"))
         if covered and right == "C":
-            stock_held = sum(_number(p.position) for p in ib.positions(account)
-                             if p.account == account and p.contract.secType == "STK"
+            positions = [p for p in ib.positions(account) if p.account == account]
+            stock_held = sum(_number(p.position) for p in positions
+                             if p.contract.secType == "STK"
                              and p.contract.symbol == symbol and p.contract.currency == "USD")
+            # Shares already pledged to short calls (held or working) cannot cover
+            # another one; otherwise repeated covered calls become naked calls.
+            short_calls = sum(-_number(p.position) for p in positions
+                              if p.contract.secType == "OPT" and p.contract.symbol == symbol
+                              and p.contract.right == "C" and _number(p.position) < 0)
+            working_calls = 0.0
+            for trade in ib.openTrades():
+                c = trade.contract
+                if (trade.order.account != account or c.secType != "OPT" or c.symbol != symbol
+                        or c.right != "C" or trade.order.action.upper() != "SELL"):
+                    continue
+                working_calls += max(0.0, _number(trade.order.totalQuantity) - _number(trade.orderStatus.filled))
+            pledged = (short_calls + working_calls) * 100
             need = int(qty) * 100
-            if stock_held < need:
-                raise ValueError(f"Covered short call needs {need} long {symbol} shares; broker holds {stock_held}")
+            if stock_held - pledged < need:
+                raise ValueError(
+                    f"Covered short call needs {need} unpledged long {symbol} shares; broker holds {stock_held}, "
+                    f"{pledged:.0f} already cover short or working calls"
+                )
         elif not allow_naked:
             raise ValueError("STO refused: set covered=True with long shares (calls) or allow_naked=True")
         else:
-            from order_terms import option_notional
-            if order.get("limit") is not None:
-                floor = option_notional(int(qty), float(order["limit"]), 100)
-            elif order.get("option_notional") is not None:
-                floor = float(order["option_notional"])
-            else:
+            from order_terms import option_max_loss
+            premium = order.get("limit")
+            if premium is None and order.get("option_notional") is not None:
+                premium = float(order["option_notional"]) / (int(qty) * 100)
+            if premium is None:
                 raise ValueError("Naked STO requires a limit premium or option_notional for buying-power check")
+            # Worst-case loss (cash-secured strike for puts, strike floor for calls),
+            # not the premium received.
+            floor = option_max_loss({"contracts": int(qty), "option_intent": "STO", "right": right,
+                                     "strike": float(strike), "covered": False}, float(premium))
             values = {v.tag: v.value for v in ib.accountSummary(account)}
             try:
                 bp = float(values.get("BuyingPower") or values.get("AvailableFunds") or 0)
@@ -1490,7 +1599,7 @@ def _place_option_from_desk(ib, order, identity, ref):
                 bp = 0.0
             if bp < floor:
                 raise ValueError(
-                    f"Naked STO blocked: buying_power/available_funds {bp:.2f} < notional floor {floor:.2f}. "
+                    f"Naked STO blocked: buying_power/available_funds {bp:.2f} < worst-case loss floor {floor:.2f}. "
                     "This is not a full IBKR margin calc."
                 )
         if held > 0:
@@ -1558,6 +1667,28 @@ def _place_bag_from_desk(ib, order, identity, ref):
         cl.exchange = "SMART"
         combo_legs.append(cl)
     bag.comboLegs = combo_legs
+    if canonical["option_intent"] == "CLOSE":
+        # A CLOSE is authorized as risk-reducing, so it must unwind a spread that
+        # is actually held: +qty on the bought strike, -qty on the sold strike.
+        held = {}
+        for p in ib.positions(account):
+            if p.account == account and p.contract.secType == "OPT":
+                held[int(p.contract.conId)] = held.get(int(p.contract.conId), 0.0) + _number(p.position)
+        (long_c, _), (short_c, _) = qualified
+        # Working combos on the same two legs already claim part of the spread;
+        # a second CLOSE must not pass on positions that are about to be closed.
+        legs_key = {int(long_c.conId), int(short_c.conId)}
+        working = 0.0
+        for trade in ib.openTrades():
+            c = trade.contract
+            if (trade.order.account != account or c.secType != "BAG"
+                    or {int(getattr(cl, "conId", 0) or 0) for cl in (c.comboLegs or [])} != legs_key):
+                continue
+            working += max(0.0, _number(trade.order.totalQuantity) - _number(trade.orderStatus.filled))
+        need = qty + working
+        if held.get(int(long_c.conId), 0.0) < need or held.get(int(short_c.conId), 0.0) > -need:
+            raise ValueError("BAG CLOSE refused: the account does not hold this spread in that quantity"
+                             + (f" beyond {int(working)} contracts already working" if working else ""))
     from broker_router import submission_window_error
     expiry_error = submission_window_error(order)
     if expiry_error:
@@ -1653,6 +1784,12 @@ def place_from_desk_order(order: dict[str, Any]) -> dict[str, Any]:
                 else:
                     native = MarketOrder(side.upper(), int(qty), account=identity["account_id"], orderRef=ref)
                 risk_error = _submission_risk_error(ib, order, identity)
+                if not risk_error and not order["risk_authorization"]["reducing"]:
+                    final_quote = stock_quote(contract.symbol)
+                    risk_error = _stock_execution_error(final_quote, order, identity, contract.conId)
+                    # The quote request blocks. Authorization and expiry can
+                    # change while waiting; check again immediately before send.
+                    risk_error = risk_error or submission_window_error(order) or _submission_risk_error(ib, order, identity)
                 if not risk_error:
                     risk_error = _position_intent_error(ib, contract, order, identity)
                 if risk_error:
@@ -1796,6 +1933,9 @@ def pnl_watch_snapshot() -> dict[str, Any]:
         "soft_reconnect_after_monotonic": _SOFT_RECONNECT_AFTER,
         "last_backoff_sec": _PNL_WATCH.get("last_backoff_sec"),
         "last_scheduled_refresh_at": _PNL_WATCH.get("last_scheduled_refresh_at"),
+        "clock_skew_lower_bound_sec": _API_PULSE.get("clock_skew_lower_bound_sec"),
+        "clock_error": _API_PULSE.get("clock_error"),
+        "queued_api_tasks": _TASKS.qsize(),
         "note": (
             "IBKR 2FA / IB Key cannot be disabled. Soft reconnect and re-reqPnL "
             "run first; full Gateway logout still requires human 2FA."
@@ -1806,6 +1946,7 @@ def pnl_watch_snapshot() -> dict[str, Any]:
 def maybe_scheduled_soft_refresh(*, interval_minutes: float, auto_live: bool, risk_ready: bool) -> dict[str, Any] | None:
     """Optional soft refresh while auto_live and not risk_ready. Never invents Ready."""
     if not auto_live or risk_ready:
+        _PNL_WATCH["last_scheduled_refresh_at"] = None
         return None
     try:
         minutes = float(interval_minutes)
@@ -1814,6 +1955,9 @@ def maybe_scheduled_soft_refresh(*, interval_minutes: float, auto_live: bool, ri
     if minutes <= 0:
         return None
     now = time.monotonic()
+    if _SERVER_UNAVAILABLE:
+        _PNL_WATCH["last_scheduled_refresh_at"] = now
+        return None
     last = float(_PNL_WATCH.get("last_scheduled_refresh_at") or 0.0)
     # First observation only arms the timer — do not soft-reconnect until the
     # interval elapses. Immediate soft reconnect on startup races the initial
@@ -1821,6 +1965,9 @@ def maybe_scheduled_soft_refresh(*, interval_minutes: float, auto_live: bool, ri
     if not last:
         _PNL_WATCH["last_scheduled_refresh_at"] = now
         return None
+    # Automatic subscription recovery and this timer share one reconnect clock.
+    # Otherwise an overdue timer can immediately undo a newly opened socket.
+    last = max(last, float(_PNL_WATCH.get("last_soft_reconnect_at") or 0.0))
     if (now - last) < minutes * 60.0:
         return None
     if now < _SOFT_RECONNECT_AFTER:
@@ -1877,6 +2024,28 @@ def _port_open(host: str, port: int, timeout: float = 0.6) -> bool:
 
 _GATEWAY_IMAGES = ("ibgateway.exe", "tws.exe")
 GATEWAY_LAUNCH_COOLDOWN_SEC = 180.0
+# Automatic (unattended) launches wait until Gateway has been absent this long,
+# so a Gateway auto-restart or a window the user is opening is not raced.
+GATEWAY_ABSENT_DEBOUNCE_SEC = 90.0
+# Hard launch budget, whoever asks: a missed process check can never stack windows.
+GATEWAY_LAUNCH_BUDGET = (3, 1800.0)            # at most 3 launches in 30 minutes
+GATEWAY_AUTOMATIC_BUDGET = (2, 86400.0)        # at most 2 unattended launches a day
+GATEWAY_AUTOMATIC_CHECK_SEC = 30.0             # unattended callers re-check at most this often
+_GATEWAY_ABSENT_SINCE: list[float | None] = [None]
+_GATEWAY_LAST_AUTOMATIC: dict[str, Any] = {"at": 0.0, "result": None}
+# "IBKR Gateway" (10.51+), "IB Gateway", or TWS login and main windows.
+# Window titles start with the product name; a folder, file or web page that merely mentions
+# it is not Gateway. Browsers, shells and editors are never counted by title.
+_GATEWAY_TITLE_RE = re.compile(r"^\s*(?:IBKR|IB)\s+Gateway\b|^\s*Trader Workstation\b", re.I)
+_TITLE_IGNORED_IMAGES = {"chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe", "iexplore.exe",
+                         "explorer.exe", "code.exe", "notepad.exe", "notepad++.exe", "powershell.exe", "pwsh.exe",
+                         "cmd.exe", "windowsterminal.exe", "conhost.exe", "outlook.exe", "winword.exe"}
+_GATEWAY_IMAGE_RE = re.compile(r"^(?:ib(?:kr)?gateway|tws)[\w.-]*\.exe$", re.I)
+GATEWAY_MUTEX_NAME = "Local\\TomahawkGatewayLaunch"  # shared with Start-Tomahawk.ps1 / Ensure-IBGateway.ps1
+
+
+def _gateway_autolaunch_disabled() -> bool:
+    return (os.environ.get("IB_GATEWAY_AUTOLAUNCH") or "").strip().lower() in ("0", "false", "no", "off")
 
 
 def _gateway_launch_stamp_path():
@@ -1885,56 +2054,277 @@ def _gateway_launch_stamp_path():
     return Path(root) / "gateway_launch.json"
 
 
-def _running_gateway_processes() -> list[str]:
-    """Names of IB Gateway / TWS processes already running (any version, any path).
+def _tasklist_gateway_matches(listing: str, pid: Any = None, pid_image: str | None = None) -> list[str]:
+    """Gateway/TWS rows in `tasklist /V /FO CSV /NH` output: by image name, window title or launched PID."""
+    import csv
+    import io
+    hits = []
+    for row in csv.reader(io.StringIO(listing or "")):
+        if not row:
+            continue
+        image = row[0].strip()
+        title = row[-1].strip() if len(row) >= 9 else ""
+        by_image = image.lower() in _GATEWAY_IMAGES or bool(_GATEWAY_IMAGE_RE.match(image))
+        by_title = (bool(title) and title.upper() != "N/A" and image.lower() not in _TITLE_IGNORED_IMAGES
+                    and bool(_GATEWAY_TITLE_RE.search(title)))
+        # A recorded PID only counts while it still belongs to the program we started (PIDs get reused).
+        by_pid = (pid is not None and len(row) > 1 and row[1].strip() == str(pid)
+                  and bool(pid_image) and image.lower() == str(pid_image).lower())
+        if by_image or by_title or by_pid:
+            hits.append(image or "Gateway window")
+    return hits
 
-    Gateway only opens its API port after sign-in, so "port closed" alone must
-    never trigger another launch while a login window is still up.
+
+def _running_gateway_processes() -> list[str] | None:
+    """Names of IB Gateway / TWS processes already running, or None when Windows could not be asked.
+
+    Gateway only opens its API port after sign-in, so "port closed" alone must never trigger
+    another launch while a login window is up. Three independent checks: process image name,
+    window title ("IBKR Gateway", "IB Gateway", "Trader Workstation") and the PID this desk last
+    started; then Gateway/TWS JVMs (IBC, launchers that re-execute Java) by command line.
+    A check that fails or times out returns None, which callers treat as "maybe running".
     """
     if os.name != "nt":
         return []
     import subprocess
-    found = []
-    for image in _GATEWAY_IMAGES:
-        try:
-            out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"],
-                                 capture_output=True, text=True, timeout=8,
-                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
-        except Exception:
-            continue
-        if image.lower() in out.lower():
-            found.append(image)
-    return found
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        proc = subprocess.run(["tasklist", "/V", "/FO", "CSV", "/NH"], capture_output=True, text=True,
+                              errors="replace", timeout=20, creationflags=flags)
+    except Exception:
+        return None
+    if proc.returncode != 0 or not (proc.stdout or "").strip():
+        return None
+    stamp = _read_gateway_stamp()
+    found = _tasklist_gateway_matches(proc.stdout, stamp.get("pid"), stamp.get("pid_image"))
+    if found:
+        return found
+    query = ("Get-CimInstance Win32_Process -Filter \"Name='java.exe' OR Name='javaw.exe'\" -ErrorAction Stop | "
+             "ForEach-Object { $_.Name + '|' + $_.CommandLine }; 'ok'")
+    try:
+        out = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", query],
+                             capture_output=True, text=True, errors="replace", timeout=20, creationflags=flags)
+    except Exception:
+        return None
+    if out.returncode != 0 or "ok" not in (out.stdout or "").split():
+        return None
+    return _java_gateway_matches(out.stdout)
 
 
-def _recent_gateway_launch(now: float | None = None) -> float | None:
-    """Seconds since the last launch by ANY desk component (shared stamp file)."""
+def _java_gateway_matches(listing: str) -> list[str]:
+    """Pick Gateway/TWS JVMs out of 'name|command line' rows."""
+    hits = []
+    for line in (listing or "").splitlines():
+        name, _, command = line.partition("|")
+        low = command.lower()
+        if any(mark in low for mark in ("ibgateway", "ibcalpha", "\\jts\\", "/jts/", "jclient", "twslaunch")):
+            hits.append(name.strip() or "java.exe")
+    return hits
+
+
+def _read_gateway_stamp() -> dict[str, Any]:
     import json as _json
     try:
-        stamp = float(_json.loads(_gateway_launch_stamp_path().read_text(encoding="utf-8")).get("at") or 0)
-    except (OSError, ValueError, TypeError, AttributeError):
-        return None
-    age = (now or time.time()) - stamp
-    return age if 0 <= age < GATEWAY_LAUNCH_COOLDOWN_SEC else None
+        data = _json.loads(_gateway_launch_stamp_path().read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
-def _mark_gateway_launch(exe: str, source: str) -> None:
+def _write_gateway_stamp(data: dict[str, Any]) -> None:
     import json as _json
     path = _gateway_launch_stamp_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(_json.dumps({"at": time.time(), "exe": exe, "source": source}), encoding="utf-8")
+        tmp.write_text(_json.dumps(data), encoding="utf-8")
         tmp.replace(path)
     except OSError:
         pass
 
 
+def _stamp_time(data: dict[str, Any], key: str) -> float:
+    try:
+        return float(data.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _stamp_times(data: dict[str, Any], key: str, window: float, now: float) -> list[float]:
+    out = []
+    for value in data.get(key) or []:
+        try:
+            stamp = float(value)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= now - stamp < window:
+            out.append(stamp)
+    return out
+
+
+def _recent_gateway_launch(now: float | None = None) -> float | None:
+    """Seconds since the last launch by ANY desk component (shared stamp file)."""
+    stamp = _stamp_time(_read_gateway_stamp(), "at")
+    if not stamp:
+        return None
+    age = (now or time.time()) - stamp
+    return age if 0 <= age < GATEWAY_LAUNCH_COOLDOWN_SEC else None
+
+
+def _launch_budget_blocker(automatic: bool, now: float) -> str | None:
+    data = _read_gateway_stamp()
+    limit, window = GATEWAY_LAUNCH_BUDGET
+    if len(_stamp_times(data, "launches", window, now)) >= limit:
+        return (f"IB Gateway was already started {limit} times in the last {int(window // 60)} minutes; "
+                "not starting another. Close any extra Gateway windows and sign in to one of them.")
+    limit, window = GATEWAY_AUTOMATIC_BUDGET
+    if automatic and len(_stamp_times(data, "automatic_launches", window, now)) >= limit:
+        return (f"The desk already reopened IB Gateway {limit} times today; it will not reopen it again "
+                "automatically. Use Ensure Gateway or start Gateway yourself.")
+    return None
+
+
+def _mark_gateway_launch(exe: str, source: str, automatic: bool = False, now: float | None = None) -> None:
+    # A new launch has not served the API yet; api_seen_at stays as history.
+    now = now or time.time()
+    data = _read_gateway_stamp()
+    data.update(at=now, exe=exe, source=source, pid=None)
+    data["launches"] = _stamp_times(data, "launches", 86400.0, now) + [now]
+    if automatic:
+        data["automatic_launches"] = _stamp_times(data, "automatic_launches", 86400.0, now) + [now]
+    _write_gateway_stamp(data)
+
+
+def _note_gateway_pid(pid: int, exe: str | None = None) -> None:
+    data = _read_gateway_stamp()
+    data["pid"] = int(pid)
+    data["pid_image"] = os.path.basename(exe or data.get("exe") or "").lower() or None
+    _write_gateway_stamp(data)
+
+
+def _note_gateway_api_up(now: float | None = None) -> None:
+    """Record that Gateway served the API (signed in).
+
+    Writes when a launch has not been confirmed yet, else at most once a minute.
+    """
+    now = now or time.time()
+    _GATEWAY_ABSENT_SINCE[0] = None
+    data = _read_gateway_stamp()
+    seen = _stamp_time(data, "api_seen_at")
+    if seen >= _stamp_time(data, "at") and now - seen < 60:
+        return
+    data["api_seen_at"] = now
+    _write_gateway_stamp(data)
+
+
+def _gateway_hours(now: float | None = None) -> bool:
+    """Unattended relaunches only make sense from 9:00 ET to the close on a trading day."""
+    try:
+        import paper_loop
+        moment = datetime.fromtimestamp(now or time.time(), timezone.utc).astimezone(paper_loop.NY_TZ)
+        close = paper_loop.session_close_time(moment.date())
+    except Exception:  # noqa: BLE001 - unknown hours never start Gateway unattended
+        return False
+    if close is None:
+        return False
+    clock = moment.time()
+    return clock >= dtime(9, 0) and clock < close
+
+
+def _automatic_launch_blocker(now: float) -> str | None:
+    """Unattended relaunch policy: never reopen a Gateway the owner closed.
+
+    Automatic callers (live agent tick, upkeep watchdog) may relaunch only a
+    Gateway that signed in and served the API after its last launch, i.e. one
+    that went away unexpectedly, during trading hours. A login window that was
+    closed, or that exited without signing in, stays closed until the owner
+    opens it (desk button or desktop shortcut).
+    """
+    data = _read_gateway_stamp()
+    launched, seen = _stamp_time(data, "at"), _stamp_time(data, "api_seen_at")
+    if launched and seen < launched:
+        return ("IB Gateway was closed before it signed in; not reopening it automatically. "
+                "Use Ensure Gateway on the desk or the desktop shortcut when you want to sign in.")
+    if not _gateway_hours(now):
+        return "Outside trading hours; the desk does not reopen IB Gateway on its own."
+    absent_since = _GATEWAY_ABSENT_SINCE[0]
+    if absent_since is None:
+        _GATEWAY_ABSENT_SINCE[0] = now
+        absent_since = now
+    waited = now - absent_since
+    if waited < GATEWAY_ABSENT_DEBOUNCE_SEC:
+        return (f"IB Gateway is not running; confirming for {int(GATEWAY_ABSENT_DEBOUNCE_SEC - waited)}s more "
+                "before an automatic relaunch (Gateway may be restarting itself).")
+    return None
+
+
+class _CrossProcessLock:
+    """One Gateway launch at a time across the desk, the launcher and the daily task.
+
+    Windows: the named mutex Start-Tomahawk.ps1 and Ensure-IBGateway.ps1 also take.
+    Elsewhere (tests, development): an exclusive lock file next to the stamp.
+    """
+
+    def __init__(self) -> None:
+        self.handle = None
+        self.path = None
+
+    def __enter__(self) -> bool:
+        if os.name == "nt":
+            try:
+                import ctypes
+                kernel32 = ctypes.windll.kernel32
+                handle = kernel32.CreateMutexW(None, False, GATEWAY_MUTEX_NAME)
+                if not handle:
+                    return False
+                state = kernel32.WaitForSingleObject(handle, 0)
+                if state in (0, 0x80):  # WAIT_OBJECT_0, WAIT_ABANDONED
+                    self.handle = handle
+                    return True
+                kernel32.CloseHandle(handle)
+                return False
+            except Exception:  # noqa: BLE001
+                return False
+        self.path = _gateway_launch_stamp_path().with_suffix(".lock")
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            if self.path.exists() and time.time() - self.path.stat().st_mtime > 120:
+                self.path.unlink()  # stale lock from a crashed process
+            fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            return True
+        except OSError:
+            self.path = None
+            return False
+
+    def __exit__(self, *exc) -> None:
+        if self.handle is not None:
+            try:
+                import ctypes
+                ctypes.windll.kernel32.ReleaseMutex(self.handle)
+                ctypes.windll.kernel32.CloseHandle(self.handle)
+            except Exception:  # noqa: BLE001
+                pass
+        if self.path is not None:
+            try:
+                self.path.unlink()
+            except OSError:
+                pass
+
+
 _GATEWAY_LAUNCH_LOCK = threading.Lock()
 
 
-def ensure_gateway(*, launch_if_down: bool = True) -> dict[str, Any]:
+def ensure_gateway(*, launch_if_down: bool = True, automatic: bool = False) -> dict[str, Any]:
     """Ensure IB Gateway API port is reachable; optionally relaunch ibgateway.exe.
+
+    ``automatic`` marks unattended callers (live agent tick, upkeep watchdog).
+    They relaunch only a Gateway that had signed in and then went away, during
+    trading hours, after it has been absent for GATEWAY_ABSENT_DEBOUNCE_SEC; see
+    _automatic_launch_blocker. Every launch, owner or automatic: never while a
+    Gateway/TWS process or window exists, never when that cannot be checked,
+    one at a time across processes, not inside the cooldown, and within the
+    launch budget. IB_GATEWAY_AUTOLAUNCH=0 turns desk launching off entirely.
 
     Never places orders. Never disables 2FA. Login / IB Key may still be required
     if the Gateway session was fully logged out (not a soft API bounce).
@@ -1953,6 +2343,7 @@ def ensure_gateway(*, launch_if_down: bool = True) -> dict[str, Any]:
         "note": "",
     }
     if _port_open(host, port):
+        _note_gateway_api_up()
         result.update(ok=True, port_open=True, note="Gateway API port is reachable.")
         return result
     if host not in ("127.0.0.1", "localhost", "::1"):
@@ -1962,6 +2353,15 @@ def ensure_gateway(*, launch_if_down: bool = True) -> dict[str, Any]:
     if not launch_if_down:
         result["note"] = f"Gateway port {port} is down; launch_if_down=false."
         return result
+    if _gateway_autolaunch_disabled():
+        result.update(autolaunch_disabled=True,
+                      note="Desk Gateway launching is off (IB_GATEWAY_AUTOLAUNCH=0). Start IB Gateway yourself.")
+        return result
+    now = time.time()
+    if automatic:
+        last = _GATEWAY_LAST_AUTOMATIC
+        if last["result"] is not None and now - last["at"] < GATEWAY_AUTOMATIC_CHECK_SEC:
+            return dict(last["result"])
     candidates = _gateway_exe_candidates()
     exe = next((p for p in candidates if os.path.isfile(p)), None)
     if not exe:
@@ -1973,32 +2373,73 @@ def ensure_gateway(*, launch_if_down: bool = True) -> dict[str, Any]:
         result["note"] = "Another Gateway launch check is in progress."
         return result
     try:
-        running = _running_gateway_processes()
-        if running:
-            result.update(already_running=running, human_2fa_may_be_required=True,
-                          note=f"{running[0]} is already running; complete sign-in or enable its API on port {port}. "
-                               "Not launching another copy.")
-            return result
-        recent = _recent_gateway_launch()
-        if recent is not None:
-            result["note"] = (f"Gateway was launched {int(recent)}s ago; waiting for sign-in instead of "
-                              f"launching another copy (cooldown {int(GATEWAY_LAUNCH_COOLDOWN_SEC)}s).")
-            return result
-        _mark_gateway_launch(exe, "desk")
-        return _launch_gateway(exe, host, port, result)
+        outcome = _ensure_gateway_locked(exe, host, port, result, automatic)
     finally:
         _GATEWAY_LAUNCH_LOCK.release()
+    if automatic:
+        _GATEWAY_LAST_AUTOMATIC.update(at=time.time(), result=dict(outcome))
+    return outcome
+
+
+def _ensure_gateway_locked(exe: str, host: str, port: int, result: dict[str, Any], automatic: bool) -> dict[str, Any]:
+    now = time.time()
+    if automatic:
+        data = _read_gateway_stamp()
+        launched, seen = _stamp_time(data, "at"), _stamp_time(data, "api_seen_at")
+        if (launched and seen < launched) or not _gateway_hours(now):  # cheap checks first: no scan every tick
+            result.update(automatic_launch_held=True, note=_automatic_launch_blocker(now))
+            return result
+    running = _running_gateway_processes()
+    if running is None:
+        result.update(detection_failed=True, human_2fa_may_be_required=True,
+                      note="Couldn't check whether IB Gateway is already running, so the desk will not start "
+                           "another copy. Sign in to the open Gateway window, or start Gateway yourself.")
+        return result
+    if running:
+        _GATEWAY_ABSENT_SINCE[0] = None
+        result.update(already_running=running, human_2fa_may_be_required=True,
+                      note=f"{running[0]} is already running; complete sign-in or enable its API on port {port}. "
+                           "Not launching another copy.")
+        return result
+    if automatic:
+        blocker = _automatic_launch_blocker(now)
+        if blocker:
+            result.update(automatic_launch_held=True, note=blocker)
+            return result
+    recent = _recent_gateway_launch(now)
+    if recent is not None:
+        result["note"] = (f"Gateway was launched {int(recent)}s ago; waiting for sign-in instead of "
+                          f"launching another copy (cooldown {int(GATEWAY_LAUNCH_COOLDOWN_SEC)}s).")
+        return result
+    budget = _launch_budget_blocker(automatic, now)
+    if budget:
+        result.update(launch_budget_reached=True, note=budget)
+        return result
+    with _CrossProcessLock() as held:
+        if not held:
+            result["note"] = "Another program on this PC is starting IB Gateway right now; not starting a second copy."
+            return result
+        if _recent_gateway_launch() is not None:  # launched by another process while we checked
+            result["note"] = "IB Gateway was just started by another desk component; waiting for sign-in."
+            return result
+        _mark_gateway_launch(exe, "desk-auto" if automatic else "desk", automatic, now)
+        _GATEWAY_ABSENT_SINCE[0] = None
+        return _launch_gateway(exe, host, port, result)
 
 
 def _launch_gateway(exe: str, host: str, port: int, result: dict[str, Any]) -> dict[str, Any]:
     try:
         import subprocess
-        subprocess.Popen(
+        proc = subprocess.Popen(
             [exe],
             cwd=os.path.dirname(exe),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        try:
+            _note_gateway_pid(proc.pid, exe)
+        except Exception:  # noqa: BLE001
+            pass
         result["launched"] = True
         result["gateway_restarted"] = True  # process relaunch; session may still need login
         result["human_2fa_may_be_required"] = True

@@ -5,6 +5,7 @@
 <p class="hint-line">Navigation shortcuts: 1 Live, 2 Paper, 3 Research, 4 Settings; / focuses the research symbol. Shortcuts never send or skip orders.</p>
 <div class="section-grid">
 {% include "desk/workbench_settings.html" %}
+{% include "desk/trade_guards.html" %}
 <section class="desk-module panel more adv-only" data-workspace-only="live">
         <h3 class="module-title" tabindex="-1">Watchlist, brains &amp; live settings <span class="title-ctx">(watchlist, how trades run, journal)</span></h3>
         <div class="more-body">
@@ -38,13 +39,14 @@
           <div id="watchlist-results" class="watchlist-results" aria-live="polite"></div>
           <p class="preset-detail" id="preset-detail"></p>
       <label data-workspace-only="live" class="brain-toggle" for="brain-mode-select">Research brain (live and paper)
-        <select id="brain-mode-select" title="Which research brain picks Hold, Buy, or Sell on paper">
+        <select id="brain-mode-select" aria-describedby="brain-availability-note" title="Research brain used by the live and paper workspaces">
           <option value="gemini">Gemini</option>
           <option value="mock">Mock</option>
-          <option value="jev">Jev</option>
+          <option value="jev" disabled>JEV — unavailable until repaired</option>
           <option value="claude">Claude</option>
         </select>
       </label>
+      <p data-workspace-only="live" id="brain-availability-note" class="muted-line">JEV is temporarily locked until its integration is repaired and verified. Adding credentials alone does not unlock it.</p>
       <label data-workspace-only="live" class="brain-toggle chk" for="claude-shadow" title="Claude answers the same question silently next to your main AI. It never trades — the report card shows who called it better.">
         <input type="checkbox" id="claude-shadow" /> Claude head-to-head
       </label>

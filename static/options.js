@@ -1,6 +1,7 @@
 (() => {
  'use strict';
  const $=id=>document.getElementById(id), esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+ if(!$('options-form'))return; // options UI is only on pages that include it
  const usd=n=>n==null?'Unavailable':new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:4}).format(n);
  let review=null,revision=0,expireTimer;
  const guide=text=>window.dispatchEvent(new CustomEvent('options:guide',{detail:{text}}));

@@ -6,13 +6,17 @@
 
 Hard rules (owner decision): upkeep never blocks or changes live trading.
 It never edits config, orders, positions, sessions or broker settings, never
-stops or restarts a running desk, and never logs Gateway out. The watchdog
-only (re)runs the normal launcher when the desk is unreachable or the broker
-socket is down, which reuses a healthy desk and never submits orders.
+logs Gateway out. Dead schedulers can be recovered in place. An updated running
+desk restarts only through its guarded endpoint while inactive and broker-flat.
+The watchdog runs the normal launcher (without opening Gateway) when the desk
+is unreachable or has completed a guarded stop. When the broker socket is down it asks the running desk, as an
+automatic caller, whether Gateway should be reopened; the desk never reopens a
+Gateway window the owner closed. It never submits orders.
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -20,7 +24,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,7 +79,8 @@ def log(message: str) -> None:
 
 def _load(name: str) -> dict:
     try:
-        return json.loads((UPKEEP / name).read_text(encoding="utf-8"))
+        value = json.loads((UPKEEP / name).read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
     except (OSError, ValueError):
         return {}
 
@@ -97,9 +102,13 @@ def health(timeout: float = 10.0) -> dict | None:
 
 
 def run_launcher(reason: str) -> dict:
-    """Normal launcher, headless. Reuses a healthy desk; never places orders."""
+    """Normal launcher, headless, desk only. Reuses a healthy desk; never places orders.
+
+    -NoBroker: Gateway launches are decided by the desk's automatic-launch
+    policy (ensure_gateway), never by an unattended launcher run.
+    """
     cmd = ["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
-           "-File", str(LAUNCHER), "-NoBrowser", "-NoDialogs"]
+           "-File", str(LAUNCHER), "-NoBrowser", "-NoDialogs", "-NoBroker"]
     log(f"watchdog: running launcher ({reason})")
     try:
         done = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=240,
@@ -109,9 +118,29 @@ def run_launcher(reason: str) -> dict:
         return {"exit": None, "error": f"{type(exc).__name__}: {exc}"[:300]}
 
 
+def ensure_gateway_via_desk(timeout: float = 30.0) -> dict:
+    """Ask the running desk to apply its automatic Gateway policy."""
+    body = json.dumps({"launch_if_down": True, "automatic": True}).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{PORT}/api/broker-ensure-gateway", data=body,
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.load(resp)
+    except Exception as exc:  # reported, never fatal
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+    if not isinstance(data, dict):
+        return {"ok": False, "error": "unexpected response"}
+    return {k: data.get(k) for k in ("ok", "launched", "port_open", "automatic_launch_held", "note")}
+
+
 def watchdog() -> dict:
     state = _load("watchdog.json")
-    last_launch = float(state.get("last_launch_ts") or 0)
+    try:
+        last_launch = float(state.get("last_launch_ts") or 0)
+        if not math.isfinite(last_launch) or last_launch > time.time():
+            last_launch = time.time()
+    except (ValueError, TypeError):
+        last_launch = time.time()
     result = {"at": now().isoformat(), "action": "none"}
     h = health()
     if h is None:
@@ -129,14 +158,37 @@ def watchdog() -> dict:
         broker = h.get("broker") or {}
         result["desk"] = "ok"
         result["broker"] = {k: broker.get(k) for k in ("status", "connected", "connected_label")}
+        recovery = h.get("recovery") or {}
+        if recovery.get("expected") and recovery.get("missing") and not h.get("corrupt_files"):
+            result["action"] = "recover_workers"
+            result["recovery"] = request_recovery("/api/desk/recover", {"expected_pid": h.get("pid")})
+        # A code update is the only reason to restart a reachable process.
+        # Errors from providers, Reddit or Daily P&L never cause restart loops.
+        instance = h.get("instance") or {}
+        same_source = str(instance.get("source_root") or "").casefold() == str(ROOT.resolve()).casefold()
+        if same_source and (h.get("code") or {}).get("stale") and cooldown_ok:
+            state["last_launch_ts"] = time.time()  # include refused attempts in cooldown
+            restart = request_recovery("/api/desk/shutdown", {"confirm": "RESTART", "automatic": True, "expected_pid": h.get("pid")})
+            result["restart"] = restart
+            result["action"] = "restart_deferred"
+            if restart.get("ok") and restart.get("stopping"):
+                for _ in range(20):
+                    time.sleep(1)
+                    current = health(timeout=2)
+                    if current is None:
+                        result["action"], result["launcher"] = "restart_updated_desk", run_launcher("guarded update restart")
+                        break
+                    if current.get("pid") != h.get("pid"):
+                        result["action"] = "restart_already_completed"
+                        break
+            state["last"] = result
+            _save("watchdog.json", state)
+            return result
         if broker.get("configured") and not broker.get("connected"):
-            # Launcher reuses the running desk and only opens Gateway if its
-            # API port is down; Gateway sign-in / 2FA stays with the owner.
-            if cooldown_ok:
-                result["action"], result["launcher"] = "ensure_gateway", run_launcher("broker disconnected")
-                state["last_launch_ts"] = time.time()
-            else:
-                result["action"] = "cooldown"
+            # The desk decides: during an active live session it relaunches only
+            # a Gateway that signed in and then went away; a login window closed
+            # before sign-in stays closed. Sign-in / 2FA stays with the owner.
+            result["action"], result["gateway"] = "ensure_gateway", ensure_gateway_via_desk()
     state["last"] = result
     _save("watchdog.json", state)
     if result["action"] != "none":
@@ -296,11 +348,40 @@ def update_tasks(problems: list[str]) -> None:
         pass
 
 
+def verified_backup() -> dict:
+    """The running app captures JSON under its own lock and uses SQLite online backup."""
+    req = urllib.request.Request(f"http://127.0.0.1:{PORT}/api/backups", data=b"{}",
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        result = json.load(resp)
+    if not result.get("ok"):
+        raise ValueError(result.get("error") or "Backup verification failed")
+    return result
+
+
+def request_recovery(path: str, body: dict) -> dict:
+    req = urllib.request.Request(f"http://127.0.0.1:{PORT}{path}", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            result = json.load(response)
+        return result if isinstance(result, dict) else {"ok": False, "error": "Invalid recovery response"}
+    except urllib.error.HTTPError as exc:
+        try:
+            result = json.load(exc)
+            return {"ok": False, "error": result.get("error", f"HTTP {exc.code}"), "deferred": True}
+        except (ValueError, AttributeError):
+            return {"ok": False, "error": f"Recovery HTTP {exc.code}"}
+    except Exception as exc:
+        return {"ok": False, "error": f"Recovery unavailable ({type(exc).__name__})"}
+
+
 def daily(with_tests: bool = True) -> dict:
     started = time.time()
     report = {"at": now().isoformat(), "rules": "never touches config, orders, sessions or broker"}
     steps = [("archived", archive_root_clutter), ("pruned", prune_archive), ("logs", rotate_logs),
-             ("caches_removed", clean_caches), ("sqlite", sqlite_maintenance), ("data_usage_mb", data_usage)]
+             ("caches_removed", clean_caches), ("sqlite", sqlite_maintenance),
+             ("backup", verified_backup), ("data_usage_mb", data_usage)]
     for name, fn in steps:
         try:
             report[name] = fn()
@@ -313,6 +394,9 @@ def daily(with_tests: bool = True) -> dict:
         "automation": (h.get("loop") or {}).get("automation_health")}
     report["tests"] = run_tests() if with_tests else {"skipped": "--no-tests"}
     problems = []
+    for name, _ in steps:
+        if isinstance(report.get(name), dict) and report[name].get("error"):
+            problems.append(f"{name}: {report[name]['error']}")
     if h is None:
         problems.append("desk unreachable at the daily check")
     elif h.get("corrupt_files"):
@@ -320,6 +404,8 @@ def daily(with_tests: bool = True) -> dict:
     if report["tests"].get("ok") is False:
         problems.append("tests: " + str(report["tests"].get("summary")))
     for name, row in (report.get("sqlite") or {}).items():
+        if isinstance(row, dict) and row.get("error"):
+            problems.append(f"{name}: {row['error']}")
         if isinstance(row, dict) and row.get("quick_check") not in (None, "ok"):
             problems.append(f"{name} integrity: {row['quick_check']}")
     report["problems"] = problems

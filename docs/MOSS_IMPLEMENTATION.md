@@ -35,7 +35,7 @@ The one-page layout remains. New content uses small template includes and native
 
 Edit `templates/desk/companion.html`, `trade_planner.html`, `notebook.html`, `static/companion.js`, or the short companion section in `static/app.css`. Backend modules are `research_companion.py`, `research_learning.py` and `trade_planner.py`. Existing paper fills remain in `app.py`. The [UI map](UI_STRUCTURE.md) lists the surrounding files.
 
-OpenAI tooling used: Product Design audit for workflow/presentation, Browser for interaction checks, and Imagegen for the original Moss avatar. No OpenAI API integration was added. Avatar asset: `static/moss-researcher.png`. Generation prompt: square standalone avatar for a calm market research companion named Moss; small sage-green owl, thoughtful curious expression, ivory face, tiny round amber glasses, closed research notebook; matte editorial style and subtle paper texture; sage, cream and slate palette; centered and readable at 88 pixels; deep teal background #142724; no text, charts or profit symbols.
+OpenAI tooling used: Product Design audit for workflow/presentation, Browser for interaction checks, and Imagegen for the original Moss avatar. No OpenAI API integration was added. Avatar asset: `docs/assets/moss-researcher.png`. Generation prompt: square standalone avatar for a calm market research companion named Moss; small sage-green owl, thoughtful curious expression, ivory face, tiny round amber glasses, closed research notebook; matte editorial style and subtle paper texture; sage, cream and slate palette; centered and readable at 88 pixels; deep teal background #142724; no text, charts or profit symbols.
 
 ## Validation and remaining qualification
 

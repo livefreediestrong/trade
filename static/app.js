@@ -1463,10 +1463,17 @@
     if (startup) {
       const broker = data.broker || {};
       const book = data.broker_book;
-      startup.textContent = broker.paper_mode == null ? (broker.connection_error || data.startup?.message || "")
+      startup.textContent = broker.configured === false
+        ? "No broker is configured, so live trading is off. Paper practice still works."
+        : broker.connected === false && broker.connection_error ? `Broker not connected: ${broker.connection_error}`
+        : broker.paper_mode == null ? (broker.connection_error || data.startup?.message || "")
         : book?.ok === false ? `Broker account identified; account data unavailable: ${book.error || "check Gateway"}`
         : book?.risk_error ? `Broker account connected. ${book.risk_error}`
         : "Broker account identified. Each order still passes account and risk checks.";
+      // Updated code on disk that this running desk has not loaded yet.
+      if (data.startup?.code_stale && data.startup?.code_message) {
+        startup.textContent = `${data.startup.code_message} ${startup.textContent}`.trim();
+      }
       startup.hidden = !startup.textContent;
     }
   }
@@ -1675,13 +1682,22 @@
       const simpleUi = getUiMode() === "simple" || document.body.classList.contains("ui-simple");
       // Always keep quiet class — chill vibe; ok/warn are soft hints not neon
       llmEl.classList.add("quiet", "soft");
-      if (brain === "mock") {
+      if (!data.llm) {
+        llmEl.textContent = "Checking research model…";
+        llmEl.classList.remove("warn-pill", "ok-pill");
+        llmEl.title = "Waiting for model configuration status.";
+      } else if (brain === "mock") {
         llmEl.textContent = simpleUi ? "Mock" : "Mock brain";
         llmEl.classList.remove("warn-pill");
         llmEl.classList.add("ok-pill");
         llmEl.title = simpleUi ? "Brain (mock) — picks Hold, Buy, or Sell" : "Mock brain";
       } else if (brain === "jev") {
-        if (llm.configured || llm.jev_key_present) {
+        if (llm.selection_error) {
+          llmEl.textContent = "JEV unavailable";
+          llmEl.classList.add("warn-pill");
+          llmEl.classList.remove("ok-pill");
+          llmEl.title = llm.selection_error;
+        } else if (llm.configured) {
           llmEl.textContent = simpleUi ? "Jev" : "Jev on";
           llmEl.classList.remove("warn-pill");
           llmEl.classList.add("ok-pill");
@@ -1740,7 +1756,9 @@
       const ls = String(s.llm_side).toLowerCase();
       bits.push(`<span class="badge badge-llm" title="Brain lean (Buy/Sell/Hold) — research only">Brain ${escapeHtml(ls)}</span>`);
     }
-    if (s.llm_error) {
+    if (s.data_error || s.llm_error === 'stale_or_unverified_market_data') {
+      bits.push('<span class="badge badge-watch" title="Waiting for a fresh quote; no brain decision was requested">Waiting for market data</span>');
+    } else if (s.llm_error) {
       bits.push(`<span class="badge badge-avoid" title="${escapeHtml(s.llm_error)}">Brain error</span>`);
     }
     const rflags = s.research_flags || (s.research_flag ? [s.research_flag] : []);
@@ -4180,27 +4198,29 @@
     }
     const stale = buzz.stale ? " · may be outdated" : "";
     const fromCache = buzz.from_cache ? " · from cache" : "";
-    const authMode = buzz.auth_mode || (buzz.reddit_auth && buzz.reddit_auth.mode) || "";
+    const auth = buzz.reddit_auth || {};
+    const authMode = auth.mode || buzz.auth_mode || "";
     let authBit = "";
     if (authMode) {
       const am = String(authMode).toLowerCase();
-      if (am.includes("oauth")) authBit = " · Reddit login (OAuth)";
+      if (auth.message) authBit = ` · ${auth.message}`;
+      else if (am.includes("oauth")) authBit = " · Reddit login (OAuth)";
       else if (am.includes("public")) authBit = " · public feed (may be blocked)";
       else authBit = ` · ${authMode}`;
     }
     if (meta) {
-      meta.textContent = `Last refresh: ${when}${stale}${fromCache}${authBit}`;
+      meta.textContent = `Last refresh: ${when}${stale}${fromCache}${buzz.refreshing ? ' · refreshing in background' : ''}${authBit}`;
       meta.title = "When Reddit mention data was last refreshed (research only)";
     }
     if (errEl) {
-      const errs = buzz.errors || [];
+      const errs = auth.state === 'needs_credentials' ? [] : [...new Set(buzz.errors || [])];
       errEl.textContent = errs.length ? errs.slice(0, 4).join(" | ") : "";
     }
     const liveNote = $("#buzz-live-chat-note");
     const liveTicks = $("#buzz-live-chat-tickers");
     const live = buzz.live_chat || {};
     if (liveNote) {
-      liveNote.textContent = live.note || "Live Chat needs Reddit login - connect later.";
+      liveNote.textContent = live.note || "Community Live Chat is not connected by this reader.";
     }
     if (liveTicks) {
       const pasteRows = live.paste_tickers || [];
@@ -4235,7 +4255,7 @@
     }
     const rows = buzz.tickers || buzz.top || [];
     if (!rows.length) {
-      list.innerHTML = `<div class="empty">${buzz.stale ? "Buzz is warming up — check back shortly." : "No ticker mentions yet. Reddit may be blocking public feeds; a login helps when configured."}</div>`;
+      list.innerHTML = `<div class="empty">${escapeHtml(auth.state === 'needs_credentials' ? auth.message : buzz.refreshing ? "Refreshing source data in the background." : "No current ticker mentions from the connected sources.")}</div>`;
       return;
     }
     const hotCut = rows[0] && (rows[0].weighted_mentions || rows[0].mentions || 0);
@@ -5040,7 +5060,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
       if (state) state.buzz = data;
       renderBuzzPanel(data);
       renderBuzzSimplePill({ buzz: data });
-      toast("Buzz refreshed");
+      toast(data.refreshing ? "Source refresh requested · running in background" : "Cached source data loaded");
     } catch (e) {
       toast(e.message || "Buzz refresh failed", true);
     }

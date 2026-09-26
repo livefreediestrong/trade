@@ -14,7 +14,11 @@
  }
  quiet.addEventListener('change',apply);task.addEventListener('change',apply);
  $('desk-task-go').addEventListener('click',()=>{
-  const target=$(task.value);if(!target)return;
+  const target=$(task.value);
+  if(!target){ // split pages: the section lives on another page
+   const page={'desk-options':'paper','desk-paper':'paper','moss-desk':'paper','moss-notebook':'research','agent-research':'research','desk-settings':'settings'}[task.value]||'auto';
+   location.href='/desk/'+page+'#'+encodeURIComponent(task.value);return;
+  }
   for(let p=target;p;p=p.parentElement)if(p.tagName==='DETAILS')p.open=true;
   target.setAttribute('tabindex','-1');target.focus({preventScroll:true});target.scrollIntoView({behavior:'instant',block:'start'});
  });apply();

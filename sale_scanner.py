@@ -88,8 +88,11 @@ class SaleScanner:
                     meta.update(state="initializing", message="Refreshing the US listing directory.", retry_after=None)
                 self._save(db, meta)
             self.stop.clear()
-            self.worker = threading.Thread(target=self._run, args=(target, not resume), daemon=True, name="sale-research")
-            self.worker.start()
+            try:
+                self.worker = threading.Thread(target=self._run, args=(target, not resume), daemon=True, name="sale-research")
+                self.worker.start()
+            except Exception:
+                self._update(state="error", message="Could not start the scanner worker. Previous results retained; try again.")
             return self.snapshot()
 
     def pause(self):

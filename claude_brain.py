@@ -7,6 +7,10 @@ credential is available (ANTHROPIC_API_KEY in .env, or an `ant auth login` profi
 Model: CLAUDE_MODEL (default claude-opus-5). Effort: CLAUDE_EFFORT (default "low" —
 this is a short, bounded judgment call made every loop tick; raise it if you want
 more deliberate answers at higher cost/latency).
+
+Refusals: on models that support it, a safety decline is re-run server-side on
+Anthropic's recommended fallback model (fallbacks="default"); set
+CLAUDE_FALLBACKS=0 to turn that off. A final refusal is still a hard hold.
 """
 from __future__ import annotations
 
@@ -20,13 +24,25 @@ except ImportError:  # pragma: no cover
     anthropic = None  # type: ignore
 
 DEFAULT_MODEL = "claude-opus-5"
-# USD per 1M tokens (input, output) — cached 2026 price list; unknown models → Opus rate.
+# USD per 1M tokens (input, output) — Anthropic first-party list prices (2026);
+# unknown models are costed at the default model's rate.
 PRICES = {
-    "claude-opus-5": (5.0, 25.0),
-    "claude-sonnet-5": (2.0, 10.0),
-    "claude-haiku-4-5": (1.0, 5.0),
     "claude-fable-5-1": (10.0, 50.0),
+    "claude-fable-5": (10.0, 50.0),
+    "claude-opus-5-5": (4.0, 20.0),
+    "claude-opus-5": (5.0, 25.0),
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-opus-4-7": (5.0, 25.0),
+    "claude-opus-4-6": (5.0, 25.0),
+    "claude-sonnet-5": (2.0, 10.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-haiku-4-5": (1.0, 5.0),
 }
+CACHE_WRITE_MULT = 1.25  # 5-minute cache writes
+CACHE_READ_MULT = 0.1
+# Server-side refusal fallback ("default" routes by refusal category).
+FALLBACK_BETA = "server-side-fallback-2026-07-01"
+FALLBACK_MODELS = {"claude-opus-5", "claude-fable-5-1", "claude-fable-5"}
 
 THESIS_SCHEMA = {
     "type": "object",
@@ -79,11 +95,35 @@ def model_name() -> str:
 def _cost(model: str, usage: Any) -> float:
     pin, pout = PRICES.get(model, PRICES[DEFAULT_MODEL])
     try:
-        inp = int(getattr(usage, "input_tokens", 0) or 0) + int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+        inp = int(getattr(usage, "input_tokens", 0) or 0)
+        written = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+        read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
         out = int(getattr(usage, "output_tokens", 0) or 0)
     except (TypeError, ValueError):
         return 0.0
-    return round(inp / 1e6 * pin + out / 1e6 * pout, 6)
+    billed_in = inp + written * CACHE_WRITE_MULT + read * CACHE_READ_MULT
+    return round(billed_in / 1e6 * pin + out / 1e6 * pout, 6)
+
+
+def request_params(model: str, effort: str, prompt: str) -> dict[str, Any]:
+    """Messages API arguments for one thesis request on ``model``."""
+    output_config: dict[str, Any] = {"format": {"type": "json_schema", "schema": THESIS_SCHEMA}}
+    params: dict[str, Any] = {
+        "model": model,
+        "max_tokens": 16000,
+        "system": SYSTEM,
+        "messages": [{"role": "user", "content": prompt}],
+        "output_config": output_config,
+    }
+    if model.startswith("claude-haiku-4-5"):
+        # Haiku 4.5 takes neither adaptive thinking nor effort; a short answer needs neither.
+        return params
+    params["thinking"] = {"type": "adaptive"}
+    output_config["effort"] = effort
+    if model in FALLBACK_MODELS and (os.environ.get("CLAUDE_FALLBACKS") or "1").strip().lower() not in ("0", "false", "no", "off"):
+        params["betas"] = [FALLBACK_BETA]
+        params["fallbacks"] = "default"
+    return params
 
 
 def _hold(error: str, model: str) -> dict[str, Any]:
@@ -117,17 +157,7 @@ def decide(analysis: dict, *, horizon_min: int = 20, context_blob: Optional[str]
     try:
         llm_trader._GeminiBudget(rpm=int(os.environ.get("CLAUDE_RPM") or 30),
                                 daily=int(os.environ.get("CLAUDE_DAILY") or 500), provider="claude").acquire()
-        resp = client.beta.messages.create(
-            model=model,
-            max_tokens=16000,
-            thinking={"type": "adaptive"},
-            output_config={
-                "effort": effort,
-                "format": {"type": "json_schema", "schema": THESIS_SCHEMA},
-            },
-            system=SYSTEM,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        resp = client.beta.messages.create(**request_params(model, effort, prompt))
     except anthropic.RateLimitError:
         return _hold("claude_rate_limited", model)
     except anthropic.AuthenticationError:

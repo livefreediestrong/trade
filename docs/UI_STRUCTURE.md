@@ -25,7 +25,7 @@ Main page spine is attention → overview → live desk → live automation (bro
 | Immutable order terms and capability matrix | `order_terms.py` |
 | Research workspace and captured experiments API | `desk_workbench.py` |
 | Moss avatar, routine and access summary | `templates/desk/companion.html` |
-| Fox / optional portrait assets and cosmetic animation | `static/moss_avatar.js`, `static/moss_avatar.css`, `static/moss-fox-atlas.png`, `static/moss-portrait-atlas.png` |
+| Fox / optional portrait assets and cosmetic animation | `static/moss_avatar.js`, `static/moss_avatar.css`, `docs/assets/moss-fox-atlas.png`, `docs/assets/moss-portrait-atlas.png` |
 | Cost calculator and saved automation rehearsal | `templates/desk/trade_planner.html`, `trade_planner.py` |
 | Notebook, learned parameters and glossary | `templates/desk/notebook.html`, `static/companion.js` |
 | Daily research and fitted research-ranking parameters | `research_companion.py`, `research_learning.py` |

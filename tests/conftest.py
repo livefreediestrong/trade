@@ -16,3 +16,10 @@ os.environ["BROKER_PROVIDER"] = "alpaca"
 def paper_broker_environment(monkeypatch):
     monkeypatch.setenv("BROKER_PROVIDER", "alpaca")
     monkeypatch.setenv("ALPACA_PAPER", "true")
+
+
+@pytest.fixture(autouse=True)
+def fresh_screener_caches():
+    import screener_logic
+    screener_logic._SECTOR_CACHE.clear()
+    screener_logic._EARNINGS_CACHE.clear()

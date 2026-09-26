@@ -24,6 +24,13 @@ Useful feature references:
 - [Direct stock tickets and position closing](docs/LIVE_STOCK_TICKETS.md)
 - [Automation debugging and scheduler boundaries](docs/AUTOMATION_DEBUG.md)
 - [Moss broker agent: policy, activation, execution and limits](docs/LIVE_AGENT.md)
+- [Market watch, X watcher and internet-wide trend scanner](docs/MARKET_WATCH.md)
+- [Today at the desk: Fox, Changing Woman, scheduled events and WSB](docs/MARKET_DAY.md)
+- [Research capabilities review](docs/RESEARCH_CAPABILITIES.md)
+- [Company check: bottom line, insiders, contracts, lobbying, Congress trades](docs/COMPANY_CHECK.md)
+- [Strategy scorecard](docs/STRATEGY_SCORECARD.md)
+- [Watchlist alerts](docs/WATCH_ALERTS.md)
+- [Live trading ON/OFF switch](docs/LIVE_SWITCH.md)
 
 The detailed implementation notes below use the legacy Tomahawk name.
 
@@ -36,6 +43,10 @@ Companion-style app for a Windows PC beside `holdings-options-monitor`.
 
 Double-click **Daytrade Signal Desk** on the desktop. The shortcut runs `Launch.vbs`, which calls the single `Start-Tomahawk.ps1` startup flow without leaving a terminal open.
 
+**This is the only launcher you need.** In the desk folder, `Launch.vbs` is the one to double-click. `Launch.bat` does the same thing with a visible console (for troubleshooting), and `Start-Tomahawk.ps1` is the startup flow both of them run. The older `run.bat`, `force_restart.ps1`, `install_and_restart.ps1` and `restart_signal_desk.ps1` have been removed.
+
+Each time you start the desk, the launcher keeps exactly one **Daytrade Signal Desk** shortcut on your Desktop and in the Start menu, pointing at `Launch.vbs` with the desk icon. Any other shortcut that starts this desk folder (for example one made for an older script) is replaced by it. Shortcuts to anything else are never touched, and headless runs (`-NoDialogs`, the watchdog) leave shortcuts alone. If no shortcut works, double-click `Launch.vbs` in the desk folder once, or run `tools\Install-DeskShortcut.ps1`.
+
 The launcher creates a missing Python environment, repairs missing dependencies, starts the desk, waits for its health check, opens its browser page, and opens the installed IB Gateway when IBKR is selected and the configured API port is unavailable. It reuses existing components on repeat clicks. Previous server logs are retained as `.previous` files; setup failures show an explanation and keep details in `data/setup.log` or `data/server.stderr.log`.
 
 Complete **IB Gateway sign-in / 2FA** when prompted. The launcher does not store credentials, choose an account, change execution mode, or submit orders. The desk displays remaining startup steps at the top of the page; account verification and mode confirmation still happen before broker execution. A reachable Gateway port alone is not account verification.
@@ -46,9 +57,9 @@ If daily P&L stays unavailable, check **Configure → Settings → API → Setti
 
 **2FA / IB Key cannot be eliminated** and must never be disabled. Soft reconnect does not log Gateway out, so it usually avoids 2FA. Human 2FA is required when Gateway fully logs out (weekly reauthentication, explicit logout, cold start after token expiry). To make full logouts rare: in IB Gateway set **Configure → Lock and Exit → Never lock** and **Auto restart** at a time you are around (IB’s recommended API setup). Optional later: [IBC](https://github.com/IbcAlpha/IBC) can drive Auto-Restart; this desk documents it only — it is not bundled. A Windows Task Scheduler proposal lives in `tools/Register-GatewayDailyRestart.ps1` (relaunches `ibgateway.exe`; login may auto if the session is cached, otherwise you still approve IB Key).
 
-Gateway is discovered under `C:\Jts\ibgateway` or your user `Jts\ibgateway` directory. For another location, set `IB_GATEWAY_EXE` in `.env`. `Launch.bat` and the older start/restart scripts delegate to the same launcher; none blindly terminates a port owner. For diagnostics, run `Launch.bat -NoBrowser -NoDialogs`.
+Gateway is discovered under `C:\Jts\ibgateway` or your user `Jts\ibgateway` directory. For another location, set `IB_GATEWAY_EXE` in `.env`. `Launch.bat` runs the same launcher; it never blindly terminates a port owner. For diagnostics, run `Launch.bat -NoBrowser -NoDialogs`.
 
-The launcher reuses a running desk only when its health response identifies this checkout and the configured data directory. Another checkout on the same port is reported as a conflict. Process environment settings override `.env`; inline comments are supported, and quote values that contain a literal `#` after whitespace. Jev request budgets use `JEV_RPM=30` and `JEV_DAILY=500` by default and are reserved before provider requests.
+The launcher reuses a running desk only when its health response identifies this checkout and the configured data directory. If the code in this folder changed after that desk started (for example after `git pull`), the launcher asks whether to restart it; the desk refuses to stop while a broker order is unresolved, and headless runs (`-NoDialogs`, the watchdog) never restart it. The page also shows a notice until the desk is restarted. `Launch.vbs` and `Launch.bat` run the launcher with a process-scoped `-ExecutionPolicy Bypass`, so Windows' default script policy does not block the shortcut. Another checkout on the same port is reported as a conflict. Process environment settings override `.env`; inline comments are supported, and quote values that contain a literal `#` after whitespace. Jev request budgets use `JEV_RPM=30` and `JEV_DAILY=500` by default and are reserved before provider requests.
 
 ## Market-hours data and decision handling
 
@@ -186,19 +197,7 @@ Flask + Jinja + vanilla JS + yfinance/pandas/requests. Dark desk UI (`--bg #0b0f
 
 Double-click the **Daytrade Signal Desk** desktop shortcut. It runs `Launch.vbs` and the shared `Start-Tomahawk.ps1` startup flow, including environment setup when needed, then opens the browser.
 
-(`Launch.bat` uses the same `.venv` folder.)
-
-Or after first setup:
-
-```bat
-run.bat
-```
-
-After a deploy from the box:
-
-```powershell
-powershell -NoProfile -File install_and_restart.ps1
-```
+(`Launch.bat` uses the same `.venv` folder and shows a console window.) After a `git pull`, open the same shortcut: it offers to restart a desk that is still running the old code.
 
 ## Linux / this box
 
@@ -302,7 +301,7 @@ The [Moss paper workday](docs/MOSS_WORKDAY.md) runs local paper research through
 - **Report card:** header button — last 7 days, grade A–F, profit after costs, % of AI calls right, worst setups. `GET /api/report/weekly`.
 - **Scanner signals:** 5-minute relative volume (vs. the same time on prior days), VWAP and its slope, distance from VWAP / day's high in ATRs, bid-ask spread vs. ATR (market hours only). They can downgrade PASS → WATCH and are shown to the AI.
 - **Social/news pulse:** when enabled, `/api/state` and `/api/research/social` combine bounded public Reddit communities (`wallstreetbets`, `stocks`, `investing`, `options`, `Daytrading`, `Shortsqueeze`), Stocktwits symbol streams for the watchlist, and configurable public RSS feeds. Defaults include CNBC Markets, MarketWatch Top Stories, NYT Business, and BBC Business; override with `SOCIAL_RSS_FEEDS`. They expose ticker attention, unique-author count, sentiment split, source counts, links, and quality warnings. Social/news chatter never creates a PASS, changes sizing, or bypasses execution gates.
-- **Claude (`claude_brain.py`):** choose "Claude" as the brain, or tick "Claude head-to-head" to have Claude answer silently next to your main AI; the report card shows who was right more often on the same decisions. Needs `ANTHROPIC_API_KEY` in `.env`. Model `CLAUDE_MODEL` (default `claude-opus-5`, ~$5/$25 per million tokens), `CLAUDE_EFFORT` (default `low`). Uses server-side refusal fallbacks (`fallbacks: "default"`).
+- **Claude (`claude_brain.py`):** choose "Claude" as the brain, or tick "Claude head-to-head" to have Claude answer silently next to your main AI; the report card shows who was right more often on the same decisions. Needs `ANTHROPIC_API_KEY` in `.env`. Model `CLAUDE_MODEL` (default `claude-opus-5`, ~$5/$25 per million tokens; costs for other current models, including cache writes/reads, are in `claude_brain.PRICES`), `CLAUDE_EFFORT` (default `low`; ignored for Haiku 4.5, which takes no effort or adaptive thinking). On Claude Opus 5 and Fable 5/5.1 a safety decline is re-run server-side on Anthropic's recommended fallback (`fallbacks: "default"`); `CLAUDE_FALLBACKS=0` turns that off, and a final refusal stays a hold.
 - **Past-data test (`backtest.py`):** "Test the rules on past data" in the report card replays the screener's PASS rule on ~2 years of hourly prices with a learning/check split and a no-filter baseline. `GET/POST /api/backtest`.
 
 ## Auto upkeep (2026-09-24)
@@ -312,9 +311,35 @@ The [Moss paper workday](docs/MOSS_WORKDAY.md) runs local paper research through
 that runs the live desk.
 
 - **Tomahawk-Desk-Watchdog** (every 5 min): if `/api/health` is unreachable twice 20s apart, runs the
-  normal launcher headless (`-NoBrowser -NoDialogs`). If the desk is up but the broker socket is down,
-  runs the launcher so Gateway is opened when its API port is closed. 10-minute cooldown. Never stops or
-  restarts a healthy desk.
+  normal launcher headless for the desk only (`-NoBrowser -NoDialogs -NoBroker`, 10-minute cooldown).
+  If the desk is up but the broker socket is down, it asks the desk (`POST /api/broker-ensure-gateway`
+  with `automatic: true`) instead of opening Gateway itself. Never stops or restarts a healthy desk.
+
+### When the desk reopens IB Gateway
+
+Unattended callers (the watchdog, the Moss agent's tick, the daily `Ensure-IBGateway.ps1` task) reopen
+Gateway only when it had signed in and served the API since its last launch and has then been gone for
+90 seconds (so Gateway's own auto-restart is not raced). The watchdog and the agent also require an active
+live session (`live_manual` or `auto_live`, session started), so a Gateway you close after trading stays closed. A login window you close, or one that exits
+without signing in, stays closed: the desk shows "closed before it signed in" and waits for you to use
+**Ensure Gateway** (Live trading section) or the desktop shortcut.
+
+Every desk launcher follows the same rules, whether it is the desk, the desktop shortcut or the daily task:
+
+- **Only one Gateway.** Nothing starts a second Gateway while one is running. Running means any of:
+  - an `ibgateway.exe` or `tws.exe` process (including renamed images such as `ibkrgateway.exe`);
+  - a Gateway/TWS `java.exe`/`javaw.exe` (IBC);
+  - a window titled **IBKR Gateway**, IB Gateway or Trader Workstation;
+  - the process ID the desk last started.
+- **An unknown answer counts as running.** If Windows cannot list running programs, Gateway is not started.
+- **One launch at a time.** Launches share one lock across processes and a 180-second cooldown.
+- **Launch budget.** At most three launches in any 30 minutes. Unattended launches: at most two a day, and only
+  from 9:00 ET to the close on trading days.
+- **Off switch.** Set `IB_GATEWAY_AUTOLAUNCH=0` to stop the desk from ever starting Gateway, for example if you
+  start it yourself or with IBC.
+
+Launches, sign-ins and counts are kept in `data/gateway_launch.json` (`at`, `source`, `api_seen_at`, `launches`,
+`automatic_launches`, `pid`).
 - **Tomahawk-Desk-Upkeep** (daily 16:40): moves root `_*` backups/scratch and `data/_*` probe dumps into
   `_archive/`, deletes `_archive` items untouched for `UPKEEP_BACKUP_DAYS` (default 30), rolls
   `data/*.log` over `UPKEEP_LOG_MAX_MB` (default 25) when not in use, clears `__pycache__`, runs SQLite
@@ -337,3 +362,49 @@ Gateway out. Check status with `.venv\Scripts\python.exe tools\desk_upkeep.py st
 - `place_from_desk_order` runs on the IBKR API owner thread again, like every other broker call.
 - The live agent AI budget counts only live-agent research (`model_usage.json` now records a per-scope
   total), so paper Moss spending cannot pause live research.
+
+### Profit and loss guards
+
+These guards apply to both paper and broker ideas. Change them under **Settings → Entry & profit guards**,
+or in the live agent policy for the exit rules.
+
+- **Reward to risk after costs** (`min_net_reward_risk`, default 1.2): a PASS setup whose target, after
+  round-trip fees, slippage and the bid/ask spread, pays less than this multiple of the risk to its stop
+  becomes WATCH (`thin_edge_after_costs`). Stops and targets use ATR when known. Each signal carries
+  `round_trip_cost_usd`, `net_reward_risk` and `breakeven_win_rate`.
+- **Evidence gate** (`evidence_gate_enabled`, `evidence_min_samples`, default 12): once a setup (verdict
+  and entry timing) has enough scored trades, it is blocked from execution when its after-cost hit rate
+  is below breakeven and its average move is not positive (`setup_losing_record`). Blocked setups are
+  still scored as research, so the block lifts when the record recovers.
+- **Give-back guard** (`giveback_stop_pct`, default 50): once today's broker P&L peak reaches a quarter
+  of the daily loss limit, new risk pauses if more than this share of the peak is given back. Exits are
+  never blocked.
+- **Deterministic confidence**: the same setup always scores the same confidence (it used to be random
+  within a band), so the live agent's minimum-confidence gate is repeatable.
+- **Live agent protective exits**: stop, target, breakeven stop, optional maximum hold and a sell before
+  the close for stocks the agent bought. See `docs/LIVE_AGENT.md`.
+
+### Fox, Changing Woman, events and WSB
+
+- **Fox is the broker agent.** His speech bubble and the **Today at the desk** panel (Overview and Auto) say what the
+  agent is researching, what it bought or sold, the positions it protects and why it waits.
+- **Changing Woman keeps the chores and reasons with Fox.** Her chores are reconciling orders, the calendars, the WSB
+  threads, the news, the trade journal, upkeep and readable ledgers. Her notes cover upcoming speeches and releases,
+  WSB crowding, the cost edge of his latest idea, the give-back guard and the close.
+- **Scheduled events** come from the Fed calendar (FOMC, Chair, speeches, testimony), the BLS release calendar, the
+  President's public schedule and your own entries. The agent opens nothing new from 15 minutes before to 15 minutes
+  after a high-impact event; exits continue.
+- **WSB threads** (Daily Discussion, What Are Your Moves Tomorrow, Weekend, stickies) are read every two minutes
+  during the trading day. A buy idea on a crowded ticker is halved by default (or skipped, noted, or ignored).
+  WSB never adds risk.
+- See [Today at the desk](docs/MARKET_DAY.md).
+
+### Alerts and crash reports
+
+- `ALERT_WEBHOOK_URL` accepts a Discord or Slack incoming webhook, or a Zapier **Catch Hook** URL. Zapier
+  receives `content`, `text` and `event` (`kind`, `message`, `ts`) and can forward alerts to SMS, email
+  or a task list.
+- `SENTRY_DSN` (optional, needs `pip install "sentry-sdk[flask]"`) reports desk crashes to Sentry.
+  `error_reporting.py` sends exception types, messages and stack frames only, drops request bodies,
+  headers, cookies, local variables and breadcrumbs, and redacts broker account numbers and long tokens.
+  Without the variable nothing is sent.

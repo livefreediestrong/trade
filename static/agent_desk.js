@@ -14,8 +14,8 @@
   const agent=cfg.live_agent,ks=agent?{armed:true,max_daily_loss_usd:agent.policy?.max_daily_loss_usd,max_trades_per_day:agent.policy?.max_orders_per_day,max_position_size_usd:agent.policy?.max_order_usd}:cfg.kill_switch||{},limitsOn=ks.armed===true;
   if(!settings)blocks.push('Configured broker limits have not been loaded.');
   else if(!limitsOn||![ks.max_daily_loss_usd,ks.max_trades_per_day,ks.max_position_size_usd].every(n=>finite(n)&&n>0))blocks.push('All three explicit broker loss, count and size limits are not enabled.');
-  if(agent&&!agent.enabled)blocks.push('Moss broker agent is paused. Its saved policy does not authorize orders.');
-  const title=agent?agent.enabled&&automatic&&session?'Moss agent enabled':'Moss agent paused':automatic?(session?'Automatic mode · session active':'Automatic mode · session stopped'):'Manual activation required';
+  if(agent&&!agent.enabled)blocks.push('Fox (the broker agent) is paused. Its saved policy does not authorize orders.');
+  const title=agent?agent.enabled&&automatic&&session?'Fox agent enabled':'Fox agent paused':automatic?(session?'Automatic mode · session active':'Automatic mode · session stopped'):'Manual activation required';
   return {title,mode:mode==='live_manual'?'Approve each live order':automatic?'Automatic broker orders':mode||'Unknown',session:session?'Session active':'Session stopped',
    broker:broker.connected===true&&book.ok===true?(book.paper_mode===false?'Live account connected':'Broker paper / unverified'):'Disconnected / unverified',
    pnl:'Daily P&L '+money(book.day_pnl_usd),limits:settings?`${limitsOn?'Enabled':'Disabled · saved'}: ${money(ks.max_position_size_usd)} / position · ${money(ks.max_daily_loss_usd)} daily loss · ${ks.max_trades_per_day??'?'} trades`:'Configured limits unavailable',

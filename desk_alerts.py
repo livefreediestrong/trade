@@ -11,7 +11,6 @@ No secrets invented. Missing keys → channel skipped cleanly.
 """
 from __future__ import annotations
 
-import json
 import os
 import threading
 import time
@@ -166,7 +165,8 @@ def emit(
         "level": level,
         "detail": detail or {},
         "ts": datetime.now(timezone.utc).isoformat(),
-        "browser_notification": kind in ("waiting_enqueue", "goal_hit", "kill", "session_loss", "max_loss", "bleed"),
+        "browser_notification": kind in ("waiting_enqueue", "goal_hit", "kill", "session_loss", "max_loss", "bleed",
+                                         "watch_move", "watch_earnings", "watch_news"),
     }
     channels: dict[str, Any] = {"queue": True}
     channels["webhook"] = _post_webhook(event)

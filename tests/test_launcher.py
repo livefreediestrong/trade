@@ -124,6 +124,7 @@ function Get-LaunchSetting($Name,$Default) {
 }
 function Test-BrokerPort { return $false }
 function Find-Gateway { return 'C:\Installed\ibgateway.exe' }
+function Get-Process { }
 $script:started=0
 function Get-CimInstance { if ($script:started) { return [pscustomobject]@{Name='ibgateway.exe';ExecutablePath='C:\Installed\ibgateway.exe'} } }
 function Start-Process { $script:started++ }
@@ -219,6 +220,7 @@ def test_gateway_other_version_or_tws_running_is_not_relaunched(tmp_path):
 function Get-LaunchSetting($Name,$Default) { if ($Name -eq 'BROKER_PROVIDER') { return 'ibkr' }; return $Default }
 function Test-BrokerPort { return $false }
 function Find-Gateway { return 'C:\Jts\ibgateway\1040\ibgateway.exe' }
+function Get-Process { }
 function Start-Process { throw 'Gateway already running: must not stack a second login window' }
 function Get-CimInstance { return [pscustomobject]@{Name='ibgateway.exe';ExecutablePath='C:\Jts\ibgateway\1037\ibgateway.exe'} }
 if ((Start-ConfiguredBroker).state -ne 'sign_in_required') { throw 'Login not reported' }
@@ -233,9 +235,112 @@ function Get-LaunchSetting($Name,$Default) { if ($Name -eq 'BROKER_PROVIDER') { 
 function Test-BrokerPort { return $false }
 function Find-Gateway { return 'C:\Installed\ibgateway.exe' }
 function Get-CimInstance { return @() }  # process not visible yet (still starting)
+function Get-Process { }
 $script:started=0
 function Start-Process { $script:started++ }
 Start-ConfiguredBroker | Out-Null
 Start-ConfiguredBroker | Out-Null
 if ($script:started -ne 1) { throw "Launched $($script:started) Gateways inside the cooldown" }
 """)
+
+
+def test_gateway_login_window_found_by_title_is_not_relaunched(tmp_path):
+    run_ps(tmp_path, r"""
+function Get-LaunchSetting($Name,$Default) { if ($Name -eq 'BROKER_PROVIDER') { return 'ibkr' }; return $Default }
+function Test-BrokerPort { return $false }
+function Find-Gateway { return 'C:\Jts\ibgateway\1051\ibgateway.exe' }
+function Get-CimInstance { return [pscustomobject]@{Name='javaw.exe';CommandLine='C:\Users\me\.i4j_jres\bin\javaw.exe -jar launcher.jar'} }
+function Get-Process { return [pscustomobject]@{Name='javaw';MainWindowTitle='IBKR Gateway'} }
+function Start-Process { throw 'IBKR Gateway window already open: must not stack another' }
+if ((Start-ConfiguredBroker).state -ne 'sign_in_required') { throw 'Login not reported' }
+""")
+
+
+def test_gateway_is_not_started_when_windows_cannot_list_processes(tmp_path):
+    run_ps(tmp_path, r"""
+function Get-LaunchSetting($Name,$Default) { if ($Name -eq 'BROKER_PROVIDER') { return 'ibkr' }; return $Default }
+function Test-BrokerPort { return $false }
+function Find-Gateway { return 'C:\Installed\ibgateway.exe' }
+function Get-CimInstance { throw 'WMI unavailable' }
+function Get-Process { }
+function Start-Process { throw 'Unknown process state must never start another Gateway' }
+$result = Start-ConfiguredBroker
+if ($result.state -ne 'sign_in_required' -or $result.message -notlike '*could not list*') { throw 'Detection failure not explained' }
+""")
+
+
+def test_gateway_launch_budget_and_off_switch(tmp_path):
+    run_ps(tmp_path, r"""
+function Test-BrokerPort { return $false }
+function Find-Gateway { return 'C:\Installed\ibgateway.exe' }
+function Get-CimInstance { return @() }  # a check that never sees Gateway
+function Get-Process { }
+$script:started=0
+function Start-Process { $script:started++ }
+function Get-LaunchSetting($Name,$Default) { if ($Name -eq 'BROKER_PROVIDER') { return 'ibkr' }; if ($Name -eq 'IB_GATEWAY_AUTOLAUNCH') { return '0' }; return $Default }
+if ((Start-ConfiguredBroker).message -notlike '*IB_GATEWAY_AUTOLAUNCH=0*' -or $script:started) { throw 'Off switch ignored' }
+function Get-LaunchSetting($Name,$Default) { if ($Name -eq 'BROKER_PROVIDER') { return 'ibkr' }; return $Default }
+$now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+New-Item -ItemType Directory -Force -Path (Join-Path $Root 'data') | Out-Null
+@{ at = $now - 600; api_seen_at = $now - 500; launches = @(($now - 1200), ($now - 900), ($now - 600)) } | ConvertTo-Json -Compress |
+    Set-Content -LiteralPath (Join-Path $Root 'data\gateway_launch.json') -Encoding ASCII
+if ((Start-ConfiguredBroker).message -notlike '*3 times in 30 minutes*' -or $script:started) { throw 'Launch budget ignored' }
+@{ at = $now - 4000; api_seen_at = $now - 3900; launches = @(($now - 4000)) } | ConvertTo-Json -Compress |
+    Set-Content -LiteralPath (Join-Path $Root 'data\gateway_launch.json') -Encoding ASCII
+Start-ConfiguredBroker | Out-Null
+if ($script:started -ne 1) { throw 'Owner launch within budget did not start Gateway' }
+$stamp = Get-Content -LiteralPath (Join-Path $Root 'data\gateway_launch.json') -Raw | ConvertFrom-Json
+if ([double]$stamp.api_seen_at -ne ($now - 3900) -or @($stamp.launches).Count -ne 2) { throw 'Launch record lost sign-in history or launch count' }
+""")
+
+
+def test_stale_desk_is_never_restarted_headless(tmp_path):
+    run_ps(tmp_path, r"""
+$NoBrowser = $true; $NoDialogs = $true
+function Get-LaunchSetting($Name,$Default) { if ($Name -eq 'TOMAHAWK_PORT') { return '59441' }; return $Default }
+function Invoke-RestMethod { param($Uri) if ("$Uri" -like '*shutdown*') { throw 'Headless run must not stop the desk' }
+  return @{app_id='tomahawk-desk';port=59441;instance=@{source_root=$Root;data_root=(Join-Path $Root 'data')};code=@{stale=$true}} }
+function Ensure-DeskPython { throw 'Running desk is reused' }
+function Start-ConfiguredBroker { return @{state='port_ready';message='ready.'} }
+Invoke-DeskLauncher | Out-Null
+$status = Get-Content -Raw (Join-Path $Root 'data\launcher-status.json') | ConvertFrom-Json
+if ($status.message -notlike '*Updated desk code is waiting*') { throw "Update not reported: $($status.message)" }
+""")
+
+
+def test_stale_desk_restart_refusal_keeps_desk_and_reports_reason(tmp_path):
+    run_ps(tmp_path, r"""
+$NoBrowser = $true; $NoDialogs = $true
+function Get-LaunchSetting($Name,$Default) { if ($Name -eq 'TOMAHAWK_PORT') { return '59442' }; return $Default }
+function Invoke-RestMethod { return @{app_id='tomahawk-desk';port=59442;instance=@{source_root=$Root;data_root=(Join-Path $Root 'data')};code=@{stale=$true}} }
+function Confirm-DeskRestart { return $true }
+$script:asked = 0
+function Request-DeskRestart { $script:asked++; return @{ok=$false;message='1 broker order(s) still unresolved'} }
+function Ensure-DeskPython { throw 'Running desk is reused' }
+function Start-ConfiguredBroker { return @{state='port_ready';message='ready.'} }
+Invoke-DeskLauncher | Out-Null
+if ($script:asked -ne 1) { throw 'Restart not requested' }
+$status = Get-Content -Raw (Join-Path $Root 'data\launcher-status.json') | ConvertFrom-Json
+if ($status.message -notlike '*still unresolved*') { throw "Refusal not reported: $($status.message)" }
+""")
+
+
+def test_one_desk_shortcut_replaces_older_ones(tmp_path):
+    run_ps(tmp_path, r'''
+Set-Content -LiteralPath (Join-Path $Root 'Launch.vbs') -Value "' stub"
+$desk = Join-Path $Root 'desktop'; New-Item -ItemType Directory -Path $desk | Out-Null
+$shell = New-Object -ComObject WScript.Shell
+function New-Link($Name, $Target, $Arguments) {
+    $l = $shell.CreateShortcut((Join-Path $desk "$Name.lnk")); $l.TargetPath = $Target; $l.Arguments = $Arguments; $l.Save()
+}
+New-Link 'Old desk' (Join-Path $Root 'run.bat') ''
+New-Link 'Desk console' 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' ('-File "' + (Join-Path $Root 'Start-Tomahawk.ps1') + '"')
+New-Link 'Notepad' 'C:\Windows\System32\notepad.exe' ''
+$changes = @(Repair-DeskShortcut @($desk))
+$names = @(Get-ChildItem -LiteralPath $desk -Filter '*.lnk' | ForEach-Object BaseName | Sort-Object)
+if (($names -join ',') -ne 'Daytrade Signal Desk,Notepad') { throw "Shortcuts left: $($names -join ',')" }
+$link = $shell.CreateShortcut((Join-Path $desk 'Daytrade Signal Desk.lnk'))
+if ($link.Arguments -ne ('"' + (Join-Path $Root 'Launch.vbs') + '"')) { throw "Wrong target: $($link.Arguments)" }
+if ($changes.Count -ne 3) { throw "Changes: $($changes -join ' | ')" }
+if (@(Repair-DeskShortcut @($desk)).Count -ne 0) { throw 'A correct shortcut was rewritten' }
+''')

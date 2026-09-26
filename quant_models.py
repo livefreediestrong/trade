@@ -1,7 +1,6 @@
 """Typed contracts for the isolated intraday paper execution kernel."""
 from __future__ import annotations
 
-from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 

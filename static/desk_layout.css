@@ -4,7 +4,7 @@
 .utilitarian-desk .nav-brand .wordmark{font-size:28px;letter-spacing:-.7px;animation:none}
 .logo-medallion{position:relative;display:grid;place-items:center;width:88px;height:88px;isolation:isolate;animation:logo-soft-breath 90s ease-in-out infinite}
 .logo-medallion::before{content:'';position:absolute;inset:-8px;z-index:-1;border-radius:50%;background:radial-gradient(circle,#d7bdd539 0,#e6a39115 43%,transparent 70%)}
-.logo-medallion #scene-mark{width:80px;height:80px;grid-row:auto;filter:drop-shadow(0 0 7px #c4b5e035);transform-origin:50% 50%;animation:logo-calm-cycle 180s ease-in-out infinite}
+.logo-medallion .scene-mark{width:80px;height:80px;grid-row:auto;filter:drop-shadow(0 0 7px #c4b5e035);transform-origin:50% 50%;animation:logo-calm-cycle 180s ease-in-out infinite}
 /* Original swirl geometry, with a feathered light band moving from the inner
    blocks to the tips and back. Calm from first paint; no acceleration or flash. */
 .logo-flow{transform-origin:50px 50px;animation:logo-light-flow 28s ease-in-out infinite,logo-light-presence 180s ease-in-out infinite;transform:scale(.32)}
@@ -14,7 +14,7 @@
 @keyframes logo-soft-breath{0%,33.333%,66.667%,100%{transform:scale(1)}16.667%,83.333%{transform:scale(1.015)}50%{transform:scale(1.025)}}
 @keyframes logo-light-flow{0%,100%{transform:scale(.32)}50%{transform:scale(1.08)}}
 @keyframes logo-light-presence{0%,20%,100%{opacity:.95}30%,45%{opacity:.5}55%,70%{opacity:.65}80%,90%{opacity:.75}}
-:root[data-scene-motion=off] .logo-medallion,:root[data-scene-motion=off] #scene-mark,:root[data-scene-motion=off] #scene-mark *,:root[data-desk-quiet=true] .logo-medallion,:root[data-desk-quiet=true] #scene-mark,:root[data-desk-quiet=true] #scene-mark *{animation-play-state:paused!important}
+:root[data-scene-motion=off] .logo-medallion,:root[data-scene-motion=off] .scene-mark,:root[data-scene-motion=off] .scene-mark *,:root[data-desk-quiet=true] .logo-medallion,:root[data-desk-quiet=true] .scene-mark,:root[data-desk-quiet=true] .scene-mark *{animation-play-state:paused!important}
 .utilitarian-desk .has-companion-habitat .sidebar-scroll{gap:2px;top:223px}
 .utilitarian-desk .sidebar-scroll>a{padding:6px 11px;line-height:1.5}
 .utilitarian-desk .nav-caption{padding:12px 10px 3px;letter-spacing:.13em;font-size:9px}
@@ -82,7 +82,7 @@
 @media(max-width:800px){
  .utilitarian-desk .page-nav.has-companion-habitat{padding:9px 10px;margin-bottom:12px}
  .utilitarian-desk .page-nav .nav-brand{display:grid;grid-template-columns:56px 1fr;min-height:56px;padding:0;gap:10px;width:auto}
- .utilitarian-desk .logo-medallion{width:56px;height:56px}.utilitarian-desk .logo-medallion #scene-mark{width:50px;height:50px}
+ .utilitarian-desk .logo-medallion{width:56px;height:56px}.utilitarian-desk .logo-medallion .scene-mark{width:50px;height:50px}
  .utilitarian-desk .nav-brand .wordmark{font-size:21px}
  .utilitarian-desk .sidebar-scroll>a{font-size:11px;padding:5px 7px}
  .utilitarian-desk .nav-bottom{padding:0;display:block}.utilitarian-desk .scene-controls summary{padding:5px 0}
@@ -91,7 +91,7 @@
  .utilitarian-desk .attention-bar .btn{flex:0 0 auto}.utilitarian-desk .overview-card{padding:12px 14px}.utilitarian-desk .panel{padding:14px}
  .scene-veil{filter:none;opacity:.16}
 }
-@media(prefers-reduced-motion:reduce){.logo-medallion,#scene-mark,#scene-mark *,.scene-veil{animation:none!important}.logo-flow{transform:scale(.7)}.scene-fauna *{animation:none!important}.scene-fauna{transition:none}}
+@media(prefers-reduced-motion:reduce){.logo-medallion,.scene-mark,.scene-mark *,.scene-veil{animation:none!important}.logo-flow{transform:scale(.7)}.scene-fauna *{animation:none!important}.scene-fauna{transition:none}}
 @media print{.logo-medallion,.scene-veil{display:none}}
 
 /* Persistent modules: location and a quiet edge replace accordion controls. */
@@ -171,9 +171,25 @@
 #live-agent .compact-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));gap:12px}
 #live-agent .compact-form label>input{width:100%;max-width:none;box-sizing:border-box}
 #live-agent fieldset{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:12px 24px;min-width:0;border:1px solid var(--border);border-radius:8px;padding:10px 12px}
-#live-agent fieldset .chk{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
-#live-agent .compact-form input[type=radio]{display:inline-block;width:16px;height:16px;min-height:16px;margin:0;flex:0 0 16px}
+#live-agent fieldset .chk{display:inline-flex;align-items:flex-start;gap:8px;white-space:normal;max-width:100%;min-width:0}
+#live-agent fieldset .chk>input{flex:0 0 auto;margin-top:2px}
+#live-agent .compact-form input[type=radio],#live-agent .compact-form input[type=checkbox]{display:inline-block;width:16px;height:16px;min-height:16px;margin:0;flex:0 0 16px}
+#la-exits>.chk{flex-basis:100%}
 #live-agent-history{max-height:180px;overflow:auto;font-size:12px;padding-left:22px}
+#live-agent .live-agent-checks{padding:12px 12px 12px 30px;border-left:3px solid var(--accent);background:var(--panel);font-size:13px;line-height:1.6}
+#live-agent .live-agent-checks:empty{display:none}
+#live-agent .live-agent-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin:14px 0}
+#live-agent .live-agent-actions label{flex:1 1 210px;min-width:0}
+#live-agent .live-agent-actions button{min-height:42px}
+#live-agent .live-agent-policy{border:1px solid var(--border);border-radius:8px;padding:12px;margin:16px 0}
+#live-agent .live-agent-policy>summary{cursor:pointer;font-weight:600;line-height:1.6}
+#live-agent .live-agent-policy[open]>summary{margin-bottom:14px}
+#live-agent .live-agent-positions{border-top:1px solid var(--border);margin-top:16px;padding-top:8px}
+#live-agent-position-list{list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:10px}
+#live-agent-position-list li{border:1px solid var(--border);border-radius:8px;padding:12px;overflow-wrap:anywhere}
+#live-agent-position-list p{font-size:12px;line-height:1.6;margin:6px 0}
+#live-agent fieldset .chk{white-space:normal}
+#live-agent-draft{font-size:13px;line-height:1.6}
 #live-agent .live-agent-budget{border:1px solid var(--border);border-radius:8px;padding:12px;margin:12px 0;font-size:12px;overflow-wrap:anywhere}
 #live-agent-budget-list{padding-left:18px;margin:8px 0;max-height:220px;overflow:auto}
 #live-agent-budget-list:empty{display:none}
@@ -234,3 +250,48 @@
   font-size: 13px;
   padding: 4px 0;
 }
+/* Market watch panel */
+#market-watch .mw-actions{margin:6px 0 10px}
+#market-watch td small{display:block;color:var(--muted);font-size:10px;line-height:1.5}
+#market-watch .mw-links{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:12px}
+#market-watch .mw-topics p{margin:6px 0;font-size:12px}
+#market-watch .mw-topics small{color:var(--muted);margin-left:4px}
+/* Today at the desk: Fox (broker agent) and Changing Woman (chores and reasoning) */
+.desk-day .desk-day-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:14px;margin-top:10px}
+.desk-day .dd-col{min-width:0;border:1px solid var(--border);border-radius:var(--radius,10px);padding:10px 12px}
+.desk-day h4{margin:0 0 6px;font-size:15px}
+.desk-day h5{margin:12px 0 4px;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.desk-day .dd-headline{margin:0;font-size:14px;line-height:1.45;overflow-wrap:anywhere}
+.desk-day .dd-list{margin:0;padding-left:18px;display:grid;gap:5px;font-size:13px;line-height:1.4;overflow-wrap:anywhere}
+.desk-day .dd-list time{color:var(--muted);font-variant-numeric:tabular-nums;margin-right:2px}
+.desk-day .dd-empty{color:var(--muted);list-style:none;margin-left:-18px}
+.desk-day .dd-trade,.desk-day .dd-exit{font-weight:600}
+.desk-day .dd-note.is-block{color:var(--red);font-weight:600}
+.desk-day .dd-note.is-caution{color:var(--amber)}
+.desk-day .dd-chores{list-style:none;margin:0;padding:0;display:grid;gap:7px;font-size:13px}
+.desk-day .dd-chore{display:grid;grid-template-columns:20px minmax(0,1fr);column-gap:6px;overflow-wrap:anywhere}
+.desk-day .dd-chore small{grid-column:2;color:var(--muted);line-height:1.35}
+.desk-day .dd-mark{grid-row:span 2;text-align:center;font-weight:700}
+.desk-day .dd-chore.is-done .dd-mark{color:var(--green)}
+.desk-day .dd-chore.is-attention .dd-mark,.desk-day .dd-chore.is-working .dd-mark{color:var(--amber)}
+.desk-day .dd-chore.is-off{opacity:.75}
+.desk-day .dd-scroll{overflow-x:auto;max-width:100%}
+.desk-day .dd-table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+.desk-day .dd-table th,.desk-day .dd-table td{padding:4px 6px;text-align:left;border-bottom:1px solid var(--border);white-space:nowrap}
+.desk-day .dd-table caption{text-align:left;color:var(--muted);font-size:12px;padding-bottom:4px}
+.desk-day .dd-event small{color:var(--muted)}
+.desk-day .dd-impact{display:inline-block;min-width:54px;font-size:11px;text-transform:uppercase;text-align:center;border-radius:6px;padding:1px 6px;border:1px solid var(--border)}
+.desk-day .dd-event.is-high .dd-impact{border-color:var(--red);color:var(--red)}
+.desk-day .dd-event.is-medium .dd-impact{border-color:var(--amber);color:var(--amber)}
+#dd-state[data-state="holding"],#dd-state[data-state="blocked"]{border-color:var(--amber);color:var(--amber)}
+#dd-state[data-state="researching"],#dd-state[data-state="watching"]{border-color:var(--green);color:var(--green)}
+#trade-guards .tg-group{border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin:10px 0;min-width:0}
+#trade-guards .tg-wide{grid-column:1/-1}
+#trade-guards .tg-wide textarea{width:100%;box-sizing:border-box;font-family:var(--mono);font-size:12px}
+#trade-guards .compact-form .chk{max-width:none;white-space:normal}
+#trade-guards .compact-form input[type=checkbox]{width:16px;height:16px;flex:0 0 16px}
+/* Columns size to their own content (Fox's list is usually shorter than Changing Woman's chores). */
+.desk-day .desk-day-grid{align-items:start}
+.mt-grid[hidden]{display:none}
+/* On the dedicated Research page the shelf is the page: no nested 720px scroll box. */
+.desk-page-main[data-desk-page="research"] .research-shelf{max-height:none;overflow:visible;border:0;padding:0}

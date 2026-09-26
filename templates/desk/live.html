@@ -1,14 +1,15 @@
 <section id="desk-live" class="desk-section live-section" aria-labelledby="desk-live-title">
-<div class="section-heading">
-  <h2 id="desk-live-title">Auto trading</h2>
-  <p>Real broker account. Follow the flow top to bottom — market pulse, money &amp; readiness, what Moss is doing, then buy/sell and your positions.</p>
+{# The Ticket page has its own "Buy or sell" heading; an "Auto trading" title here would contradict it. #}
+<div class="section-heading"{% if desk_page|default("") == "ticket" %} hidden{% endif %}>
+  <h2 id="desk-live-title">{% if desk_page|default("") == "ticket" %}Buy or sell{% else %}Auto trading{% endif %}</h2>
+  <p>Real broker account. Follow the flow top to bottom — market pulse, money &amp; readiness, what Fox is doing, then buy/sell and your positions.</p>
 </div>
 {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}{% include "desk/scanner_link.html" %}{% endif %}
 <div class="section-grid bx-flow">
 <nav class="desk-live-subnav" aria-label="Live desk sections">
   <a href="#market-today">Market today</a>
   <a href="#beginner-ready">Ready &amp; money</a>
-  <a href="#beginner-moss">What Moss is doing</a>
+  <a href="#beginner-moss">What Fox is doing</a>
   <a href="#live-stock-ticket">Buy or sell</a>
   <a href="#broker-book">Your positions</a>
   <a href="#broker-orders-list">Your orders</a>
@@ -22,10 +23,10 @@
 <!-- 2) Ready status + money -->
 {% include "desk/ready_pulse.html" %}
 
-<!-- 3) What Moss is doing -->
+<!-- 3) What Fox is doing -->
 <section class="bx-card" id="beginner-moss" data-workspace-only="live" aria-labelledby="bx-moss-title">
-  <h3 class="bx-card-title" id="bx-moss-title">What Moss is doing <span class="bx-sub">Agent status</span></h3>
-  <p class="bx-plain">Moss is the desk helper that can research and, when you enable it, place whole-share orders. Policy and start/pause controls are under Advanced.</p>
+  <h3 class="bx-card-title" id="bx-moss-title">What Fox is doing <span class="bx-sub">Agent status</span></h3>
+  <p class="bx-plain">Fox is the broker agent: he researches and, when you enable him, places whole-share orders. Policy and start/pause controls are under Advanced.</p>
   <div class="bx-ready-row" style="flex-wrap:wrap;gap:10px 14px;">
     <span class="bx-agent-chip is-paused" id="bx-agent-chip" aria-live="polite">Checking…</span>
     <span class="bx-money-sub" id="bx-agent-detail" style="margin:0;">Reading agent status…</span>
@@ -148,7 +149,7 @@
   </div>
 </section>
 
-<!-- Latest research call (kept visible — "what Moss found") -->
+<!-- Latest research call (kept visible) -->
 <section class="panel live-loop-panel" id="live-loop-panel">
   <div class="loop-head">
     <h2><span class="panel-ico" aria-hidden="true">▸</span> <span id="workspace-call-label">Latest research call</span></h2>

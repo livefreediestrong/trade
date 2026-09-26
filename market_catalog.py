@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 from flask import Blueprint, jsonify, request
-from desk_workbench import finite, fingerprint
+from desk_workbench import finite
 
 TYPES = {"EQUITY": "equity", "ETF": "etf", "INDEX": "index", "CURRENCY": "fx",
          "CRYPTOCURRENCY": "crypto", "FUTURE": "future", "MUTUALFUND": "mutual_fund"}

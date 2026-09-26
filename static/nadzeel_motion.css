@@ -29,7 +29,7 @@
 :root[data-landscape=clouds] .cloud-band{display:none}:root[data-landscape=clouds] .cloud-puffs,:root[data-landscape=earth] .scene-grain{display:block}
 :root[data-landscape=earth] .scene-cloud{filter:blur(9px)}
 :root[data-scene-preview=true] .scene-orb{transition:left .1s linear,top .1s linear}
-.page-nav #scene-mark{grid-row:span 2;color:var(--text);overflow:visible;flex-shrink:0}
+.page-nav .scene-mark{grid-row:span 2;color:var(--text);overflow:visible;flex-shrink:0}
 .nav-brand .wordmark{animation:scene-wordmark 1.6s ease-out both}
 .scene-controls{border:0;min-width:0}.scene-controls summary{cursor:pointer;color:var(--text);font-size:12px;padding:8px 0;list-style:revert}
 .scene-controls label{display:block;margin-top:10px;font-size:11px}.scene-controls select{margin:5px 0 0;width:100%}
@@ -64,12 +64,12 @@
 @keyframes scene-breathe{0%,100%{opacity:.5;scale:.96}50%{opacity:.9;scale:1.04}}
 @keyframes scene-drift{from{transform:translateX(-620px)}to{transform:translateX(calc(100vw + 620px))}}
 @keyframes scene-sway{0%,100%{transform:translateY(-5px)}50%{transform:translateY(5px)}}
-:root[data-scene-motion=off] .desert-scene *,:root[data-scene-motion=off] #scene-mark *,:root[data-scene-motion=off] .trade-sky *{animation-play-state:paused!important;transition:none!important}
+:root[data-scene-motion=off] .desert-scene *,:root[data-scene-motion=off] .scene-mark *,:root[data-scene-motion=off] .trade-sky *{animation-play-state:paused!important;transition:none!important}
 :root[data-scene-motion=off] .scene-mark-block{animation:none!important;opacity:1;scale:1}
 :root[data-scene-motion=off] .scene-quill *,:root[data-scene-motion=off] .constellation-path{animation:none!important}
 :root[data-scene-motion=off] .nav-brand .wordmark{animation:none!important}
 :root[data-theme=light] .desert-scene{opacity:.4}
-@media(prefers-reduced-motion:reduce){.desert-scene *,.trade-sky *,#scene-mark *{animation:none!important;transition:none!important}.scene-cloud:nth-child(2n){left:40%}.scene-cloud:nth-child(2n+1){left:5%}}
-@media(max-width:1200px){.page-nav #scene-mark{width:36px;height:36px}}
+@media(prefers-reduced-motion:reduce){.desert-scene *,.trade-sky *,.scene-mark *{animation:none!important;transition:none!important}.scene-cloud:nth-child(2n){left:40%}.scene-cloud:nth-child(2n+1){left:5%}}
+@media(max-width:1200px){.page-nav .scene-mark{width:36px;height:36px}}
 @media(max-width:800px){.page-nav{background:color-mix(in srgb,var(--panel) 96%,transparent);padding:10px;border-radius:12px}.nav-bottom{display:block}.scene-controls{max-width:320px}.scene-controls[open]{padding-bottom:12px}.nav-bottom .scene-note{display:block}.scene-controls select{display:block;width:100%;margin:5px 0 0}.scene-controls button{width:auto}.scene-cloud:nth-child(n+4),.scene-gust:nth-child(n+3),.scene-star:nth-child(n+25){display:none}.trade-sky{padding:10px 12px}.trade-sky>summary{flex-wrap:wrap;gap:8px}.trade-sky>summary small{font-size:9px}.trade-sky-field{height:180px}}
 @media print{.trade-sky{display:none}}
