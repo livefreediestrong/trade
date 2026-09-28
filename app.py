@@ -9616,6 +9616,9 @@ import strategy_scorecard
 strategy_scorecard.register(app, __import__("sys").modules[__name__])
 import watch_alerts
 watch_alerts.register(app, __import__("sys").modules[__name__])
+
+import fidelity_portfolio
+fidelity_portfolio.register(app, __import__("sys").modules[__name__])
 import live_switch
 live_switch.register(app, __import__("sys").modules[__name__])
 

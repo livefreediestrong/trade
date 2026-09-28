@@ -28,6 +28,7 @@
   <link rel="stylesheet" href="/static/after_close.css?v=nightly-20260925-3" />
   <link rel="stylesheet" href="/static/companion_context.css?v=fix-all-20260925-2" />
   <link rel="stylesheet" href="/static/company_check.css?v=insider-review-20260926-1" />
+  <link rel="stylesheet" href="/static/fidelity.css?v=fidelity-20260928-1" />
 {% include "desk/experience_head.html" %}
   <link rel="stylesheet" href="/static/overnight_study.css?v=overnight-20260927-1" />
 </head>
@@ -46,6 +47,7 @@
 {% if config.get('COMPANION_AVAILABLE') %}
   {% include "desk/agent_summary.html" %}
 {% endif %}
+{% include "desk/fidelity.html" %}
 {% include "desk/company_check.html" %}
 {% include "desk/strategy_scorecard.html" %}
 <div class="research-shelf" role="region" aria-label="Research records and tools" tabindex="0">
@@ -85,6 +87,7 @@
 
 <script src="/static/trading_goals.js?v=goals-20260925-2"></script>
 <script src="/static/company_check.js?v=insider-review-20260926-1"></script>
+<script src="/static/fidelity.js?v=fidelity-20260928-1"></script>
 <script src="/static/strategy_scorecard.js?v=company-20260925-1"></script>
 <script src="/static/public_context.js?v=fix-all-20260925-1"></script>
 </body>
