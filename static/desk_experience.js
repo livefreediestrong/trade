@@ -9,7 +9,7 @@
   overview:['#desk-overview','#live-switch','#daily-brief'],
   auto:['.desk-page-banner','#live-switch','#fox-workspace','#desk-live'],
   paper:['.desk-page-banner','#desk-paper'],
-  research:['.desk-page-banner','#company-check','.research-shelf'],
+  research:['.desk-page-banner','#fidelity','#company-check','.research-shelf'],
   ticket:['.desk-page-banner','.desk-section'],
   settings:['.desk-page-banner','#connection-summary','#watch-alerts','#desk-settings'],
  };

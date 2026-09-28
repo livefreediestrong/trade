@@ -25,3 +25,4 @@ assert.equal(concentration({ok:true,equity:0,currency:'USD'}).available,false);
 const ts=Date.now(),stories=[{title:'AAPL: results reported',fresh:true,published_ts:ts/1000-60},{title:'AAPL - results reported',fresh:true,published_ts:ts/1000-50},{title:'A story for ALL investors',fresh:true,published_ts:ts/1000-30},{title:'MSFT future data',fresh:true,published_ts:ts/1000+100}];
 assert.equal(relevantNews(stories,new Set(['AAPL','ALL','MSFT']),ts).length,1);
 console.log('Theme fallback, view preferences, missing/cost-basis/currency concentration, duplicate news and future dates passed.');
+assert.ok(essentials.research.includes('#fidelity'),'Fidelity panel stays visible in Simple view');

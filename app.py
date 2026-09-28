@@ -4170,20 +4170,20 @@ def paper_fill(
                     return {"ok":False,"error":"No Moss paper holding to close"}
                 notional = round(shares_req * fill_px, 2)
         if (cfg.get("moss_paper") or {}).get("enabled") and source == "auto_paper" and side == "buy" and not signal.get("moss_policy_version"):
-            return {"ok":False,"error":"Moss owns automatic paper entries; request a qualified Moss decision"}
+            return {"ok":False,"error":"Paper research owns automatic paper entries; wait for a qualified paper-research decision"}
         if signal.get("moss_policy_version") and side == "buy":
             import moss_paper, moss_policy
             confidence = _finite_float(signal.get("confidence"), 0) or 0
             minimum = max(float(llm_trader.min_decision_confidence(cfg)), float(get_preset(cfg.get("risk_preset")).get("min_confidence") or 0))
             if confidence < minimum:
-                return {"ok":False,"error":"Moss paper confidence is below the configured minimum"}
+                return {"ok":False,"error":"Paper research confidence is below the configured minimum"}
             reason = moss_paper.entry_error(signal, cfg, ledger, _QUOTE_SNAPSHOTS.get(ticker), datetime.now(timezone.utc))
             if reason:
                 return {"ok":False,"error":reason}
             p = moss_policy.settings(cfg)
             total_exposure = notional + sum(float(pos.get("shares") or 0)*float(risk_marks.get(pos.get("ticker")) or 0) for pos in ledger.get("positions",[]))
             if total_exposure > max(0, _ledger_equity_mtm(ledger, risk_marks))*p["max_total_exposure_pct"]/100:
-                return {"ok":False,"error":"Moss total paper exposure limit"}
+                return {"ok":False,"error":"Paper research total exposure limit reached"}
             if notional*(1+_cfg_fee_bps(cfg)/10000) > min(p["max_order_usd"],float(signal.get("moss_budget") or 0))+.001:
                 return {"ok":False,"error":"Price moved beyond the approved paper budget; collect a new decision"}
         positions_snap = ledger.get("positions") or []
@@ -6763,7 +6763,7 @@ def desk_research():
         "research",
         "live",
         "Research",
-        "Ideas, rankings, scanner, and Moss notes. Research does not place live orders by itself.",
+        "Ideas, rankings, scanner, and research notes. Research does not place live orders by itself.",
     )
 
 

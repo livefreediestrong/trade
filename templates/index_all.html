@@ -53,7 +53,7 @@
   <a href="#desk-research">Research records</a>
   {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}<a href="#research-studio">Research studio</a><a href="#stocks-on-sale">Market scanner · on sale</a>{% endif %}
   {% if config.get('MARKETS_AVAILABLE') %}<a href="#market-explorer">US markets</a><a href="#operations-desk">Evidence</a>{% endif %}
-  {% if config.get('COMPANION_AVAILABLE') %}<a href="#companion-news">Headlines &amp; her take</a><a href="#moss-desk">Moss &amp; automation</a><a href="#agent-research">Moss's brief</a>{% endif %}
+  {% if config.get('COMPANION_AVAILABLE') %}<a href="#companion-news">Headlines &amp; her take</a><a href="#moss-desk">Paper research &amp; automation</a><a href="#agent-research">Research brief</a>{% endif %}
   <span class="nav-caption">SETTINGS</span>
   <a href="#desk-settings">Settings &amp; journal</a>
   <div class="nav-bottom">
@@ -85,7 +85,7 @@
     {% include "desk/companion.html" %}
     {% include "desk/agent_summary.html" %}
   {% else %}
-    <p class="hint-line">Moss and the new planning tools will appear after the next app restart.</p>
+    <p class="hint-line">The research companion and new planning tools will appear after the next app restart.</p>
   {% endif %}
   <div class="research-shelf" role="region" aria-label="Research records and tools" tabindex="0">
   {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}{% include "desk/scanner_workspace.html" %}{% endif %}

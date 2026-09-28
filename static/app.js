@@ -3554,7 +3554,7 @@
           ? `Paused | ${skipLabel[skip] || skip}`
           : "Idle";
       gateLoop.className = "gate " + (running ? "ok" : skip ? "warn" : "");
-      if(mossEnabled) gateLoop.textContent = mossActive ? `Moss paper · every ${cfg.moss_paper.interval_sec}s` : 'Moss paper paused';
+      if(mossEnabled) gateLoop.textContent = mossActive ? `Paper research · every ${cfg.moss_paper.interval_sec}s` : 'Paper research paused';
     }
 
     const lat = loop.latency || {};
@@ -3598,9 +3598,9 @@
       }
     }
     const posEl = $("#loop-pos");
-    if(mossEnabled && healthEl) healthEl.textContent = !mossActive ? 'Moss paused' : loop.rth_ok ? 'Moss scheduled' : 'Moss waiting for market';
+    if(mossEnabled && healthEl) healthEl.textContent = !mossActive ? 'Paper research paused' : loop.rth_ok ? 'Paper research scheduled' : 'Paper research waiting for market';
     const researchRules = $("#paper-research-rules");
-    if(researchRules) researchRules.textContent = mossEnabled ? 'Moss controls automatic paper entries. Mock or routed research, stale prices and unverified evidence are excluded. Stop paper research pauses new entries; fresh reducing exits can continue.' : 'Fresh directional mock research may simulate trades. Hold, invalid data and stale quotes remain blocked. Stopping new research does not close paper positions.';
+    if(researchRules) researchRules.textContent = mossEnabled ? 'Paper research controls automatic paper entries. Mock or routed research, stale prices and unverified evidence are excluded. Stop paper research pauses new entries; fresh reducing exits can continue.' : 'Fresh directional mock research may simulate trades. Hold, invalid data and stale quotes remain blocked. Stopping new research does not close paper positions.';
     if (posEl) {
       const positions = ledger.positions || [];
       if (!positions.length) posEl.textContent = "None";
