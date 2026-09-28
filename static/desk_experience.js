@@ -7,7 +7,7 @@
  // Simple view keeps only these top-level panels; everything else goes to "More tools".
  const essentials={
   overview:['#desk-overview','#fidelity','#live-switch','#daily-brief'],
-  auto:['.desk-page-banner','#live-switch','#fox-workspace','#desk-live'],
+  auto:['.desk-page-banner','#live-switch','#fox-workspace','#rule-history','#desk-live'],
   paper:['.desk-page-banner','#desk-paper'],
   research:['.desk-page-banner','#company-check','.research-shelf'],
   ticket:['.desk-page-banner','.desk-section'],

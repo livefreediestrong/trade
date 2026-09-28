@@ -33,3 +33,11 @@
 @media(max-width:400px){.company-check-grid{grid-template-columns:minmax(0,1fr)}.cc-insider-controls label{max-width:100%}}
 .connection-line{padding:10px 16px}.connection-line>details>summary{cursor:pointer;list-style-position:inside}
 .connection-line #connection-overall[data-state=ok]{color:var(--green)}.connection-line #connection-overall[data-state=warn]{color:var(--amber)}
+.rule-history .rh-verdict{border-left:4px solid var(--amber);padding:8px 12px;border-radius:6px;background:color-mix(in srgb,var(--amber) 10%,transparent)}
+.rule-history .rh-verdict[data-state=passed]{border-left-color:var(--green);background:color-mix(in srgb,var(--green) 10%,transparent)}
+.rule-history .rh-verdict[data-state=failed]{border-left-color:var(--red);background:color-mix(in srgb,var(--red) 10%,transparent)}
+.rule-history .rh-lines{display:grid;gap:6px;margin:10px 0}
+.rule-history .rh-line{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;border-top:1px solid var(--border);padding:6px 0}
+.rule-history .rh-line small{grid-column:1/-1;color:var(--muted)}
+.rule-history .rh-line strong{font-family:var(--mono)}.rule-history .rh-line[data-good=false] strong{color:var(--red)}.rule-history .rh-line[data-good=true] strong{color:var(--green)}
+.rule-history .fid-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}

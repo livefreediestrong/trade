@@ -1028,24 +1028,49 @@ class LiveAgent:
         raw["attempts"][signal["id"]] = {"key": key, "revision": signal["agent_revision"]}
         self.save(raw)
 
-    def promotion(self, cfg):
-        """The pre-registered evidence test for automatic real-money buys (fails closed)."""
-        import lessons
-        import strategy_scorecard
+    def round_trip_cost_bps(self, cfg):
+        """Buy + sell commissions for one order at the per-order limit, in bps (inf if unknown)."""
         try:
             order_usd = self._share_price_cap(cfg)
             if not order_usd:
                 raise ValueError("per-order limit unknown")
             fees = (self.desk._order_commission_usd(cfg, 1, order_usd, "buy")
                     + self.desk._order_commission_usd(cfg, 1, order_usd, "sell"))
-            hurdle = fees / order_usd * 1e4
+            return fees / order_usd * 1e4
         except Exception:  # noqa: BLE001 - an unknown hurdle can never be beaten
-            hurdle = float("inf")
+            return float("inf")
+
+    @staticmethod
+    def policy_for(cfg):
+        saved = (cfg or {}).get("live_agent") or {}
+        pol = saved.get("policy") or copy.deepcopy(DEFAULTS)
+        return {**{k: DEFAULTS[k] for k in _ADDED_FIELDS}, **pol} if isinstance(pol, dict) else copy.deepcopy(DEFAULTS)
+
+    def history_gate(self):
+        import rule_history
+        try:
+            return rule_history.gate(self.desk)
+        except Exception as exc:  # noqa: BLE001 - unknown history keeps buys locked
+            return {"passed": False, "state": "missing", "plain": f"History test unavailable ({type(exc).__name__})"}
+
+    def promotion(self, cfg):
+        """The pre-registered evidence test for automatic real-money buys (fails closed):
+        live scored calls AND the history test on Fox's list at this account's costs."""
+        import lessons
+        import strategy_scorecard
+        hurdle = self.round_trip_cost_bps(cfg)
         try:
             rows = lessons.recent(self.desk.LESSONS_PATH, 5000)
         except Exception:  # noqa: BLE001
             rows = []
-        return strategy_scorecard.promotion_status(rows, hurdle_bps=hurdle)
+        status = strategy_scorecard.promotion_status(rows, hurdle_bps=hurdle)
+        history = self.history_gate()
+        status["history"] = history
+        if not history["passed"]:
+            status["passed"] = False
+            status["missing"] = list(status.get("missing") or []) + ["a passing history test"]
+            status["plain"] = (status.get("plain") or "Automatic buys are locked.") + " " + history["plain"]
+        return status
 
     def _safe_promotion(self, cfg):
         try:
@@ -1238,6 +1263,11 @@ class LiveAgent:
         if outside:
             self.phase, self.message = "entry_window", outside
             return  # no research or model spend outside the tested window; exits ran above
+        history = self.history_gate()
+        if history["state"] == "failed":
+            self.phase, self.message = "rule_failed", ("Fox is idle: its buy rule lost money in the history test, so it "
+                                                       "does no research and places no buys. Exits keep running. " + history["plain"])
+            return  # researching a rule that history rejects only spends time and model budget
         with self.desk._lock:
             raw = self.load()
             if self.desk._CORRUPT_PATHS:

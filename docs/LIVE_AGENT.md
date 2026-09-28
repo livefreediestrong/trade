@@ -115,3 +115,18 @@ Broker reference: [IBKR TWS API documentation](https://www.interactivebrokers.co
 - **Scoreboard.** Wins and losses count each of today's buy/sell calls once (no duplicate outcome rows, no holds).
 - **Evidence check.** An unreadable track record now blocks the order instead of letting it through.
 - **Options.** No change: automatic option entries already require an IBKR paper account, and option size already uses the effective limits.
+
+### History test (2026-09-28)
+
+Real account page → "Does Fox's buy rule make money?". Replays the PASS rule on ~2 years of hourly bars
+for Fox's own stock list (`rule_history.py`, using `backtest.simulate_ticker`) and reports four lines:
+before costs, $0 commission (slippage only), at this account's costs, and random entry for comparison.
+
+- Automatic buys now need BOTH the live record (60 scored calls / 10 days) AND a passing history test:
+  at your costs, a day-clustered 95% lower bound above zero, 200+ trades, consistent walk-forward folds.
+  Missing or older than 30 days fails closed for buys.
+- While the latest history test FAILS, Fox does no research (phase `rule_failed`); exits keep running.
+  A missing test does not idle Fox.
+- First run on 2026-09-28 (212 stocks, Jan 2024 to Sep 2026, 8,223 rule trades): −3.1 bps a trade
+  before costs (random entry −0.6), −14 bps with $0 commission, about −259 bps at the $4.40 order
+  size with IBKR Fixed commissions. Positive in 11 of 30 later test periods before costs.

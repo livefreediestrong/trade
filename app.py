@@ -9578,6 +9578,8 @@ import live_ticket
 live_ticket.register(app, __import__("sys").modules[__name__])
 import live_agent
 _live_agent = live_agent.register(app, __import__("sys").modules[__name__])
+import rule_history
+rule_history.register(app, __import__("sys").modules[__name__], _live_agent)
 import research_companion
 _research_companion = research_companion.register(app, __import__("sys").modules[__name__])
 import companion_chat
