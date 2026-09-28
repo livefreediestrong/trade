@@ -15,16 +15,36 @@
 .desk-view-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0 12px;font:500 13px/1.5 var(--sans,system-ui)}
 .desk-view-tools label{display:flex;align-items:center;gap:8px}.desk-view-tools p{margin:0;color:var(--muted);flex:1 1 180px}
 .desk-view-tools select,.desk-view-tools button,.experience-preferences select{min-height:44px}
-.desk-tool-fold{border:1px solid var(--border);border-radius:var(--radius);margin:12px 0;min-width:0}
-.desk-tool-fold>summary{padding:14px;cursor:pointer;font-weight:600;min-height:44px}
-:root[data-detail=full] .desk-tool-fold{border:0;margin:0}
-:root[data-detail=full] .desk-tool-fold>summary{display:none}
-.desk-tool-fold>.panel{margin-top:0}.experience-preferences{display:grid;gap:8px;padding:8px 0}
+.experience-preferences{display:grid;gap:8px;padding:8px 0}
 .experience-preferences label{display:block}.experience-preferences select{width:100%;margin:4px 0!important;font-size:12px!important}
 .weekly-review{scroll-margin-top:12px}.weekly-review pre{white-space:pre-wrap;overflow-wrap:anywhere}
 .weekly-review article{padding:12px;border:1px solid var(--border);border-radius:10px;margin:10px 0}
 .weekly-review .weekly-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .weekly-review select{max-width:100%;min-height:44px}
 :where(button,a,input,select,textarea,summary):focus-visible{outline:3px solid var(--accent);outline-offset:3px}
-@media(max-width:600px){.desk-view-tools{gap:6px}.desk-view-tools p{flex-basis:100%}.weekly-review .weekly-metrics{grid-template-columns:1fr}}
-@media(prefers-reduced-motion:reduce){.desk-tool-fold,.weekly-review{scroll-behavior:auto}}
+@media(max-width:600px){.desk-view-tools{gap:6px}.desk-view-tools p{flex-basis:100%}.desk-view-tools .desk-view-chat{margin-left:0}.weekly-review .weekly-metrics{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){.desk-more-tools,.weekly-review{scroll-behavior:auto}}
+
+/* Simple / Everything switch and the single "More tools" drawer (presentation only). */
+.desk-view-switch{display:inline-flex;border:1px solid var(--border);border-radius:999px;padding:3px;background:var(--panel)}
+.desk-view-switch button{border:0;background:transparent;color:var(--muted);border-radius:999px;padding:0 18px;font:600 14px/1 var(--sans,system-ui);cursor:pointer}
+.desk-view-switch button[aria-pressed=true]{background:var(--accent);color:var(--bg)}
+.desk-view-tools .desk-view-chat{margin-left:auto}
+.desk-more-tools{border:1px dashed var(--border);border-radius:var(--radius);margin:24px 0 12px;background:color-mix(in srgb,var(--panel) 70%,transparent);min-width:0}
+.desk-more-tools>summary{display:flex;flex-direction:column;gap:4px;padding:16px 18px;cursor:pointer;min-height:44px;list-style:none}
+.desk-more-tools>summary::-webkit-details-marker{display:none}
+.desk-more-tools>summary strong{font:650 16px/1.3 var(--sans,system-ui)}
+.desk-more-tools>summary strong::before{content:"▸  ";color:var(--accent)}
+.desk-more-tools[open]>summary strong::before{content:"▾  "}
+.desk-more-tools>summary span{color:var(--muted);font-size:13px;line-height:1.5}
+.desk-more-body{padding:0 12px 12px;min-width:0}
+.desk-inline-fold{border:1px solid var(--border);border-radius:var(--radius);margin:12px 0;min-width:0;background:var(--panel)}
+.desk-inline-fold>summary{padding:14px 18px;cursor:pointer;font:600 15px/1.4 var(--sans,system-ui);min-height:44px}
+.desk-inline-fold>summary::after{content:" · tap to open";color:var(--muted);font-weight:500;font-size:13px}
+.desk-inline-fold[open]>summary::after{content:" · tap to close"}
+.desk-inline-fold>:not(summary){margin-top:0}
+:root[data-detail=full] .desk-inline-fold{border:0;margin:0;background:none}
+:root[data-detail=full] .desk-inline-fold>summary{display:none}
+/* Simple view: the pinned status strip keeps the plain facts; technical duplicates stay in Everything. */
+:root[data-detail=focused] #execution-summary #operating-exposure,
+:root[data-detail=focused] #execution-summary-session{display:none}

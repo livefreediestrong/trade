@@ -16,7 +16,10 @@
   {% if desk_page|default("") == "all" %}<p class="desk-topnav-hint" id="desk-page-hint">{{ page_hint|default("") }}</p>{% endif %}
 </nav>
 <div class="desk-view-tools" aria-label="Workspace view">
- <label>View <select id="desk-view"><option value="full">Full tools &amp; research</option><option value="focused">Focused essentials</option></select></label>
- <p id="desk-view-note">Full workspace · every tool and research section is available.</p>
- <button type="button" data-open-companion-chat>Chat with companions</button>
+ <div class="desk-view-switch" role="group" aria-label="How much to show">
+  <button type="button" data-desk-view="focused" aria-pressed="true">Simple</button>
+  <button type="button" data-desk-view="full" aria-pressed="false">Everything</button>
+ </div>
+ <p id="desk-view-note">Simple: just the essentials.</p>
+ <button type="button" class="desk-view-chat" data-open-companion-chat>Ask Fox or Changing Woman</button>
 </div>
