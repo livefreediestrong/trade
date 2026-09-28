@@ -14,7 +14,7 @@ import math
 import threading
 import time
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 
 from flask import Blueprint, jsonify, request
@@ -413,6 +413,21 @@ def earnings_block(signal, cfg, policy, now=None):
     if day == following and holds_overnight:
         return f"{ticker} reports earnings before the next session and Fox is set to hold overnight"
     return None
+
+
+# The PASS rule reads first-hour volume (09:30-10:30 ET), which stops changing at
+# 10:30, and the backtest only tested entries at 10:30. Later entries have no evidence.
+ENTRY_WINDOW_ET = (dtime(10, 30), dtime(11, 0))
+
+
+def _entry_window_message(now=None):
+    """None inside the automatic-entry window, else a plain explanation."""
+    local = (now or now_utc()).astimezone(paper_loop.NY_TZ).time()
+    start, end = ENTRY_WINDOW_ET
+    if start <= local < end:
+        return None
+    return ("Automatic buys only happen from 10:30 to 11:00 a.m. Eastern, right after the first-hour volume "
+            "is known (the only time the strategy was tested). Exits keep running all day.")
 
 
 def _minutes_to_close(now):
@@ -986,6 +1001,9 @@ class LiveAgent:
             window = _event_window(cfg)
             if window:
                 return market_events.window_message(window)
+            outside = _entry_window_message()
+            if outside:
+                return outside
             earnings = earnings_block(signal, cfg, policy)
             if earnings:
                 return earnings
@@ -1216,6 +1234,10 @@ class LiveAgent:
         if window:
             self.phase, self.message = "event_window", market_events.window_message(window)
             return  # no research spend while new entries are paused; exits ran above
+        outside = _entry_window_message()
+        if outside:
+            self.phase, self.message = "entry_window", outside
+            return  # no research or model spend outside the tested window; exits ran above
         with self.desk._lock:
             raw = self.load()
             if self.desk._CORRUPT_PATHS:

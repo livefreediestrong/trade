@@ -140,3 +140,70 @@ def test_radar_picks_join_only_when_radar_is_on(monkeypatch):
     monkeypatch.setattr(agent, "_listed_symbols", lambda: None)
     assert "NEWCO" not in agent.research_universe({"watchlist": ["AAPL"], "radar_enabled": False})
     assert "NEWCO" in agent.research_universe({"watchlist": ["AAPL"], "radar_enabled": True})
+
+
+@pytest.mark.entry_window
+@pytest.mark.parametrize("hhmm, inside", [("09:45", False), ("10:29", False), ("10:30", True), ("10:59", True), ("11:00", False), ("14:00", False)])
+def test_automatic_buys_only_in_the_tested_window(hhmm, inside):
+    h, m = map(int, hhmm.split(":"))
+    now = datetime(2026, 9, 28, h, m, tzinfo=agent.paper_loop.NY_TZ)
+    assert (agent._entry_window_message(now) is None) is inside
+
+
+@pytest.mark.entry_window
+@pytest.mark.promotion_gate
+def test_outside_window_blocks_buys_but_not_exits(live, monkeypatch):
+    monkeypatch.setattr(agent, "_entry_window_message", lambda now=None: "Automatic buys only happen from 10:30")
+    monkeypatch.setattr(live.service, "promotion", lambda cfg: {"passed": True})
+    cfg = desk.load_config()
+    assert "10:30" in str(live.service.trade_error(dict(_exit_signal(cfg), agent_exit=None), cfg, 0.0, reducing=False))
+    assert "10:30" not in str(live.service.trade_error(_exit_signal(cfg), cfg, 0.0, reducing=True) or "")
+
+
+def test_scoreboard_counts_each_trade_call_once(monkeypatch):
+    now = datetime.now(timezone.utc).isoformat()
+    old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    rows = [
+        {"id": "a", "ts": now, "side": "buy", "outcome": "helped"},
+        {"event": "outcome", "ref_id": "a", "ts": now, "side": "hold", "outcome": "helped"},  # copy row
+        {"id": "b", "ts": now, "side": "sell", "outcome": "hurt"},
+        {"id": "c", "ts": now, "side": "hold", "outcome": "helped"},  # a correct hold is not a win
+        {"id": "d", "ts": old, "side": "buy", "outcome": "helped"},  # another day
+    ]
+    monkeypatch.setattr(desk._decision_ring, "latest", lambda n: rows)
+    board = desk._day_scoreboard(desk.load_ledger(), desk.load_config())
+    assert (board["wins"], board["losses"], board["win_rate"]) == (1, 1, 0.5)
+
+
+def test_unreadable_track_record_blocks_instead_of_passing(monkeypatch):
+    import lessons
+    def broken(*a, **k):
+        raise ValueError("corrupt")
+    monkeypatch.setattr(lessons, "track_record", broken)
+    assert "evidence_unavailable" in desk._evidence_block({"side": "buy", "ticker": "AAPL"}, {})
+    assert desk._evidence_block({"side": "hold", "ticker": "AAPL"}, {}) is None
+
+
+def test_automatic_buy_needs_settled_cash(live, monkeypatch):
+    monkeypatch.setattr(desk, "_settled_cash", lambda: (150.0, None))  # order is 2 x ~$100
+    live.service.tick()
+    assert live.sent == []
+    assert "settled cash" in str(live.service.load().get("events") or live.service.status()).lower()
+
+
+def test_automatic_buy_within_settled_cash_goes_through(live, monkeypatch):
+    monkeypatch.setattr(desk, "_settled_cash", lambda: (1000.0, None))
+    live.service.tick()
+    assert len(live.sent) == 1 and live.sent[0]["side"] == "buy"
+
+
+def test_settled_cash_unknown_on_ibkr_blocks(monkeypatch):
+    monkeypatch.setenv("BROKER_PROVIDER", "ibkr")
+    import broker_ibkr
+    monkeypatch.setattr(broker_ibkr, "get_account", lambda: {"ok": True, "account": {"equity": 110.0}})
+    settled, error = desk._settled_cash()
+    assert settled is None and "settled cash" in error
+    monkeypatch.setattr(broker_ibkr, "get_account", lambda: {"ok": True, "account": {"settled_cash": 95.5}})
+    assert desk._settled_cash() == (95.5, None)
+    monkeypatch.setenv("BROKER_PROVIDER", "alpaca")
+    assert desk._settled_cash() == (None, None)

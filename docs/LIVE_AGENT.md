@@ -107,3 +107,11 @@ Broker reference: [IBKR TWS API documentation](https://www.interactivebrokers.co
 - **Universe.** Fox researches and buys only symbols in the US-listed directory
   (`data/market_universe.json`), never leveraged/inverse ETFs, and merges radar picks only when
   radar is enabled.
+
+### Follow-up (2026-09-28, later)
+
+- **Buy window.** Automatic buys only happen 10:30-11:00 a.m. ET. The PASS rule reads first-hour volume, and the backtest only tested 10:30 entries. Outside the window Fox does no research or model spend; exits run all day.
+- **Settled cash.** On IBKR, an automatic buy plus working buys must fit in settled cash, so unsettled sale proceeds never cause a good-faith violation. If IBKR does not report settled cash, automatic buys wait.
+- **Scoreboard.** Wins and losses count each of today's buy/sell calls once (no duplicate outcome rows, no holds).
+- **Evidence check.** An unreadable track record now blocks the order instead of letting it through.
+- **Options.** No change: automatic option entries already require an IBKR paper account, and option size already uses the effective limits.

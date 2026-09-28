@@ -5,6 +5,7 @@ const desk={broker:{connected:true},broker_book:{ok:true,risk_ready:true,day_pnl
 const view=(a={},s=desk,age=0,agentAge=0)=>agentView({...agent,...a},s,age,agentAge);
 assert.equal(view().label,'Monitoring');
 assert.equal(view({phase:'researching'}).label,'Researching');
+assert.equal(view({phase:'entry_window'}).label,'Outside buy window (10:30-11:00)');
 assert.equal(view({market_open:false}).label,'Waiting for market');
 assert.equal(view({},null).label,'Checking account');
 assert.equal(view({},desk,26000).label,'Checking account');

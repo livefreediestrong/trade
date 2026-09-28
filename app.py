@@ -1927,6 +1927,23 @@ def _broker_day_pnl() -> tuple[float | None, float | None, str | None]:
     return day_pnl, equity, None
 
 
+def _settled_cash() -> tuple[float | None, str | None]:
+    """IBKR settled cash for automatic buys in a cash account (unsettled proceeds risk a
+    good-faith violation). Other brokers: (None, None) = not applicable."""
+    if (os.environ.get("BROKER_PROVIDER", "alpaca") or "").strip().lower() != "ibkr":
+        return None, None
+    try:
+        import broker_router as alpaca
+
+        acct = alpaca.get_account()
+    except Exception as exc:  # noqa: BLE001
+        return None, f"Settled cash unreadable: {str(exc)[:120]}"
+    settled = _finite_float(((acct or {}).get("account") or {}).get("settled_cash"))
+    if not (acct or {}).get("ok") or settled is None:
+        return None, "IBKR did not report settled cash; automatic buys wait until it does"
+    return settled, None
+
+
 def _broker_session_gate(cfg: dict[str, Any], notional: float, *, reducing: bool = False) -> tuple[bool, str]:
     """Broker session/order checks never inspect the local paper book."""
     if _CORRUPT_PATHS:
@@ -2257,6 +2274,9 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
             error = _live_agent.trade_error(sig, cfg, day_pnl, reducing)
             if error:
                 return blocked(error)
+          settled_cash, settled_error = (None, None) if (reducing or not agent_order) else _settled_cash()
+          if settled_error:
+            return blocked(settled_error)
           reserved, open_error = _broker_working_reservations(str(sig.get("ticker") or ""), px)
           if open_error:
             return blocked(open_error)
@@ -2337,6 +2357,10 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                         edge_error = _final_agent_edge_error(sig, current, shares, px)
                         if edge_error:
                             return blocked(edge_error)
+                        if settled_cash is not None and notional + reserved["buy_exposure"] > settled_cash:
+                            return blocked(f"This buy (${notional:,.2f}) plus working buys (${reserved['buy_exposure']:,.2f}) "
+                                           f"is more than settled cash (${settled_cash:,.2f}). Automatic buys only use "
+                                           "settled cash, so unsettled sale proceeds never cause a good-faith violation.")
                 # Re-run broker-only gates against the latest limits/session immediately
                 # before persisting intent; config POST uses this same outer lock.
                 # Options are capped on worst-case loss, not premium (same as the first gate).
@@ -2712,8 +2736,8 @@ def _evidence_block(sig: dict[str, Any], cfg: dict[str, Any]) -> str | None:
     try:
         rec = lessons.track_record(LESSONS_PATH, ticker=str(sig.get("ticker") or ""), verdict=sig.get("verdict"),
                                    lateness=sig.get("lateness_label"), scope=_research_scope(cfg))
-    except Exception:  # noqa: BLE001 - missing history never blocks
-        return None
+    except Exception as exc:  # noqa: BLE001 - a missing file reads as empty; an unreadable one fails closed
+        return f"evidence_unavailable: the scored track record could not be read ({type(exc).__name__}); no order sent"
     stats = (rec.get("side_stats") or {}).get(side) or {}
     samples = int(stats.get("samples") or 0)
     rate, move = stats.get("helped_rate"), stats.get("avg_move_bps")
@@ -3603,6 +3627,18 @@ def _missing_marks(ledger: dict[str, Any], marks: dict[str, float]) -> list[str]
     )
 
 
+def _decision_day(ev: dict[str, Any]) -> str | None:
+    raw = ev.get("ts") or ev.get("timestamp")
+    try:
+        when = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    tz = getattr(paper_loop_mod, "NY_TZ", None)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return (when.astimezone(tz) if tz else when).strftime("%Y-%m-%d")
+
+
 def _day_scoreboard(ledger: dict[str, Any], cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     """P0.2 day equity curve + scoreboard. Calls helped = horizon outcomes (not fill W/L)."""
     board = session_track.build_day_scoreboard(
@@ -3616,7 +3652,17 @@ def _day_scoreboard(ledger: dict[str, Any], cfg: dict[str, Any] | None = None) -
     try:
         helped = hurt = flat = 0
         rows = _decision_ring.latest(200)
+        today = _today_str()
         for ev in rows or []:
+            # Each scored call once: skip the "outcome" copy row, holds (no trade to win or
+            # lose) and earlier days.
+            if ev.get("event") == "outcome":
+                continue
+            side = str(ev.get("outcome_intended_side") or ev.get("side") or ev.get("decision") or "").lower()
+            if side not in ("buy", "sell"):
+                continue
+            if _decision_day(ev) != today:
+                continue
             label = ev.get("outcome") or ev.get("outcome_label")
             if label == "helped":
                 helped += 1

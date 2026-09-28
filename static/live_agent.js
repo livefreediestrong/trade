@@ -20,6 +20,7 @@
   else if(pending){label='Reconciling order';cls='is-waiting';}
   else if(book.risk_ready!==true||!Number.isFinite(book.day_pnl_usd)){label='New entries blocked';cls='is-blocked';}
   else if(['blocked','error','budget','daily_limit','event_window','coverage_wait','option_review','protection_review'].includes(s.phase)){label=['blocked','error','option_review','protection_review'].includes(s.phase)?'Needs attention':'Research paused';cls='is-blocked';blocks.push(s.message||'Read the latest agent status.');}
+  else if(s.phase==='entry_window'){label='Outside buy window (10:30-11:00)';cls='is-waiting';blocks.push(s.message||'Automatic buys only happen from 10:30 to 11:00 a.m. Eastern.');}
   else if(s.phase==='researching'){label='Researching';cls='is-scanning';}
   return {label,cls,blocks,connected};
  }

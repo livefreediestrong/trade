@@ -43,3 +43,12 @@ def promotion_gate_passes_by_default(request, monkeypatch):
     import live_agent
     monkeypatch.setattr(live_agent.LiveAgent, "promotion",
                         lambda self, cfg: {"passed": True, "plain": "test default", "missing": []})
+
+
+@pytest.fixture(autouse=True)
+def entry_window_open_by_default(request, monkeypatch):
+    """Most tests run at arbitrary wall-clock times; opt in with @pytest.mark.entry_window."""
+    if "entry_window" in request.keywords:
+        return
+    import live_agent
+    monkeypatch.setattr(live_agent, "_entry_window_message", lambda now=None: None)
