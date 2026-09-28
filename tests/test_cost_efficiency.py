@@ -28,7 +28,7 @@ def test_pass_only_scan_spends_nothing_on_untradeable_ideas(monkeypatch, verdict
     notes = {}
     sig, calls = _scan(monkeypatch, verdict, pass_only=True, notes=notes)
     assert sig is None and calls == []
-    assert notes == {"ticker": "AAPL", "verdict": verdict, "text": "thin volume"}
+    assert notes == {"ticker": "AAPL", "verdict": verdict, "text": "thin volume", "price": 100.0}
     # The research desk still studies WATCH/AVOID ideas when it asks for them.
     sig, calls = _scan(monkeypatch, verdict)
     assert sig["verdict"] == verdict and len(calls) == 1
@@ -36,6 +36,15 @@ def test_pass_only_scan_spends_nothing_on_untradeable_ideas(monkeypatch, verdict
 
 def test_pass_only_scan_still_researches_pass(monkeypatch):
     sig, calls = _scan(monkeypatch, "PASS", pass_only=True, notes={})
+    assert sig["verdict"] == "PASS" and len(calls) == 1
+
+
+def test_unaffordable_pass_spends_nothing_on_the_model(monkeypatch):
+    notes = {}
+    sig, calls = _scan(monkeypatch, "PASS", pass_only=True, notes=notes, max_share_price=4.40)
+    assert sig is None and calls == []
+    assert notes["verdict"] == "WATCH" and "above this account's $4.40 per-order limit" in notes["text"]
+    sig, calls = _scan(monkeypatch, "PASS", pass_only=True, notes={}, max_share_price=150.)
     assert sig["verdict"] == "PASS" and len(calls) == 1
 
 

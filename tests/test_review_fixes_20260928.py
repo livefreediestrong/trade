@@ -37,6 +37,7 @@ def test_stop_accounting_failure_still_runs_stock_exits_and_blocks_entries(live,
 
 
 def test_missing_history_on_several_symbols_is_treated_as_an_outage(live, monkeypatch):
+    monkeypatch.setattr(agent.LiveAgent, "_history_provider_ok", staticmethod(lambda: False))
     live.cfg["watchlist"] = ["TEST", "OTHER", "THIRD"]
     live.cfg["live_agent"]["policy"]["symbols"] = ["TEST", "OTHER", "THIRD"]
     desk.save_config(live.cfg)
@@ -108,3 +109,32 @@ def test_failed_dispatch_removes_only_an_unsent_prepared_entry():
     option_lifecycle.discard_prepared(kept, {"id": "sig"})
     assert "sig" in kept.raw["option_positions"]
 
+
+
+def test_junk_symbols_keep_their_cooldown_when_the_reference_has_history(live, monkeypatch):
+    monkeypatch.setattr(agent.LiveAgent, "_history_provider_ok", staticmethod(lambda: True))
+    live.cfg["watchlist"] = ["SIXB", "SIXC", "SIXE"]
+    desk.save_config(live.cfg)
+    def no_history(cfg, *, ticker, notes=None, **kwargs):
+        live.calls.append(ticker)
+        notes.update(error="Market data was unavailable", coverage_unavailable=True)
+        return None
+    monkeypatch.setattr(desk, "generate_scan_signal", no_history)
+    live.service.tick(); run_again(live); run_again(live)
+    assert set(live.service.load()["research_coverage"]) == {"SIXB", "SIXC", "SIXE"}
+
+
+def test_unaffordable_symbols_are_skipped_until_rechecked(live, monkeypatch):
+    live.cfg["watchlist"] = ["TEST", "OTHER"]
+    desk.save_config(live.cfg)
+    monkeypatch.setattr(live.service, "_share_price_cap", lambda cfg: 4.40)
+    def expensive(cfg, *, ticker, notes=None, max_share_price=None, **kwargs):
+        live.calls.append((ticker, max_share_price))
+        notes.update(ticker=ticker, verdict="WATCH", text="too expensive", price=250. if ticker == "TEST" else 3.)
+        return None
+    monkeypatch.setattr(desk, "generate_scan_signal", expensive)
+    for _ in range(4):
+        run_again(live)
+    screened = [t for t, _ in live.calls]
+    assert screened.count("TEST") == 1 and screened.count("OTHER") >= 2
+    assert all(cap == 4.40 for _, cap in live.calls)

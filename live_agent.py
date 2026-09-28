@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import threading
+import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
@@ -53,6 +54,8 @@ _ADDED_FIELDS = ("protective_exits", "breakeven_after_r", "max_hold_min", "flatt
 SCREEN_GAP_SEC = 30  # after a screen with no PASS (no model call), the next symbol comes up this soon
 # This many different symbols in a row without history means the provider is down.
 COVERAGE_OUTAGE_STREAK = 3
+# A symbol whose one share exceeds the per-order limit is rechecked after this long.
+UNAFFORDABLE_RECHECK_SEC = 3600
 # Bad/delisted/unquotable symbols: skip for a while instead of blocking forever.
 _QUOTE_SKIP: dict[str, dict] = {}
 _QUOTE_SKIP_AFTER = 2  # consecutive quote failures before temporary deny
@@ -404,6 +407,7 @@ class LiveAgent:
         self.phase = "not_configured"
         self.message = "Save a policy to prepare the live agent"
         self.exit_checks = {}
+        self._unaffordable = {}  # symbol -> monotonic time to recheck (in memory; resets on restart)
 
     @property
     def path(self):
@@ -935,6 +939,35 @@ class LiveAgent:
         raw["attempts"][signal["id"]] = {"key": key, "revision": signal["agent_revision"]}
         self.save(raw)
 
+    def _unaffordable_active(self, symbol):
+        until = self._unaffordable.get(symbol)
+        if until is None:
+            return False
+        if time.monotonic() >= until:
+            self._unaffordable.pop(symbol, None)
+            return False
+        return True
+
+    def _share_price_cap(self, cfg):
+        """Largest whole-share price the effective per-order limit allows, or None if unknown."""
+        try:
+            book = self.desk._broker_book_cached() or {}
+            if book.get("ok") is not True or book.get("risk_ready") is not True:
+                return None
+            return effective_limits(cfg, book.get("equity"))["max_order_usd"]
+        except Exception:  # noqa: BLE001 - unknown only disables this cost-saving filter
+            return None
+
+    @staticmethod
+    def _history_provider_ok():
+        """A liquid reference with history means missing symbols are not a provider outage."""
+        try:
+            import data_sources
+            bars, _ = data_sources.get_daily_with_fallback("SPY", days=30)
+            return bars is not None and len(bars) > 0
+        except Exception:  # noqa: BLE001
+            return False
+
     def _refund_screen(self, cfg, policy):
         """A screen that found no PASS made no model call: it does not use up the
         daily research allowance, and the next symbol comes up sooner."""
@@ -1117,13 +1150,14 @@ class LiveAgent:
             for _ in range(len(eval_symbols)):
                 candidate = eval_symbols[raw["cursor"] % len(eval_symbols)]
                 raw["cursor"] += 1
-                if candidate not in coverage and not _quote_skip_active(candidate):
+                if (candidate not in coverage and not _quote_skip_active(candidate)
+                        and not self._unaffordable_active(candidate)):
                     symbol = candidate
                     break
             if symbol is None:
                 raw["next_at"] = (now_utc()+timedelta(seconds=policy["interval_sec"])).isoformat()
                 self.save(raw)
-                self.phase, self.message = "coverage_wait", "Available symbols are cooling down after data failures; broker reconciliation and exits continue"
+                self.phase, self.message = "coverage_wait", "Every symbol is cooling down (missing data or one share above the per-order limit); broker reconciliation and exits continue"
                 return
             today["research"] += 1
             raw["next_at"] = (now_utc()+timedelta(seconds=policy["interval_sec"])).isoformat()
@@ -1133,14 +1167,15 @@ class LiveAgent:
         self.phase, self.message = "researching", "Evaluating "+symbol+" (live-order eligible · full universe)"
         scope = getattr(self.desk.llm_trader, "cost_scope", None)
         notes = {}
+        share_cap = self._share_price_cap(cfg)
         # Only PASS setups can become agent orders, so only they reach the paid brain.
         if callable(scope):
             with scope("live_agent", scope_cap=policy["model_budget_usd"]):
                 signal = self.desk.generate_scan_signal(cfg, ticker=symbol, force=False, still_authorized=authorized,
-                                                        pass_only=True, notes=notes)
+                                                        pass_only=True, notes=notes, max_share_price=share_cap)
         else:
             signal = self.desk.generate_scan_signal(cfg, ticker=symbol, force=False, still_authorized=authorized,
-                                                    pass_only=True, notes=notes)
+                                                    pass_only=True, notes=notes, max_share_price=share_cap)
         if not authorized():
             self.record("discarded", "Settings or session changed during research")
             return
@@ -1153,7 +1188,7 @@ class LiveAgent:
                 if notes.get("coverage_unavailable") is True:
                     misses = getattr(self, "_coverage_misses", [])
                     misses = [s for s in misses if s != symbol] + [symbol]
-                    if len(misses) >= COVERAGE_OUTAGE_STREAK:
+                    if len(misses) >= COVERAGE_OUTAGE_STREAK and not self._history_provider_ok():
                         # Several different symbols in a row with no history is a
                         # provider outage, not missing coverage: undo their cooldowns
                         # and keep the normal research interval as backoff.
@@ -1163,7 +1198,7 @@ class LiveAgent:
                             for missed in misses:
                                 raw.setdefault("research_coverage", {}).pop(missed, None)
                             self.save(raw)
-                        self.record("blocked", "Price history is unavailable for several symbols in a row; treating it as a data-provider outage and retrying after the saved research interval")
+                        self.record("blocked", "Price history is unavailable for several symbols in a row, including the SPY reference; treating it as a data-provider outage and retrying after the saved research interval")
                         return
                     self._coverage_misses = misses
                     with self.desk._lock:
@@ -1178,6 +1213,10 @@ class LiveAgent:
                 self.record("blocked", "Market data or setup assessment unavailable for "+symbol+"; retrying after the saved research interval")
                 return
             self._coverage_misses = []  # A completed screen proves the price sources respond.
+            price = notes.get("price")
+            if share_cap and isinstance(price, (int, float)) and price > share_cap:
+                # Rechecked hourly: prices move, and the account limit follows equity.
+                self._unaffordable[symbol] = time.monotonic() + UNAFFORDABLE_RECHECK_SEC
             self._refund_screen(cfg, policy)
             why = ""
             if notes.get("verdict"):

@@ -3031,12 +3031,15 @@ def generate_scan_signal(
     still_authorized: Callable[[], bool] | None = None,
     pass_only: bool = False,
     notes: dict | None = None,
+    max_share_price: float | None = None,
 ) -> dict | None:
     """Scan watchlist with volume-screener rules; emit first eligible buy signal.
 
     ``pass_only`` (the live agent): return only PASS setups, so no model call is
     spent on a WATCH/AVOID idea the caller can never trade. ``notes`` receives the
     best non-PASS verdict and its text for the caller's status line.
+    ``max_share_price``: a PASS whose one share costs more than this can never be
+    ordered, so it becomes WATCH before any paid model call.
     """
     from screener_logic import analyze_ticker
 
@@ -3147,6 +3150,15 @@ def generate_scan_signal(
                 analysis["research_flags"] = list(analysis.get("research_flags") or []) + ["thin_edge_after_costs"]
                 verdict = "WATCH"
 
+        cap = _finite_float(max_share_price)
+        if verdict == "PASS" and cap and price_now and price_now > cap:
+            analysis = dict(analysis)
+            analysis["verdict"] = "WATCH"
+            analysis["verdict_text"] = (analysis.get("verdict_text") or "Setup found.") + (
+                f" Entry blocked: one share costs ${price_now:,.2f}, above this account's ${cap:,.2f} per-order limit.")
+            analysis["research_flags"] = list(analysis.get("research_flags") or []) + ["unaffordable_share"]
+            verdict = "WATCH"
+
         if verdict == "PASS":
             sig = _analysis_to_signal(analysis, cfg, preset, force=force)
             if sig:
@@ -3179,7 +3191,7 @@ def generate_scan_signal(
     if best_watch is not None and pass_only:
         if notes is not None:
             notes.update(ticker=best_watch.get("ticker"), verdict=best_watch.get("verdict"),
-                         text=best_watch.get("verdict_text"))
+                         text=best_watch.get("verdict_text"), price=_finite_float(best_watch.get("price")))
         return None
     if best_watch is not None:
         if still_authorized is not None and not still_authorized():
