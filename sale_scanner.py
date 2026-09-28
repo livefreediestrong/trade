@@ -218,10 +218,10 @@ class SaleScanner:
             self._update(state="paused", message=str(exc)[:240] if isinstance(exc, ValueError) else "Scan interrupted; saved progress retained.", current_symbol=None)
 
     def snapshot(self, *, page: int = 1, kind: str = "all", query: str = "", minimum: float = 0,
-                 liquid: bool = False, issues: bool = False, lens: str = "pullbacks"):
-        if page < 1 or page > 10000 or kind not in ("all", "stock", "etf") or lens not in ("pullbacks", "momentum", "active", "all") or not 0 <= minimum <= 100 or len(query) > 80:
+                 liquid: bool = False, issues: bool = False, lens: str = "pullbacks", size: int = 40):
+        if page < 1 or page > 10000 or kind not in ("all", "stock", "etf") or lens not in ("pullbacks", "momentum", "active", "all") or not 0 <= minimum <= 100 or len(query) > 80 or size not in (10, 40):
             raise ValueError("Invalid scan filter")
-        size, args = 40, []
+        args = []
         where = "state IN ('excluded','provider_error')" if issues else "state='valid'"
         order = "discount DESC,symbol"
         if not issues and lens == "pullbacks":

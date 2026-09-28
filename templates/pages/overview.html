@@ -28,23 +28,25 @@
   <link rel="stylesheet" href="/static/after_close.css?v=nightly-20260925-3" />
   <link rel="stylesheet" href="/static/companion_context.css?v=fix-all-20260925-2" />
   <link rel="stylesheet" href="/static/company_check.css?v=insider-review-20260926-1" />
+  <link rel="stylesheet" href="/static/fidelity.css?v=fidelity-20260928-1" />
 {% include "desk/experience_head.html" %}
 </head>
 {% include "desk/header.html" %}
 {% include "desk/top_nav.html" %}
 <main id="unified-desk" tabindex="-1" class="desk-page-main" data-desk-page="overview">
 {% include "desk/overview.html" %}
+{% include "desk/fidelity.html" %}
 {% include "desk/live_switch.html" %}
 {% include "desk/daily_brief.html" %}
 <div class="overview-workspace">
   {% include "desk/market_today.html" %}
   <section class="bx-card" id="beginner-moss-overview" aria-labelledby="bx-moss-ov-title">
-    <h3 class="bx-card-title" id="bx-moss-ov-title">Fox at the desk <span class="bx-sub">Agent</span></h3>
-    <p class="bx-plain">Current activity and decisions. Open Fox’s workspace for his rules, reviews and controls.</p>
+    <h3 class="bx-card-title" id="bx-moss-ov-title">Automatic trading (Fox) <span class="bx-sub">Status</span></h3>
+    <p class="bx-plain">What automatic trading is doing now. Its rules and controls are on the Real account page.</p>
     <div class="bx-ready-row" style="flex-wrap:wrap;gap:10px 14px;">
       <span class="bx-agent-chip is-paused" id="bx-agent-chip" aria-live="polite">Checking…</span>
       <span class="bx-money-sub" id="bx-agent-detail" style="margin:0;">Reading agent status…</span>
-      <a class="btn primary sm" href="/desk/fox">Go to the Fox page</a>
+      <a class="btn primary sm" href="/desk/fox">Real account</a>
       <a class="btn ghost sm" href="/desk/paper">Practice on Paper</a>
       <a class="btn ghost sm" href="/desk/research">Browse Research</a>
     </div>
@@ -83,5 +85,6 @@
 <script src="/static/trading_goals.js?v=goals-20260925-2"></script>
 <script src="/static/live_switch.js?v=20260925-continuation1"></script>
 <script src="/static/public_context.js?v=fix-all-20260925-1"></script>
+<script src="/static/fidelity.js?v=fidelity-20260928-1"></script>
 </body>
 </html>

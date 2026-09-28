@@ -323,7 +323,7 @@ def test_process_probe_and_second_start_do_not_kill_running_process(tmp_path, mo
         monkeypatch.setattr(desk, "_INSTANCE_LOCK_PATH", lock)
         monkeypatch.setattr(desk, "_INSTANCE_LOCK_FD", None)
         assert desk._instance_pid_is_running(process.pid)
-        with pytest.raises(RuntimeError, match="Another Tomahawk instance"):
+        with pytest.raises(RuntimeError, match="Another nadzeel desk"):
             desk.acquire_instance_lock()
         assert process.poll() is None
         assert lock.read_text() == str(process.pid)

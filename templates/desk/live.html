@@ -1,23 +1,23 @@
 <section id="desk-live" class="desk-section live-section" aria-labelledby="desk-live-title">
-{# The Ticket page has its own "Buy or sell" heading; a Fox title here would contradict it. #}
+{# The old Ticket page (now a redirect) had its own "Buy or sell" heading. #}
 <div class="section-heading"{% if desk_page|default("") == "ticket" %} hidden{% endif %}>
   <h2 id="desk-live-title">{% if desk_page|default("") == "ticket" %}Buy or sell{% else %}Your broker account{% endif %}</h2>
-  <p>Your real broker account: money and readiness, what Fox is doing, your positions, orders and ideas waiting for you. To buy or sell yourself, use the <a href="/desk/ticket">Ticket page</a>.</p>
+  <p>Your real broker account: money and readiness, what Fox is doing, your positions, orders and ideas waiting for you. To buy or sell yourself, use <a href="#beginner-ticket-wrap">Buy or sell</a> below.</p>
 </div>
 {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}{% include "desk/scanner_link.html" %}{% endif %}
 <div class="section-grid bx-flow">
 <nav class="desk-live-subnav" aria-label="Live desk sections">
   {% if desk_page|default("") not in ("auto", "ticket") %}<a href="#market-today">Market today</a>{% endif %}
   <a href="#beginner-ready">Ready &amp; money</a>
-  <a href="#beginner-moss">What Fox is doing</a>
-  {% if desk_page|default("") == "auto" %}<a href="/desk/ticket">Buy or sell ↗</a>{% else %}<a href="#live-stock-ticket">Buy or sell</a>{% endif %}
+  <a href="#beginner-moss">Automatic trading</a>
+  <a href="#beginner-ticket-wrap">Buy or sell</a>
   <a href="#broker-book">Your positions</a>
   <a href="#broker-orders-list">Your orders</a>
   <a href="#opp-panel">Waiting for you</a>
   <a href="#live-advanced">Advanced</a>
 </nav>
 
-<!-- 1) Market pulse (Overview and the legacy page; the Fox and Ticket pages link to it instead of repeating it) -->
+<!-- 1) Market pulse (Home and the legacy page; the Real account page links to it instead of repeating it) -->
 {% if desk_page|default("") not in ("auto", "ticket") %}{% include "desk/market_today.html" %}{% endif %}
 
 <!-- 2) Ready status + money -->
@@ -25,7 +25,7 @@
 
 <!-- 3) What Fox is doing -->
 <section class="bx-card" id="beginner-moss" data-workspace-only="live" aria-labelledby="bx-moss-title">
-  <h3 class="bx-card-title" id="bx-moss-title">What Fox is doing <span class="bx-sub">Agent status</span></h3>
+  <h3 class="bx-card-title" id="bx-moss-title">Automatic trading (Fox) <span class="bx-sub">Status</span></h3>
   <p class="bx-plain">Fox is the broker agent: he researches and, when you enable him, places whole-share orders. Policy and start/pause controls are under Advanced.</p>
   <div class="bx-ready-row" style="flex-wrap:wrap;gap:10px 14px;">
     <span class="bx-agent-chip is-paused" id="bx-agent-chip" aria-live="polite">Checking…</span>
@@ -78,20 +78,12 @@
   </div>
 </section>
 
-<!-- 4) Buy or sell (the ticket lives on the Ticket page; the Fox page links to it) -->
-{% if desk_page|default("") == "auto" %}
-<section class="bx-card" id="beginner-ticket-link" aria-labelledby="bx-ticket-link-title">
-  <h3 class="bx-card-title" id="bx-ticket-link-title">Buy or sell yourself</h3>
-  <p class="bx-plain">Your own orders use the ticket on the Ticket page. You review each one before it goes to the broker.</p>
-  <a class="btn sm" href="/desk/ticket">Open the Ticket page</a>
-</section>
-{% else %}
+<!-- 4) Buy or sell (one ticket, on the Real account page) -->
 <details class="live-guide-details"><summary>Buy / sell shares · workflow guide</summary>
 {% include "desk/live_guide.html" %}
 </details>
 <div class="bx-card" id="beginner-ticket-wrap" style="padding:0;border:0;background:transparent;">
-  {% if desk_page|default("") != "ticket" %}<h3 class="bx-card-title" style="padding:0 2px;">Buy or sell</h3>{% endif %}
-  <p class="bx-plain">Review every live order before it goes to the broker. Nothing here places an order until you confirm.</p>
+  {% if desk_page|default("") != "ticket" %}<h3 class="bx-card-title" style="padding:0 2px;">Buy or sell</h3>  <p class="bx-plain">Review every live order before it goes to the broker. Nothing here places an order until you confirm.</p>
   {% include "desk/live_ticket.html" %}
 </div>
 {% endif %}

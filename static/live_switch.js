@@ -14,7 +14,7 @@
   $('ls-off').hidden=!d.live;$('ls-on').hidden=!!d.live;
   $('ls-on').disabled=!d.broker_configured;$('ls-on').title=d.broker_configured?'':'Connect a broker in Settings first';
   if(d.live)$('ls-confirm').hidden=true;
-  $('ls-confirm-text').textContent='Turning ON lets this desk send orders to '+(d.real_money?'your REAL-MONEY account':'your broker account')+'. You still approve every order, and Fox stays off unless you start him on the Fox page.';
+  $('ls-confirm-text').textContent='Turning ON lets this desk send orders to '+(d.real_money?'your REAL-MONEY account':'your broker account')+'. You still approve every order, and automatic trading (Fox) stays off unless you start him on the Fox page.';
  }
  async function send(body,message){
   if(busy)return;busy=true;$('ls-status').textContent=message;

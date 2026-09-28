@@ -354,8 +354,8 @@ New-Link 'Desk console' 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.e
 New-Link 'Notepad' 'C:\Windows\System32\notepad.exe' ''
 $changes = @(Repair-DeskShortcut @($desk))
 $names = @(Get-ChildItem -LiteralPath $desk -Filter '*.lnk' | ForEach-Object BaseName | Sort-Object)
-if (($names -join ',') -ne 'Daytrade Signal Desk,Notepad') { throw "Shortcuts left: $($names -join ',')" }
-$link = $shell.CreateShortcut((Join-Path $desk 'Daytrade Signal Desk.lnk'))
+if (($names -join ',') -ne 'nadzeel,Notepad') { throw "Shortcuts left: $($names -join ',')" }
+$link = $shell.CreateShortcut((Join-Path $desk 'nadzeel.lnk'))
 if ($link.Arguments -ne ('"' + (Join-Path $Root 'Launch.vbs') + '"')) { throw "Wrong target: $($link.Arguments)" }
 if ($changes.Count -ne 3) { throw "Changes: $($changes -join ' | ')" }
 if (@(Repair-DeskShortcut @($desk)).Count -ne 0) { throw 'A correct shortcut was rewritten' }

@@ -6,10 +6,10 @@
  const normalize=p=>({skin:['desert','plain'].includes(p?.skin)?p.skin:p?.skin==null?defaults.skin:'plain',detail:['focused','full'].includes(p?.detail)?p.detail:defaults.detail,portraits:p?.portraits!==false});
  // Simple view keeps only these top-level panels; everything else goes to "More tools".
  const essentials={
-  overview:['#desk-overview','#live-switch','#daily-brief'],
+  overview:['#desk-overview','#fidelity','#live-switch','#daily-brief'],
   auto:['.desk-page-banner','#live-switch','#fox-workspace','#desk-live'],
   paper:['.desk-page-banner','#desk-paper'],
-  research:['.desk-page-banner','#fidelity','#company-check','.research-shelf'],
+  research:['.desk-page-banner','#company-check','.research-shelf'],
   ticket:['.desk-page-banner','.desk-section'],
   settings:['.desk-page-banner','#connection-summary','#watch-alerts','#desk-settings'],
  };

@@ -47,6 +47,10 @@ def test_entire_directory_beyond_manual_cap_and_class_share_mapping(tmp_path):
     assert result["state"] == "complete" and result["coverage_pct"] == 100
     assert len(result["results"]) == 40
     assert len(scan.snapshot(page=3)["results"]) == 26
+    simple = scan.snapshot(size=10)  # Simple view: top 10
+    assert len(simple["results"]) == 10 and simple["page_size"] == 10
+    with pytest.raises(ValueError):
+        scan.snapshot(size=7)
     assert scan.snapshot(kind="etf")["matched"] == 53
     assert scan.snapshot(kind="stock", query="BRK-B")["matched"] == 1
     assert scan.snapshot(query="%")["matched"] == 0

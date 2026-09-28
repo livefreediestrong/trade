@@ -75,7 +75,7 @@ LESSONS_PATH = DATA_DIR / "lessons.json"
 BACKTEST_PATH = DATA_DIR / "backtest.json"
 
 BANNER = (
-    "Tomahawk — live trading and separate paper research. "
+    "nadzeel — live trading and separate paper research. "
     "Check the verified broker account before approving an order."
 )
 
@@ -5828,7 +5828,7 @@ def acquire_instance_lock() -> None:
                     os.close(_INSTANCE_LOCK_FD)
                     _INSTANCE_LOCK_FD = None
         raise RuntimeError(
-            f"Another Tomahawk instance appears to be running ({_INSTANCE_LOCK_PATH}). "
+            f"Another nadzeel desk appears to be running ({_INSTANCE_LOCK_PATH}). "
             "Remove the lock only after confirming the previous process stopped."
         ) from exc
 
@@ -6697,8 +6697,8 @@ def index():
     return _desk_page(
         "overview",
         "live",
-        "Overview",
-        "Start here: your account, the market and what Fox is doing. Fox, Paper, Research and Ticket each have their own page.",
+        "Home",
+        "Start here: your money at IBKR and Fidelity, and what to do next.",
     )
 
 
@@ -6721,8 +6721,8 @@ def desk_root():
     return _desk_page(
         "overview",
         "live",
-        "Overview",
-        "Start here: your account, the market and what Fox is doing. Fox, Paper, Research and Ticket each have their own page.",
+        "Home",
+        "Start here: your money at IBKR and Fidelity, and what to do next.",
     )
 
 
@@ -6731,8 +6731,8 @@ def desk_overview():
     return _desk_page(
         "overview",
         "live",
-        "Overview",
-        "Start here: your account, the market and what Fox is doing. Fox, Paper, Research and Ticket each have their own page.",
+        "Home",
+        "Start here: your money at IBKR and Fidelity, and what to do next.",
     )
 
 
@@ -6742,8 +6742,8 @@ def desk_auto():
     return _desk_page(
         "auto",
         "live",
-        "Fox’s workspace",
-        "Fox owns automated trading decisions. Changing Woman brings research, calendar context and care for the desk.",
+        "Real account",
+        "Your IBKR account in one place: the live trading switch, buy or sell, automatic trading (Fox), positions and orders.",
     )
 
 
@@ -6752,8 +6752,8 @@ def desk_paper():
     return _desk_page(
         "paper",
         "paper",
-        "Paper practice",
-        "Simulated funds only — practice without touching your live broker account.",
+        "Practice",
+        "Simulated money only. Nothing here touches a real account.",
     )
 
 
@@ -6763,18 +6763,15 @@ def desk_research():
         "research",
         "live",
         "Research",
-        "Ideas, rankings, scanner, and research notes. Research does not place live orders by itself.",
+        "Ideas, company checks and the market scanner. Nothing on this page places an order.",
     )
 
 
 @app.route("/desk/ticket")
 def desk_ticket():
-    return _desk_page(
-        "ticket",
-        "live",
-        "Live ticket",
-        "Buy or sell ticket and your broker positions / orders.",
-    )
+    """The ticket now lives on the Real account page (one copy of positions, orders and the switch)."""
+    from flask import redirect
+    return redirect("/desk/fox#beginner-ticket-wrap", code=302)
 
 
 @app.route("/desk/settings")
@@ -6783,7 +6780,7 @@ def desk_settings():
         "settings",
         "live",
         "Settings",
-        "Watchlist, brains, and journal. Live execution switches stay labeled separately.",
+        "Watchlist, alerts, research brains and the journal. Nothing here turns on live trading.",
     )
 
 
@@ -6796,7 +6793,7 @@ def desk_all_legacy():
         desk_page="all",
         desk_workspace="live",
         page_title="Full desk (legacy)",
-        page_hint="Legacy single-page layout. Prefer the Overview, Fox, Paper, Research and Ticket pages.",
+        page_hint="Legacy single-page layout. Prefer the Home, Real account, Practice, Research and Settings pages.",
     )
 
 # --- END PAGE_SPLIT_DESK_ROUTES ---

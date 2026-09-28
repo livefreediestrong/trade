@@ -141,7 +141,7 @@ def fox_view(agent: dict[str, Any] | None, window: dict[str, Any] | None, now: d
     if match:
         ticker = match.group(1)
     if not agent.get("configured"):
-        state, headline = "off", "Fox is off duty. Save his rules on the Fox page to put him to work."
+        state, headline = "off", "Fox is off duty. Automatic trading starts from the Real account page."
     elif not agent.get("enabled") or agent.get("mode") != "auto_live" or not agent.get("session_active"):
         state, headline = "resting", "Fox is resting: the broker agent is paused. Positions and orders stay at the broker."
     elif phase == "waiting_for_market" or agent.get("market_open") is False:

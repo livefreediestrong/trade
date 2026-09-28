@@ -373,7 +373,8 @@ def register(app, desk, companion):
             page=int(request.args.get("page", "1")), kind=request.args.get("kind", "all"),
             query=request.args.get("q", ""), minimum=float(request.args.get("minimum", "0")),
             liquid=request.args.get("liquid") == "1", issues=request.args.get("issues") == "1",
-            lens=request.args.get("lens", "pullbacks")))
+            lens=request.args.get("lens", "pullbacks"),
+            size=10 if request.args.get("size") == "10" else 40))
 
     @bp.post("/api/research/sale/market")
     @bp.post("/api/markets/scanner")

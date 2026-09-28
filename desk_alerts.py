@@ -102,7 +102,7 @@ def _post_webhook(event: dict[str, Any]) -> dict[str, Any]:
     body = {
         "content": content,
         "text": content,
-        "username": "TomahawkDesk",
+        "username": "nadzeel",
         "embeds": [
             {
                 "title": event.get("kind"),
@@ -129,7 +129,7 @@ def _twilio_stub_send(event: dict[str, Any]) -> dict[str, Any]:
     token = (os.environ.get("TWILIO_AUTH_TOKEN") or "").strip()
     from_n = (os.environ.get("TWILIO_FROM_NUMBER") or "").strip()
     to_n = (os.environ.get("TWILIO_TO_NUMBER") or "").strip()
-    body = f"[Tomahawk] {event.get('kind')}: {event.get('message')}"
+    body = f"[nadzeel] {event.get('kind')}: {event.get('message')}"
     url = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
     try:
         r = requests.post(

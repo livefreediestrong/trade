@@ -66,7 +66,7 @@ function Confirm-DeskRestart([string]$Message) {
     # Headless runs (watchdog, -NoDialogs) never restart a running desk.
     if ($NoDialogs) { return $false }
     Add-Type -AssemblyName PresentationFramework
-    return ([System.Windows.MessageBox]::Show($Message, 'Daytrade Signal Desk', 'YesNo', 'Question') -eq 'Yes')
+    return ([System.Windows.MessageBox]::Show($Message, 'nadzeel', 'YesNo', 'Question') -eq 'Yes')
 }
 function Request-DeskRestart([string]$Url, [int]$Port) {
     # The desk refuses unresolved orders or unfinished broker cleanup before freeing the port.
@@ -237,11 +237,11 @@ function Ensure-DeskPython([string]$LogDir) {
     }
     return $python
 }
-# One desk shortcut: "Daytrade Signal Desk" -> wscript.exe Launch.vbs, on the Desktop
+# One desk shortcut: "nadzeel" -> wscript.exe Launch.vbs, on the Desktop
 # and in the Start menu. Other shortcuts that start THIS checkout (older launch
 # scripts, Launch.bat, Start-Tomahawk.ps1, a second copy) are folded into it.
 # Shortcuts for anything else are never touched. Never blocks startup.
-$DeskShortcutName = 'Daytrade Signal Desk'
+$DeskShortcutName = 'nadzeel'
 $LegacyLaunchers = @('Launch.vbs', 'Launch.bat', 'Start-Tomahawk.ps1', 'run.bat', 'force_restart.ps1',
     'install_and_restart.ps1', 'restart_signal_desk.ps1')
 function Test-DeskShortcutTarget([string]$Text) {
@@ -277,7 +277,7 @@ function Repair-DeskShortcut([string[]]$Folders = @([Environment]::GetFolderPath
             $link.TargetPath = $target
             $link.Arguments = $arguments
             $link.WorkingDirectory = $Root
-            $link.Description = 'Start or open the Tomahawk trading desk'
+            $link.Description = 'Start or open the nadzeel trading desk'
             if (Test-Path -LiteralPath $icon) { $link.IconLocation = "$icon,0" }
             $link.Save()
             $changes += $(if ($existed) { "Pointed '$DeskShortcutName' at Launch.vbs." } else { "Added the '$DeskShortcutName' shortcut." })
@@ -312,7 +312,7 @@ function Invoke-DeskLauncher {
                     $updateNote = $restart.message
                     if (-not $NoDialogs) {
                         Add-Type -AssemblyName PresentationFramework
-                        [System.Windows.MessageBox]::Show($updateNote, 'Daytrade Signal Desk') | Out-Null
+                        [System.Windows.MessageBox]::Show($updateNote, 'nadzeel') | Out-Null
                     }
                 }
             } else {

@@ -1,15 +1,14 @@
 {# Primary page nav — plain labels, separate Auto / Paper / Research #}
 <nav class="desk-topnav" aria-label="Desk pages">
-  <a class="desk-topnav-brand" href="/desk/overview" title="Overview">
+  <a class="desk-topnav-brand" href="/desk/overview" title="Home">
     <span class="logo-medallion">{% include "desk/brand_mark.html" %}</span>
-    <span class="wordmark"><span class="theme-brand-desert">nadzeel</span><span class="theme-brand-plain">Trading desk</span></span>
+    <span class="wordmark"><span class="theme-brand-desert">nadzeel</span><span class="theme-brand-plain">nadzeel</span></span>
   </a>
   <div class="desk-topnav-links">
-    <a href="/desk/overview" class="desk-topnav-link{% if desk_page == 'overview' %} is-active{% endif %}"{% if desk_page == 'overview' %} aria-current="page"{% endif %}>Overview</a>
-    <a href="/desk/fox" class="desk-topnav-link{% if desk_page == 'auto' %} is-active{% endif %}"{% if desk_page == 'auto' %} aria-current="page"{% endif %} title="Real broker · Fox agent">Fox</a>
+    <a href="/desk/overview" class="desk-topnav-link{% if desk_page == 'overview' %} is-active{% endif %}"{% if desk_page == 'overview' %} aria-current="page"{% endif %}>Home</a>
+    <a href="/desk/fox" class="desk-topnav-link{% if desk_page in ('auto', 'ticket') %} is-active{% endif %}"{% if desk_page in ('auto', 'ticket') %} aria-current="page"{% endif %} title="Your IBKR account: live trading switch, buy or sell, automatic trading (Fox), positions and orders">Real account</a>
     <a href="/desk/paper" class="desk-topnav-link{% if desk_page == 'paper' %} is-active{% endif %}"{% if desk_page == 'paper' %} aria-current="page"{% endif %} title="Paper trading with simulated money">Practice</a>
     <a href="/desk/research" class="desk-topnav-link{% if desk_page == 'research' %} is-active{% endif %}"{% if desk_page == 'research' %} aria-current="page"{% endif %} title="Ideas, rankings, notes">Research</a>
-    <a href="/desk/ticket" class="desk-topnav-link{% if desk_page == 'ticket' %} is-active{% endif %}"{% if desk_page == 'ticket' %} aria-current="page"{% endif %} title="Review an exact buy or sell order">Review a trade</a>
     <a href="/desk/settings" class="desk-topnav-link desk-topnav-muted{% if desk_page == 'settings' %} is-active{% endif %}"{% if desk_page == 'settings' %} aria-current="page"{% endif %}>Settings</a>
   </div>
   {# Split pages repeat the hint in their banner; only the legacy full desk needs it here. #}

@@ -33,16 +33,16 @@
 {% include "desk/header.html" %}
 {% include "desk/top_nav.html" %}
 <main id="unified-desk" tabindex="-1" class="desk-page-main" data-desk-page="settings">
-{% include "desk/connection_summary.html" %}
   <div class="desk-page-banner">
     <h1>{{ page_title|default("Settings") }}</h1>
     <p>{{ page_hint|default("") }}</p>
   </div>
+{% include "desk/connection_summary.html" %}
 {% include "desk/attention.html" %}
 {% include "desk/companion_context.html" %}
 
-{% include "desk/watch_alerts.html" %}
 {% include "desk/settings.html" %}
+{% include "desk/watch_alerts.html" %}
 
 </main>
 {% include "desk/side_nav.html" %}

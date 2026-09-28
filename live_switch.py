@@ -5,7 +5,7 @@ no tickets, no automatic exits) and Fox is switched off. Existing broker positio
 remain exposed; this is a submission switch, not a liquidation or protection action.
 
 ON only ever selects `live_manual` (you approve every order). It can never arm
-`auto_live`; Fox is started separately on the Fox page. ON goes through the same
+`auto_live`; Fox is started separately on the Real account page. ON goes through the same
 `_api_config_post` gate as the Settings mode menu (verified broker identity plus the
 REAL / AUTO_LIVE token), after one typed confirmation, GO LIVE.
 """
@@ -28,7 +28,7 @@ def view(cfg: dict[str, Any], broker: dict[str, Any]) -> dict[str, Any]:
     elif mode == "auto_live":
         plain = f"ON with Fox trading automatically in {account}. Turn OFF to stop all new broker orders from this desk."
     else:
-        plain = f"ON. You approve every order before it goes to {account}. Fox only trades if you start him on the Fox page."
+        plain = f"ON. You approve every order before it goes to {account}. Automatic trading (Fox) only runs if you start it on the Real account page."
     return {"ok": True, "live": live, "mode": mode, "real_money": real, "broker_configured": bool(broker.get("configured")),
             "plain": plain, "confirm_phrase": CONFIRM}
 

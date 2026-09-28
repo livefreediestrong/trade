@@ -1,6 +1,6 @@
 <section id="watch-alerts" class="company-check desk-module" aria-labelledby="watch-alerts-title">
  <h2 id="watch-alerts-title">Watchlist alerts</h2>
- <p>Get a desk alert when a stock you follow makes a big move, is about to report earnings, or has a high-impact headline. It covers the stocks Fox holds first, then your watchlist (up to 40), and checks every 5 minutes. Alerts only notify you; they never place, size or block a trade. If <code>ALERT_WEBHOOK_URL</code> is set in <code>.env</code>, they also go to Discord or Slack.</p>
+ <p>Get a desk alert when a stock you follow makes a big move, is about to report earnings, or has a high-impact headline. It covers the stocks Fox holds first, then your watchlist (up to 40), and checks every 5 minutes. Alerts only notify you. If <code>ALERT_WEBHOOK_URL</code> is set in <code>.env</code>, they also go to Discord or Slack.</p>
  <form id="watch-alerts-form" class="compact-form">
   <label class="chk"><input type="checkbox" id="wa-enabled" /> Alerts on</label>
   <label title="Example: with 3, you hear about a stock when it is up or down 3% from yesterday's close, and again at 6% and 9%.">Big move · % from yesterday's close<input id="wa-move_pct" type="number" min="1" max="50" step="0.5" required /></label>

@@ -1,6 +1,6 @@
 # Fidelity portfolio (suggestions only)
 
-Research page → **Fidelity portfolio**. Owner decision 2026-09-28: the desk never connects to,
+Home page → **Fidelity portfolio**. Owner decision 2026-09-28: the desk never connects to,
 reads from or orders at Fidelity (Fidelity has no retail trading API). You import holdings and
 place any trade yourself in Fidelity. Data lives in `data/fidelity_portfolio.json`, separate from
 the IBKR desk, Fox, its limits and the paper ledger.

@@ -31,3 +31,5 @@
 .cc-insider-row h4{margin:0 0 8px}.cc-insider-row p{margin:8px 0}.cc-insider-row details{margin-top:12px}
 .cc-insider-signal{font-weight:600}.cc-insider-totals{display:flex;flex-wrap:wrap;gap:12px 24px}
 @media(max-width:400px){.company-check-grid{grid-template-columns:minmax(0,1fr)}.cc-insider-controls label{max-width:100%}}
+.connection-line{padding:10px 16px}.connection-line>details>summary{cursor:pointer;list-style-position:inside}
+.connection-line #connection-overall[data-state=ok]{color:var(--green)}.connection-line #connection-overall[data-state=warn]{color:var(--amber)}

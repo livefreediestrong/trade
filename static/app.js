@@ -4383,7 +4383,9 @@
     lastPendingCount = pendingCount;
     try { syncPhase(cfg.session_active !== undefined ? cfg : (state?.config || {}), pendingCount, data); } catch (_) {}
     // Background tab: show the waiting count in the browser tab itself.
-    document.title = pendingCount > 0 ? `(${pendingCount}) waiting · nadzeeɫ` : "nadzeeɫ";
+    // Keep the page name ("Real account · nadzeel"); only prefix the waiting count.
+    const baseTitle = (document.documentElement.dataset.baseTitle ??= document.title.replace(/^\(\d+\) waiting · /, ""));
+    document.title = pendingCount > 0 ? `(${pendingCount}) waiting · ${baseTitle}` : baseTitle;
     const hint = $("#opp-hint-simple");
     if (hint) {
       const m = cfg.mode || "manual";

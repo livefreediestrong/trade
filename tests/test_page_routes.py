@@ -26,7 +26,9 @@ class Page(HTMLParser):
 def test_every_page_has_valid_links_assets_and_no_avatar_selection():
     client = desk.app.test_client()
     pages = {}
-    for name in ('overview', 'auto', 'paper', 'research', 'ticket', 'settings', 'all'):
+    ticket = client.get('/desk/ticket', base_url='http://127.0.0.1:5056')
+    assert ticket.status_code == 302 and ticket.headers['Location'].endswith('/desk/fox#beginner-ticket-wrap')
+    for name in ('overview', 'auto', 'fox', 'paper', 'research', 'settings', 'all'):
         path = '/desk/' + name
         response = client.get(path, base_url='http://127.0.0.1:5056')
         assert response.status_code == 200
