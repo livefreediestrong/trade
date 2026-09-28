@@ -24,6 +24,8 @@ def live(execution, monkeypatch, tmp_path):
     identity = dict(cfg["broker_identity"], broker="ibkr", client_id=37, paper_mode=True)
     policy = dict(agent.DEFAULTS, symbols=["TEST", "OTHER"], max_order_usd=250.)
     # Eval rotates the watchlist; order allow-list stays policy.symbols.
+    # Order-flow tests; commissions are covered in test_commissions.py.
+    cfg.update(commission_min_usd=0.0, commission_per_share_usd=0.0, sell_regulatory_fee_usd=0.0)
     cfg.update(mode="auto_live", paper_research_enabled=False, broker_identity=identity,
                watchlist=["TEST", "OTHER"], watchlist_focus="all",
                live_agent={"policy": policy, "revision": "policy-1", "run_id": "run-1", "enabled": True})
@@ -47,7 +49,9 @@ def live(execution, monkeypatch, tmp_path):
         now = datetime.now(timezone.utc)
         return {"id": "decision-"+str(len(calls)), "ticker": ticker, "side": "buy", "suggested_shares": 10,
                 "signal_price": 100., "confidence": .8, "verdict": "PASS", "lateness_label": "early",
-                "ts": now.isoformat(), "quote": ds.quote_snapshot(100, now, "ibkr_live"), "llm_model": "real-model"}
+                "ts": now.isoformat(), "quote": ds.quote_snapshot(100, now, "ibkr_live"), "llm_model": "real-model",
+                # Real screened ideas carry these; the final cost check needs them.
+                "stop": 99.2, "target": 101.6}
     monkeypatch.setattr(desk, "generate_scan_signal", generate)
     return NS(cfg=cfg, policy=policy, identity=identity, sent=sent, service=service, calls=calls, generate=generate)
 

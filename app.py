@@ -2095,8 +2095,16 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                 return blocked("Broker account differs from the reviewed account; open a fresh review")
         # Unknown prior outcomes must be reconciled before another order is sent.
         with _lock:
-            if load_ledger().get("pending_broker_orders"):
-                return blocked("A broker order is still unresolved; wait for reconciliation before another order")
+            pending_orders = load_ledger().get("pending_broker_orders") or []
+            if pending_orders:
+                ticker = str(sig.get("ticker") or "").upper()
+                same_stock = any(str((p.get("signal") or {}).get("ticker") or "").upper() == ticker for p in pending_orders)
+                # A stuck order elsewhere must not freeze a protective sell of an agent
+                # position; any other order still waits for reconciliation.
+                protective_exit = (agent_order and sig.get("agent_exit") and str(sig.get("side") or "").lower() == "sell"
+                                   and not sig.get("agent_option_position_id"))
+                if same_stock or not protective_exit:
+                    return blocked("A broker order is still unresolved; wait for reconciliation before another order")
             if provider == "ibkr" and _live_agent.path.exists():
                 import stock_protection
                 import stop_fills
@@ -2325,6 +2333,10 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                         return blocked("Risk limits changed the reviewed quantity; open a fresh review")
                     sig["suggested_shares"] = shares
                     order["shares"] = shares
+                    if agent_order:
+                        edge_error = _final_agent_edge_error(sig, current, shares, px)
+                        if edge_error:
+                            return blocked(edge_error)
                 # Re-run broker-only gates against the latest limits/session immediately
                 # before persisting intent; config POST uses this same outer lock.
                 # Options are capped on worst-case loss, not premium (same as the first gate).
@@ -2596,18 +2608,75 @@ def _stop_target_distances(price: float, intraday: dict | None, cfg: dict[str, A
     atr_usd = _finite_float((intraday or {}).get("atr_usd"))
     atr_multiple = _finite_float(cfg.get("atr_stop_multiple"), 1.0) or 1.0
     base = atr_usd * atr_multiple if atr_usd and atr_usd > 0 else price * 0.008
-    stop_dist = round(base * float(preset["stop_r"]), 2)
+    # Never round a cheap stock's stop to $0.00 (which disabled the cost check).
+    stop_dist = max(0.01, round(base * float(preset["stop_r"]), 2))
     return stop_dist, round(stop_dist * float(preset["target_r"]), 2)
 
 
+def _order_commission_usd(cfg: dict[str, Any], shares: float, price: float, side: str) -> float:
+    """One order's broker charges. Defaults follow IBKR Pro Fixed US stocks:
+    $0.005/share, $1.00 minimum per order, capped at 1% of trade value, plus
+    sell-side regulatory fees. Percent-of-price fee_bps cannot represent this.
+    """
+    per_share = _finite_float(cfg.get("commission_per_share_usd"), 0.005) or 0.0
+    minimum = _finite_float(cfg.get("commission_min_usd"), 1.0) or 0.0
+    cap_pct = _finite_float(cfg.get("commission_max_pct"), 1.0) or 0.0
+    notional = max(0.0, shares * price)
+    fee = max(per_share * shares, minimum)
+    if cap_pct > 0:
+        fee = min(fee, notional * cap_pct / 100.0)
+    if side == "sell":
+        fee += _finite_float(cfg.get("sell_regulatory_fee_usd"), 0.02) or 0.0
+    return fee
+
+
+def _round_trip_commission_per_share(cfg: dict[str, Any], shares: float, price: float) -> float:
+    shares = max(1.0, float(shares or 1))
+    return (_order_commission_usd(cfg, shares, price, "buy")
+            + _order_commission_usd(cfg, shares, price, "sell")) / shares
+
+
+def _final_agent_edge_error(sig: dict[str, Any], cfg: dict[str, Any], shares: int, price: float) -> str | None:
+    """Automatic entries: re-check reward:risk after costs at the final share count.
+
+    Screening assumed a share count; the account cap decides the real one, and
+    per-order commissions grow per share as the order shrinks.
+    """
+    min_rr = _finite_float(cfg.get("min_net_reward_risk"), 0.0) or 0.0
+    stop, target = _finite_float(sig.get("stop")), _finite_float(sig.get("target"))
+    if not stop or not target or not price or not (stop < price < target):
+        return "Automatic entry needs a stop below and a target above the current price"
+    edge = _edge_after_costs(price, price - stop, target - price, cfg, None, sig.get("quote"), shares=shares)
+    rr = edge["net_reward_risk"]
+    if rr is None or (min_rr > 0 and rr < min_rr) or rr <= 0:
+        return (f"After IBKR commissions for {shares} share{'s' if shares != 1 else ''} "
+                f"(${edge['commission_per_share_usd']:.2f}/share round trip), this trade's reward is "
+                f"{rr if rr is not None else 0:.2f}x its risk; the minimum is {max(min_rr, 0.01):g}x. No order was sent.")
+    return None
+
+
+def _edge_share_count(price: float, cfg: dict[str, Any], preset: dict[str, Any],
+                      order_usd: float | None = None) -> int:
+    """Shares the cost check should assume: the live per-order dollar limit when
+    given (the agent's case), else the paper-sized position."""
+    budget = _finite_float(order_usd)
+    if not budget:
+        equity = _finite_float(load_ledger().get("equity"), _finite_float(cfg.get("paper_equity"), 100_000.0))
+        budget = (equity or 0.0) * float(preset["max_position_pct"]) / 100.0
+    return max(1, int(budget / max(price, 0.01)))
+
+
 def _edge_after_costs(price: float, stop_dist: float, target_dist: float, cfg: dict[str, Any],
-                      intraday: dict | None = None, quote: dict | None = None) -> dict[str, Any]:
+                      intraday: dict | None = None, quote: dict | None = None,
+                      shares: float | None = None) -> dict[str, Any]:
     """Round-trip friction per share and the reward:risk that survives it.
 
-    Costs: entry+exit fees and slippage (fee_bps, slip_bps each way) plus one full
-    bid/ask spread (quote when present, else the screener's spread/ATR estimate).
+    Costs: per-order commissions at the actual share count (1 share when unknown,
+    the most expensive case), fees and slippage (fee_bps, slip_bps each way) and
+    one full bid/ask spread (quote when present, else the spread/ATR estimate).
     """
     bps = 2 * ((_finite_float(cfg.get("fee_bps"), 0.0) or 0.0) + (_finite_float(cfg.get("slip_bps"), 0.0) or 0.0))
+    commission = _round_trip_commission_per_share(cfg, shares or 1, price)
     q = quote if isinstance(quote, dict) else {}
     bid, ask = _finite_float(q.get("bid")), _finite_float(q.get("ask"))
     spread = None
@@ -2618,13 +2687,15 @@ def _edge_after_costs(price: float, stop_dist: float, target_dist: float, cfg: d
         atr_usd = _finite_float((intraday or {}).get("atr_usd"))
         if spread_atr is not None and atr_usd:
             spread = max(0.0, spread_atr * atr_usd)
-    cost = price * bps / 1e4 + (spread or 0.0)
+    cost = price * bps / 1e4 + (spread or 0.0) + commission
     net_risk = stop_dist + cost
     if stop_dist <= 0 or net_risk <= 0:
-        return {"round_trip_cost_usd": round(cost, 4), "net_reward_risk": None, "breakeven_win_rate": None}
+        return {"round_trip_cost_usd": round(cost, 4), "commission_per_share_usd": round(commission, 4),
+                "net_reward_risk": None, "breakeven_win_rate": None}
     net_rr = (target_dist - cost) / net_risk
     return {
         "round_trip_cost_usd": round(cost, 4),
+        "commission_per_share_usd": round(commission, 4),
         "net_reward_risk": round(net_rr, 3),
         # Win rate at which a stop-or-target trade breaks even after costs.
         "breakeven_win_rate": round(1 / (1 + net_rr), 3) if net_rr > 0 else 1.0,
@@ -2754,7 +2825,7 @@ def _analysis_to_signal(
     intraday = analysis.get("intraday") or {}
     atr_usd = _finite_float(intraday.get("atr_usd"))
     stop_dist, target_dist = _stop_target_distances(price, intraday, cfg, preset)
-    edge = _edge_after_costs(price, stop_dist, target_dist, cfg, intraday, analysis.get("quote"))
+    edge = _edge_after_costs(price, stop_dist, target_dist, cfg, intraday, analysis.get("quote"), shares=shares)
     stop = round(price - stop_dist, 2)
     target = round(price + target_dist, 2)
 
@@ -3140,13 +3211,17 @@ def generate_scan_signal(
         price_now = _finite_float(analysis.get("price"))
         if verdict == "PASS" and min_rr > 0 and price_now and price_now > 0:
             sd, td = _stop_target_distances(price_now, intraday, cfg, preset)
-            edge = _edge_after_costs(price_now, sd, td, cfg, intraday, analysis.get("quote"))
-            if edge["net_reward_risk"] is not None and edge["net_reward_risk"] < min_rr:
+            edge = _edge_after_costs(price_now, sd, td, cfg, intraday, analysis.get("quote"),
+                                     shares=_edge_share_count(price_now, cfg, preset, max_share_price))
+            if edge["net_reward_risk"] is None or edge["net_reward_risk"] < min_rr:
                 analysis = dict(analysis)
                 analysis["verdict"] = "WATCH"
-                analysis["verdict_text"] = (analysis.get("verdict_text") or "Setup found.") + (
-                    f" Entry blocked: after round-trip costs (${edge['round_trip_cost_usd']:.2f}/share) the reward is only "
+                analysis["verdict_text"] = (analysis.get("verdict_text") or "Setup found.") + ((
+                    f" Entry blocked: after round-trip costs (${edge['round_trip_cost_usd']:.2f}/share, including "
+                    f"${edge['commission_per_share_usd']:.2f}/share of commissions) the reward is only "
                     f"{edge['net_reward_risk']:.2f}x the risk (minimum {min_rr:g}x).")
+                    if edge["net_reward_risk"] is not None else
+                    " Entry blocked: the stop distance is unavailable, so the cost check cannot pass.")
                 analysis["research_flags"] = list(analysis.get("research_flags") or []) + ["thin_edge_after_costs"]
                 verdict = "WATCH"
 
@@ -4510,7 +4585,11 @@ def _ingest_one_signal(sig: dict[str, Any], *, research_only: bool = False,
     if mode == "auto_live":
         # Gate first; broker-only on success; broker fail = rejected (no paper fallback).
         # Never dual-book (broker submit + paper_fill) for the same fill.
-        if not cfg.get("session_active"):
+        # A stopped session still lets Fox's protective stock exits through; the
+        # agent authorization and every broker gate below still apply to them.
+        protective_exit = (sig.get("source") == "live_agent" and sig.get("agent_exit")
+                           and not sig.get("agent_option_position_id"))
+        if not cfg.get("session_active") and not protective_exit:
             with _lock:
                 sig["status"] = "rejected"
                 sig["reject_reason"] = "session_not_active"

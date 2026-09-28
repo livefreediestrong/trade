@@ -6,6 +6,7 @@ Saving a policy pauses the agent. Only the explicit start route activates it.
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 import os
 import hashlib
 import json
@@ -99,6 +100,8 @@ def research_universe(cfg, policy=None, *, include_unavailable=False):
         wl = list((cfg or {}).get("watchlist") or [])
         symbols = paper_loop.equity_loop_symbols(wl)
         try:
+            if not (cfg or {}).get("radar_enabled"):
+                raise ValueError("radar is off")  # its display cache must not add order symbols
             import market_radar as _mr
             hot = [
                 str(r.get("ticker") or "").upper()
@@ -115,7 +118,40 @@ def research_universe(cfg, policy=None, *, include_unavailable=False):
             s for s in (policy.get("symbols") or list(DEFAULTS["symbols"]))
             if isinstance(s, str) and s
         ))
+    symbols = _tradeable_listed(symbols)
     return symbols if include_unavailable else [s for s in symbols if not _quote_skip_active(s)]
+
+
+_DESK = None  # set by register(); lets the universe read the listed-symbol directory
+_LISTED_CACHE = {"key": None, "symbols": None}
+
+
+def _listed_symbols():
+    """US-listed stocks/ETFs from the desk's Nasdaq-traded directory, or None if unavailable."""
+    if _DESK is None:
+        return None
+    try:
+        path = Path(_DESK.DATA_DIR) / "market_universe.json"
+        stat = path.stat()
+        key = (str(path), stat.st_mtime_ns, stat.st_size)
+        if _LISTED_CACHE["key"] != key:
+            import market_universe
+            rows = (market_universe.load(_DESK) or {}).get("symbols") or []
+            listed = {str(r.get("symbol") or "").upper() for r in rows if isinstance(r, dict) and r.get("symbol")}
+            _LISTED_CACHE.update(key=key, symbols=listed if len(listed) >= 1000 else None)
+        return _LISTED_CACHE["symbols"]
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _tradeable_listed(symbols):
+    """Drop what this desk cannot trade intraday: OTC/foreign names, mutual funds and
+    unknown tickers (absent from the US-listed directory) and leveraged/inverse ETFs.
+    Without a usable directory only the leveraged/inverse filter applies."""
+    import data_sources
+    listed = _listed_symbols()
+    return [s for s in symbols if not data_sources.is_leveraged_or_inverse(s)
+            and (listed is None or s.upper() in listed)]
 
 
 def order_universe(cfg, policy=None):
@@ -178,11 +214,25 @@ def authorization_error(signal, cfg):
     tagged = signal.get("source") == "live_agent"
     if not saved and not tagged and cfg.get("mode") != "auto_live":
         return None
+    if (tagged and signal.get("agent_exit") and not signal.get("agent_option_position_id")
+            and isinstance(saved, dict) and not saved.get("enabled") and cfg.get("mode") == "auto_live"):
+        # Pausing Fox or ending the session stops new risk, never the protective exits
+        # for positions he opened. Live trading OFF (mode manual) still stops every order.
+        if not cfg.get("broker_identity") or signal.get("agent_identity") != cfg.get("broker_identity"):
+            return "Live agent authorization changed or this idea is outside its policy"
+        if not paper_loop.is_rth(now_utc()):
+            return "Live agent waits for regular US market hours"
+        try:
+            validate(saved["policy"])
+        except (ValueError, KeyError, TypeError):
+            return "Live agent policy is invalid"
+        return None
     if not isinstance(saved, dict) or not saved.get("enabled"):
         return "Live agent is paused; enable the saved policy explicitly"
     if not saved.get("revision") or not saved.get("run_id"):
         return "Fox authorization is incomplete; explicitly start a saved policy"
-    if (cfg.get("mode") != "auto_live" or not cfg.get("session_active") or not tagged or
+    stock_exit = signal.get("agent_exit") and not signal.get("agent_option_position_id")
+    if (cfg.get("mode") != "auto_live" or not (cfg.get("session_active") or stock_exit) or not tagged or
             signal.get("agent_revision") != saved.get("revision") or
             signal.get("agent_run_id") != saved.get("run_id") or
             signal.get("agent_identity") != cfg.get("broker_identity")):
@@ -384,7 +434,10 @@ def exit_decision(row, bid, now, policy, minutes_to_close):
     risk = float(row.get("risk_per_share") or entry - stop)
     trigger_r = float(policy.get("breakeven_after_r") or 0)
     if trigger_r > 0 and not row.get("breakeven") and risk > 0 and bid >= entry + trigger_r * risk:
-        stop = max(stop, entry)
+        # Breakeven means covering the round-trip commissions too, never above half
+        # the trigger move (the stop must stay below the price that triggered it).
+        cost = max(0.0, float(row.get("cost_per_share") or 0))
+        stop = max(stop, entry + min(cost, 0.5 * trigger_r * risk))
         updates.update(stop=round(stop, 4), breakeven=True)
     if bid <= stop:
         return ("breakeven_stop" if (row.get("breakeven") or updates.get("breakeven")) else "stop_loss"), updates
@@ -491,6 +544,7 @@ class LiveAgent:
                     "option_positions": option_lifecycle.status(raw, cfg.get("broker_identity")),
                     "option_check_error": getattr(self, "option_check_error", None),
                     "stop_corrections": stop_review.pending(raw, cfg.get("broker_identity")),
+                    "entry_evidence": self._safe_promotion(cfg),
                     "exit_checks": copy.deepcopy(self.exit_checks),
                     "account_scope": account_scope(cfg.get("broker_identity")),
                     "eval_symbols_count": len(eval_syms),
@@ -626,6 +680,7 @@ class LiveAgent:
                 "risk_per_share": round(stop_dist, 4), "breakeven": bool((row or {}).get("breakeven")),
                 "opened_at": (row or {}).get("opened_at") or opened.isoformat(),
                 "exit_at": exit_at, "account_scope": owner,
+                "cost_per_share": self._cost_per_share(shares, price),
                 "tracking_error": (row or {}).get("tracking_error"),
                 "signal_id": signal.get("id"),
                 "sector": signal.get("sector") or (row or {}).get("sector"),
@@ -660,8 +715,11 @@ class LiveAgent:
             managed = copy.deepcopy(raw.get("managed") or {})
             native_records = raw.get("native_stops") or {}
             use_native = policy.get("broker_stops") or bool(native_records)
-            pending = bool(self.desk.load_ledger().get("pending_broker_orders"))
-            if not managed or (pending and not use_native):
+            pending_rows = self.desk.load_ledger().get("pending_broker_orders") or []
+            pending = bool(pending_rows)
+            # Only an unresolved order on the same stock blocks that stock's exit.
+            pending_tickers = {str((p.get("signal") or {}).get("ticker") or "").upper() for p in pending_rows}
+            if not managed:
                 return False
         try:
             context = broker_router.verify_execution_context()
@@ -704,9 +762,15 @@ class LiveAgent:
             current = self.desk.load_config()
             saved = current.get("live_agent") or {}
             expected = cfg.get("live_agent") or {}
+            # Pause/session state is deliberately not checked: exits protect existing
+            # positions. Live trading OFF or a changed account/policy stops them.
+            # A change made while holdings were read (including pausing) means that
+            # read may not match the settings; act on a fresh read next tick instead.
             if (current.get("broker_identity") != cfg.get("broker_identity")
-                    or current.get("mode") != "auto_live" or current.get("session_active") is not True
-                    or saved.get("enabled") is not True or saved.get("revision") != expected.get("revision")
+                    or current.get("mode") != "auto_live" or current.get("mode") != cfg.get("mode")
+                    or current.get("session_active") != cfg.get("session_active")
+                    or saved.get("enabled") != expected.get("enabled")
+                    or saved.get("revision") != expected.get("revision")
                     or saved.get("run_id") != expected.get("run_id")):
                 return False
         now = now_utc()
@@ -717,6 +781,9 @@ class LiveAgent:
                 self._exit_check(ticker, "account_review", "Position belongs to another account or its original account is unverified")
                 continue
             native = policy.get("broker_stops") or ticker in native_records
+            if not native and ticker in pending_tickers:
+                self._exit_check(ticker, "reconciling", "An order on this stock is unresolved; its exit waits for broker evidence")
+                continue
             # Native stop executions change managed shares through their durable
             # accounting receipt. A holdings-only shrink would apply a fill twice.
             shares = int(float(row["shares"])) if native else int(min(float(row["shares"]), held.get(ticker, 0.0)))
@@ -870,6 +937,10 @@ class LiveAgent:
         error = authorization_error(signal, cfg)
         if error:
             return error
+        if not reducing and not signal.get("agent_exit"):
+            promotion = self.promotion(cfg)
+            if not promotion["passed"]:
+                return promotion["plain"]
         policy = validate(cfg["live_agent"]["policy"])
         if not reducing and str(signal.get("asset_type") or "").upper() in ("OPT", "BAG"):
             blocker = auto_live_options.entry_block(cfg)
@@ -939,6 +1010,38 @@ class LiveAgent:
         raw["attempts"][signal["id"]] = {"key": key, "revision": signal["agent_revision"]}
         self.save(raw)
 
+    def promotion(self, cfg):
+        """The pre-registered evidence test for automatic real-money buys (fails closed)."""
+        import lessons
+        import strategy_scorecard
+        try:
+            order_usd = self._share_price_cap(cfg)
+            if not order_usd:
+                raise ValueError("per-order limit unknown")
+            fees = (self.desk._order_commission_usd(cfg, 1, order_usd, "buy")
+                    + self.desk._order_commission_usd(cfg, 1, order_usd, "sell"))
+            hurdle = fees / order_usd * 1e4
+        except Exception:  # noqa: BLE001 - an unknown hurdle can never be beaten
+            hurdle = float("inf")
+        try:
+            rows = lessons.recent(self.desk.LESSONS_PATH, 5000)
+        except Exception:  # noqa: BLE001
+            rows = []
+        return strategy_scorecard.promotion_status(rows, hurdle_bps=hurdle)
+
+    def _safe_promotion(self, cfg):
+        try:
+            return self.promotion(cfg)
+        except Exception as exc:  # noqa: BLE001 - status must still render
+            return {"passed": False, "plain": "Evidence check unavailable (" + type(exc).__name__ + "); automatic buys stay locked."}
+
+    def _cost_per_share(self, shares, price):
+        """Round-trip commissions per share for this position (0 when unknown)."""
+        try:
+            return round(float(self.desk._round_trip_commission_per_share(self.desk.load_config(), shares, price)), 4)
+        except Exception:  # noqa: BLE001 - the stop then falls back to the entry price
+            return 0.0
+
     def _unaffordable_active(self, symbol):
         until = self._unaffordable.get(symbol)
         if until is None:
@@ -990,7 +1093,9 @@ class LiveAgent:
         try:
             cfg = self.desk.load_config()
             saved = cfg.get("live_agent")
-            if not saved or not saved.get("enabled") or cfg.get("mode") != "auto_live" or not cfg.get("session_active"):
+            exits_only = bool(saved and cfg.get("mode") == "auto_live" and (self.load().get("managed") or {}))
+            if not exits_only and (not saved or not saved.get("enabled") or cfg.get("mode") != "auto_live"
+                                   or not cfg.get("session_active")):
                 self.phase = "paused" if saved else "not_configured"
                 self.message = "Agent paused; broker reconciliation continues" if saved else "Save a policy to prepare the live agent"
                 self.cycle_lock.release()
@@ -1034,6 +1139,22 @@ class LiveAgent:
                 self.option_check_error = "Option holdings check failed ("+type(exc).__name__+"); new entries wait"
                 review_errors.append(self.option_check_error)
         if not saved.get("enabled") or cfg.get("mode") != "auto_live" or not cfg.get("session_active"):
+            managed = self.load().get("managed") or {}
+            if managed and cfg.get("mode") == "auto_live" and paper_loop.is_rth(now_utc()):
+                # Paused for new trades only: stops, targets and the end-of-day close
+                # keep protecting the positions Fox opened. Live trading OFF stops these too.
+                try:
+                    policy = validate(saved["policy"])
+                except (ValueError, KeyError, TypeError):
+                    self.phase, self.message = "paused", "Agent paused; its saved policy is invalid, so exits need your review"
+                    return
+                self._sync_managed_fills()
+                if policy["protective_exits"] and self._manage_exits(cfg, policy):
+                    return
+                count = len(self.load().get("managed") or {})
+                self.phase, self.message = "paused_exits", (
+                    f"Paused for new trades. Protective exits still watch {count} open position{'s' if count != 1 else ''}.")
+                return
             self.phase, self.message = "paused", "Agent paused; broker reconciliation continues"
             return
         # Optional scheduled soft PnL refresh while auto_live and not risk_ready.
@@ -1478,6 +1599,8 @@ def _require_live_option_data(legs):
 
 
 def register(app, desk):
+    global _DESK
+    _DESK = desk
     service = LiveAgent(desk)
     bp = Blueprint("live_agent", __name__)
     import live_research
@@ -1564,7 +1687,8 @@ def register(app, desk):
             if cfg.get("live_agent"):
                 cfg["live_agent"]["enabled"] = False
                 desk.save_config(cfg)
-        service.phase, service.message = "paused", "Paused; existing broker orders and positions remain at the broker"
+        service.phase, service.message = "paused", ("Paused for new trades. Stop-loss, target and end-of-day exits keep "
+                                                     "watching positions Fox opened; turn Live trading OFF to stop every order.")
         return jsonify(service.status())
 
     stop_review.register(bp, desk)

@@ -146,7 +146,8 @@ def test_confidence_is_deterministic():
 
 
 def test_edge_after_costs():
-    cfg = {"fee_bps": 1.0, "slip_bps": 5.0}
+    cfg = {"fee_bps": 1.0, "slip_bps": 5.0, "commission_min_usd": 0, "commission_per_share_usd": 0,
+           "sell_regulatory_fee_usd": 0}
     edge = desk._edge_after_costs(100.0, 1.0, 2.0, cfg, quote={"bid": 99.99, "ask": 100.01})
     assert edge["round_trip_cost_usd"] == pytest.approx(0.14)
     assert edge["net_reward_risk"] == pytest.approx((2 - 0.14) / 1.14, abs=1e-3)

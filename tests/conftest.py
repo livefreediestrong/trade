@@ -33,3 +33,13 @@ def no_flat_pnl_derivation(request, monkeypatch):
     import broker_ibkr
     monkeypatch.setattr(broker_ibkr, "_flat_day_evidence", lambda ib, account: {"flat": False, "reason": "test_default"})
     monkeypatch.setattr(broker_ibkr, "_flat_evidence_cached", lambda ib, account: False)
+
+
+@pytest.fixture(autouse=True)
+def promotion_gate_passes_by_default(request, monkeypatch):
+    """Order-path tests exercise the other gates; the evidence lock is tested on its own (opt-in)."""
+    if "promotion_gate" in request.keywords:
+        return
+    import live_agent
+    monkeypatch.setattr(live_agent.LiveAgent, "promotion",
+                        lambda self, cfg: {"passed": True, "plain": "test default", "missing": []})

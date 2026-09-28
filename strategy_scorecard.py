@@ -112,3 +112,65 @@ def register(app, desk) -> None:
         except ValueError:
             return jsonify({"ok": False, "error": "days must be a whole number"}), 400
         return jsonify(scorecard(lessons.recent(desk.LESSONS_PATH, 5000), days=days))
+
+
+# Automatic real-money entries are allowed only when this pre-registered test passes.
+PROMOTION_MIN_CALLS = 60
+PROMOTION_MIN_SESSIONS = 10
+PROMOTION_MIN_TICKERS = 10
+PROMOTION_DAYS = 90
+
+
+def promotion_status(rows: list[dict[str, Any]], *, hurdle_bps: float, now: datetime | None = None) -> dict[str, Any]:
+    """Does the screener PASS buy rule show an edge that survives real commissions?
+
+    Uses scored PASS buy calls (the only kind Fox can trade) from the last 90 days.
+    Each trading day counts once (calls on one day are not independent), and the
+    lower end of a 95% range of the daily averages must beat `hurdle_bps`, the
+    round-trip commission at the account's order size. Missing data fails.
+    """
+    from zoneinfo import ZoneInfo
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=PROMOTION_DAYS)
+    by_day: dict[str, list[float]] = {}
+    tickers = set()
+    for row in rows:
+        if (not isinstance(row, dict) or row.get("outcome_status") != "scored" or row.get("mock") or row.get("routed")
+                or row.get("side") != "buy" or not str(row.get("setup") or "").upper().startswith("PASS|")):
+            continue
+        move = _net_bps(row)
+        try:
+            stamp = datetime.fromisoformat(str(row.get("ts") or "").replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if move is None or stamp.tzinfo is None or not cutoff <= stamp <= now:
+            continue
+        by_day.setdefault(stamp.astimezone(ZoneInfo("America/New_York")).date().isoformat(), []).append(move)
+        if row.get("ticker"):
+            tickers.add(str(row["ticker"]).upper())
+    calls = sum(len(v) for v in by_day.values())
+    day_means = [sum(v) / len(v) for v in by_day.values()]
+    mean = sum(day_means) / len(day_means) if day_means else None
+    lower = None
+    if len(day_means) >= 2:
+        sd = math.sqrt(sum((m - mean) ** 2 for m in day_means) / (len(day_means) - 1))
+        lower = mean - 1.96 * sd / math.sqrt(len(day_means))
+    hurdle = float(hurdle_bps)
+    missing = []
+    if calls < PROMOTION_MIN_CALLS:
+        missing.append(f"{calls} of {PROMOTION_MIN_CALLS} scored PASS buy calls")
+    if len(day_means) < PROMOTION_MIN_SESSIONS:
+        missing.append(f"{len(day_means)} of {PROMOTION_MIN_SESSIONS} trading days")
+    if len(tickers) < PROMOTION_MIN_TICKERS:
+        missing.append(f"{len(tickers)} of {PROMOTION_MIN_TICKERS} different stocks")
+    if lower is None or not math.isfinite(hurdle) or lower <= hurdle:
+        shown = f"{lower:+.1f}" if lower is not None else "unknown"
+        missing.append(f"the cautious average ({shown} bps a trade) must beat commissions ({hurdle:.0f} bps a round trip)")
+    passed = not missing
+    return {"passed": passed, "calls": calls, "sessions": len(day_means), "tickers": len(tickers),
+            "mean_bps": round(mean, 1) if mean is not None else None,
+            "lower_95_bps": round(lower, 1) if lower is not None else None,
+            "hurdle_bps": round(hurdle, 1) if math.isfinite(hurdle) else None,
+            "missing": missing,
+            "plain": ("The PASS rule's scored record beats commissions; automatic buys may run under the other limits."
+                      if passed else "Automatic buys are locked until the evidence shows an edge: " + "; ".join(missing) + ".")}

@@ -85,3 +85,25 @@ Tests exercise the actual agent, risk gateway, durable reservations and order li
 These checks are software evidence, not completed broker-paper qualification, live execution proof or strategy profitability. The implementation pass does not activate the installed agent or send/cancel real orders.
 
 Broker reference: [IBKR TWS API documentation](https://www.interactivebrokers.com/docs/tws-api/doc/introduction). Order acceptance, execution reports and commissions are distinct evidence; the existing reconciliation path remains authoritative for fills.
+
+
+## Strategy review changes (2026-09-28)
+
+- **Commissions.** `_edge_after_costs` now includes per-order broker commissions at the real share
+  count (defaults: IBKR Pro Fixed, $0.005/share, $1.00 minimum, capped at 1% of trade value, plus
+  $0.02 sell regulatory fees; settings `commission_per_share_usd`, `commission_min_usd`,
+  `commission_max_pct`, `sell_regulatory_fee_usd`). Screening uses the live per-order limit to
+  estimate shares; `_final_agent_edge_error` re-checks at the final share count before any automatic
+  entry. A missing stop now blocks instead of skipping the check, and stops never round to $0.00.
+- **Breakeven** moves the stop to entry plus round-trip commissions (at most half the trigger move).
+- **Exits while paused.** Pausing Fox or ending the session stops new entries only; stock stop-loss,
+  target and end-of-day exits keep running for positions he opened. Live trading OFF (`mode` manual)
+  still stops every order. Paper option-lifecycle exits are unchanged.
+- **Stuck orders.** An unresolved order blocks exits only for the same stock.
+- **Evidence lock.** Automatic buys require `strategy_scorecard.promotion_status` to pass: at least
+  60 scored PASS buy calls in 90 days across 10 trading days and 10 stocks, with the lower end of a
+  95% range of daily averages above the round-trip commission (in bps) at the account's order size.
+  Research and exits continue while locked. Status: `entry_evidence` in `/api/live-agent`.
+- **Universe.** Fox researches and buys only symbols in the US-listed directory
+  (`data/market_universe.json`), never leveraged/inverse ETFs, and merges radar picks only when
+  radar is enabled.
