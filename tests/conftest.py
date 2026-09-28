@@ -23,3 +23,13 @@ def fresh_screener_caches():
     import screener_logic
     screener_logic._SECTOR_CACHE.clear()
     screener_logic._EARNINGS_CACHE.clear()
+
+
+@pytest.fixture(autouse=True)
+def no_flat_pnl_derivation(request, monkeypatch):
+    """Existing P&L tests model a silent IBKR feed; the flat-account $0 rule is opt-in."""
+    if "flat_pnl" in request.keywords:
+        return
+    import broker_ibkr
+    monkeypatch.setattr(broker_ibkr, "_flat_day_evidence", lambda ib, account: {"flat": False, "reason": "test_default"})
+    monkeypatch.setattr(broker_ibkr, "_flat_evidence_cached", lambda ib, account: False)

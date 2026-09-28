@@ -1236,6 +1236,58 @@ def refresh_broker_pnl(*, soft_reconnect: bool = True) -> dict[str, Any]:
         }
 
 
+# A real IBKR callback gets this long before a flat-account $0 is derived.
+FLAT_PNL_MIN_WAIT_SEC = 30.
+# Executions are re-read from the broker at least this often while deriving.
+FLAT_EXECUTIONS_MAX_AGE_SEC = 15.
+_FLAT_EXECUTIONS: dict[str, Any] = {}
+
+
+def _flat_day_evidence(ib, account) -> dict[str, Any]:
+    """Proof that today's P&L is $0: no holdings now and no executions today.
+
+    Anything missing or unreadable returns flat=False, so the gate stays closed.
+    """
+    try:
+        positions = [p for p in ib.positions(account) if p.account == account]
+        if any(isinstance(p.position, bool) or _number(p.position) != 0 for p in positions):
+            return {"flat": False, "reason": "positions_held"}
+        now = time.monotonic()
+        cached = _FLAT_EXECUTIONS.get(account)
+        if not cached or cached["client"] != id(ib) or now - cached["at"] > FLAT_EXECUTIONS_MAX_AGE_SEC:
+            from ib_async import ExecutionFilter
+            fills = ib.reqExecutions(ExecutionFilter(acctCode=account))
+            cached = {"client": id(ib), "at": time.monotonic(),
+                      "count": sum(1 for f in fills if getattr(f.execution, "acctNumber", account) == account)}
+            _FLAT_EXECUTIONS[account] = cached
+        session_fills = sum(1 for f in ib.fills() if getattr(f.execution, "acctNumber", account) == account)
+        if cached["count"] or session_fills:
+            return {"flat": False, "reason": "executions_today"}
+        # Re-check holdings after the blocking read: a fill may have arrived meanwhile.
+        if any(_number(p.position) != 0 for p in ib.positions(account) if p.account == account):
+            return {"flat": False, "reason": "positions_held"}
+        if _SERVER_UNAVAILABLE or _RESYNC_REQUIRED or _ACCOUNT_READY.get(account) is not True:
+            return {"flat": False, "reason": "account_not_ready"}
+        return {"flat": True, "positions": 0, "executions_today": 0,
+                "executions_checked_seconds_ago": round(time.monotonic() - cached["at"], 1),
+                "note": "Derived: no holdings and no trades today, so today's P&L is $0. IBKR's own feed resumes when positions change."}
+    except Exception as exc:  # noqa: BLE001 - unverifiable evidence never derives a value
+        return {"flat": False, "reason": "unverified:" + type(exc).__name__}
+
+
+def _flat_evidence_cached(ib, account) -> bool:
+    """No broker I/O: the flat proof from live caches plus a recent execution read."""
+    try:
+        cached = _FLAT_EXECUTIONS.get(account)
+        return bool(cached and cached["client"] == id(ib) and cached["count"] == 0
+                    and time.monotonic() - cached["at"] <= 60
+                    and not any(getattr(f.execution, "acctNumber", account) == account for f in ib.fills())
+                    and all(_number(p.position) == 0 for p in ib.positions(account) if p.account == account)
+                    and _ACCOUNT_READY.get(account) is True)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 @_on_api_thread
 def get_account() -> dict[str, Any]:
 
@@ -1263,6 +1315,10 @@ def get_account() -> dict[str, Any]:
                     valid_sample = True
                 except (ValueError, TypeError):
                     pass
+            if not valid_sample and previous and _flat_evidence_cached(ib, account):
+                # A proven-flat account already has its $0; silent-feed retries and
+                # socket bounces would only disconnect the desk (see _flat_day_evidence).
+                valid_sample = True
             if (_ACCOUNT_UNSUBSCRIBED or _PNL_WATCH.get("pending_resubscribe")) and now >= _ACCOUNT_RESUBSCRIBE_AFTER:
                 _resubscribe_account_and_pnl(ib, account)
                 # Recovery may replace the object even when no callback arrives.
@@ -1400,6 +1456,16 @@ def get_account() -> dict[str, Any]:
                 daily = None
             if recovering:
                 daily = None
+            pnl_source = "ibkr_daily_pnl" if daily is not None else None
+            flat_evidence = None
+            if (daily is None and not recovering and responsive
+                    and time.monotonic() - _PNL[key]["requested_at"] >= FLAT_PNL_MIN_WAIT_SEC):
+                # Owner decision (2026-09-28): IBKR sends daily P&L only on change, so a
+                # reconnect while flat can wait forever. With every position at zero and
+                # no execution today, nothing was held or traded, so today's P&L is $0.
+                flat_evidence = _flat_day_evidence(ib, account)
+                if flat_evidence.get("flat") is True:
+                    daily, pnl_source = 0.0, "derived_flat_account"
             now = time.monotonic()
             subscription = _PNL[key]
             updated = _PNL_UPDATED.get(account)
@@ -1429,7 +1495,9 @@ def get_account() -> dict[str, Any]:
                                                                + _PNL_SILENT_RETRY_SEC - now), 1) if daily is None else 0.,
                            "waiting_seconds": round(max(0, now - subscription.get("started_at", subscription["requested_at"])), 1),
                            "initial_recovery": {k: v for k, v in subscription.get("initial_recovery", {}).items() if k != "positions_at"},
-                           "retries": subscription.get("retries", 0)}
+                           "retries": subscription.get("retries", 0),
+                           "source": pnl_source,
+                           "flat_evidence": flat_evidence}
             reason = {"waiting": "Gateway has sent no daily P&L update for this subscription",
                       "stale": "A daily P&L callback for the current desk day is required",
                       "recovering": "Gateway connection recovery is pending; a new daily P&L update is required",
@@ -1894,6 +1962,11 @@ def _submission_risk_error(ib, order, identity):
     if isinstance(daily, bool) or not isinstance(daily, (int, float)) or not math.isfinite(daily):
         return "Verified daily P&L required before broker submission"
     subscription = _PNL.get((id(ib), account))
+    if (daily == 0 and account not in _PNL_UPDATED and subscription
+            and _API_PULSE.get("client") == id(ib) and time.monotonic() - _API_PULSE.get("at", 0) <= 15):
+        # The derived flat-account $0 (see _flat_day_evidence), re-proven from caches only.
+        return None if _flat_evidence_cached(ib, account) else (
+            "The account is no longer provably flat and IBKR has sent no daily P&L; request a fresh review")
     if (not subscription or account not in _PNL_UPDATED or subscription.get("day") != _pnl_day()
             or _API_PULSE.get("client") != id(ib) or time.monotonic() - _API_PULSE.get("at", 0) > 15):
         return "Daily P&L or connection validity changed during preflight; request a fresh review"
