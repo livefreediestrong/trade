@@ -32,9 +32,13 @@ def test_summary_passes_only_with_profit_at_your_costs_and_consistent_folds():
     good = rule_history.summarize(trades(60, 6, 300), 245.0, walk=GOOD_WF)
     assert good["passed"] and good["lines"]["your_costs"]["avg_bps"] == pytest.approx(55.0)
     losing = rule_history.summarize(trades(60, 6, -3), 245.0, walk=GOOD_WF)
-    assert not losing["passed"] and "loses money" in losing["reasons"][0]
+    assert not losing["passed"] and "even with $0 commission" in losing["reasons"][0]
+    costly = rule_history.summarize(trades(60, 6, 100), 245.0, walk=GOOD_WF)  # profitable only without commission
+    assert not costly["passed"] and "at your costs" in costly["reasons"][0]
     inconsistent = rule_history.summarize(trades(60, 6, 300), 245.0, walk=BAD_WF)
     assert not inconsistent["passed"] and "2 of 30" in inconsistent["reasons"][0]
+    decisive = rule_history.summarize(trades(60, 6, -3), None, walk=GOOD_WF)
+    assert "even with $0 commission" in decisive["reasons"][0]  # no need to know the account's costs
     unknown = rule_history.summarize(trades(60, 6, 300), None, walk=GOOD_WF)
     assert not unknown["passed"] and "unknown" in unknown["reasons"][0]
     few = rule_history.summarize(trades(10, 5, 300), 245.0, walk=GOOD_WF)
@@ -75,3 +79,15 @@ def test_missing_history_does_not_stop_research(live, monkeypatch):
     monkeypatch.setattr(live.service, "history_gate", lambda: {"passed": False, "state": "missing", "plain": "none"})
     live.service.tick()
     assert live.calls == ["TEST"]
+
+
+def test_costs_are_read_after_the_download(tmp_path):
+    import pandas as pd
+    import numpy as np
+    idx = pd.date_range("2025-01-02 14:30", periods=500, freq="h", tz="UTC")
+    df = pd.DataFrame({"Open": 10.0, "High": 10.1, "Low": 9.9, "Close": 10 + np.sin(np.arange(500)) / 10, "Volume": 1000.0}, index=idx)
+    calls = []
+    out = rule_history.run(NS(DATA_DIR=tmp_path), ["A"], {"stop_pct": 0.8, "target_r": 3.0},
+                           lambda: calls.append(1) or 245.0, fetch=lambda s: df)
+    assert calls == [1] and out["cost_bps_today"] == 245.0
+    assert rule_history.latest(NS(DATA_DIR=tmp_path))["tickers"] == ["A"]

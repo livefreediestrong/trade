@@ -64,7 +64,11 @@ def summarize(trades: list[dict[str, Any]], cost_bps_today: float | None, *, wal
     wf = walk or backtest.evaluate_walk_forward(trades, {})
     yours = lines["your_costs"]
     reasons = []
-    if yours.get("unknown"):
+    zero_line = lines["zero_commission"]
+    if zero_line.get("trades", 0) >= MIN_TRADES and (zero_line.get("lower95_bps") is None or zero_line["lower95_bps"] <= 0):
+        # Decisive whatever the account pays: it loses with no commission at all.
+        reasons.append(f"it loses money even with $0 commission ({zero_line['avg_bps']:+.1f} bps a trade)")
+    elif yours.get("unknown"):
         reasons.append("this account's costs are unknown (broker account not verified)")
     elif yours["trades"] < MIN_TRADES:
         reasons.append(f"only {yours['trades']} historical trades (needs {MIN_TRADES})")
@@ -122,8 +126,10 @@ def status(desk) -> dict[str, Any]:
     return {"ok": True, "job": state, "result": latest(desk), "gate": gate(desk)}
 
 
-def run(desk, symbols: list[str], params: dict[str, Any], cost_bps_today: float | None,
+def run(desk, symbols: list[str], params: dict[str, Any], cost_bps_today,
         fetch: Callable[[str], Any] | None = None) -> dict[str, Any]:
+    """`cost_bps_today` may be a callable, read after the download so a just-started
+    desk has had time to verify the account."""
     import backtest
     fetch = fetch or backtest._fetch
     with _lock:
@@ -140,6 +146,8 @@ def run(desk, symbols: list[str], params: dict[str, Any], cost_bps_today: float 
                     t["ticker"] = sym
                     trades.append(t)
                 used.append(sym)
+        if callable(cost_bps_today):
+            cost_bps_today = cost_bps_today()
         days = sorted({t["day"] for t in trades})
         result = {"finished_at": datetime.now(timezone.utc).isoformat(), "tickers": used,
                   "skipped": [s for s in symbols if s not in used],
@@ -190,8 +198,10 @@ def register(app, desk, agent) -> None:
             return jsonify({"ok": False, "error": "Fox has no stock list to test"}), 400
         preset = desk.get_preset(cfg.get("risk_preset"))
         params = {"stop_pct": 0.8 * float(preset.get("stop_r") or 1.0), "target_r": float(preset.get("target_r") or 2.5)}
-        cost = agent.round_trip_cost_bps(cfg)
-        started, message = start(desk, symbols, params, None if not math.isfinite(cost) else cost + 2 * SLIP_BPS)
+        def cost_today():
+            cost = agent.round_trip_cost_bps(desk.load_config())
+            return round(cost + 2 * SLIP_BPS, 1) if math.isfinite(cost) else None
+        started, message = start(desk, symbols, params, cost_today)
         if not started:
             return jsonify({"ok": False, "error": message}), 409
         desk.append_journal("rule_history_started", {"symbols": len(symbols), "params": params})
