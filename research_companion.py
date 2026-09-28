@@ -24,7 +24,7 @@ from moss_paper import PaperWorkday
 from real_trade_journal import TradeJournal
 from trade_planner import estimate, number
 
-DEFAULTS = {"enabled": True, "name": "Moss", "daily_target": 10.0,
+DEFAULTS = {"enabled": True, "name": "Changing Woman", "daily_target": 10.0,
             "research_short_selling": True, "use_model": True}
 PLAN = {"budget": 10.0, "daily_loss_limit": 2.0, "max_orders": 1,
         "order_type": "limit", "symbols": ["SPY"], "fractional": False,
@@ -139,6 +139,10 @@ class Companion:
         self.news = HeadlineDesk(desk)
         from after_close_review import AfterCloseReview
         self.after_close = AfterCloseReview(desk, self)
+        from weekly_review import WeeklyReview
+        self.weekly = WeeklyReview(desk, self)
+        from public_context import PublicContext
+        self.public_context = PublicContext(desk)
 
     @property
     def path(self):
@@ -196,6 +200,7 @@ class Companion:
                     "paper_workday": self.paper.status(), "actual_trades": self.trades.status(),
                     "agent_review": self.review.status(),
                     "after_close": self.after_close.status(now),
+                    "weekly": self.weekly.status(now),
                     "execution_settings": {k: cfg.get(k) for k in ("mode", "session_active", "kill_switch", "rth_only", "risk_preset", "live_agent")},
                     "live_automation": "not_armed", "desk_execution_mode": cfg.get("mode"),
                     "schedule": "Once per market session while the app is running; weekends and exchange holidays skipped. Missed days are not fabricated.",
@@ -259,7 +264,9 @@ class Companion:
                 symbols = list(dict.fromkeys(symbols[:2]+extra[:2]+symbols[2:]))[:4]
             book = self.desk._broker_book_cached() or {}
             account = {"equity": book.get("equity"), "daily_pnl": book.get("day_pnl_usd"),
-                       "risk_ready": book.get("risk_ready", False), "live_positions": book.get("positions", []),
+                       # Unknown holdings are None, never an empty (flat) list.
+                       "risk_ready": book.get("risk_ready", False),
+                       "live_positions": book.get("positions") if book.get("ok") else None,
                        "paper_equity": paper_book.get("equity"), "paper_positions": paper_book.get("positions", [])}
             observations, headlines = [], []
             for symbol in symbols:
@@ -359,8 +366,9 @@ class Companion:
         def loop():
             while not self.stop.wait(30):
                 # Optional feeds/reviews cannot starve the daily notebook.
-                for name, job in (("news", self.news.refresh), ("review", self.review.tick),
+                for name, job in (("news", self.news.refresh), ("public_context", self.public_context.refresh), ("review", self.review.tick),
                                   ("after_close", self.after_close.tick),
+                                  ("weekly", self.weekly.tick),
                                   ("notebook", lambda: self.run(scheduled=True))):
                     try:
                         job()
@@ -422,6 +430,17 @@ def register(app, desk):
             report = service.after_close.load()["reports"].get(day)
         if report is None:
             return jsonify(ok=False, error="No nightly report for this session"), 404
+        from narrative_checks import checked_report
+        return jsonify(ok=True, report=checked_report(report))
+
+    @bp.get("/api/companion/weekly/<day>")
+    def weekly_report(day):
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            raise ValueError("Use YYYY-MM-DD")
+        with service.weekly.lock:
+            report = service.weekly.load()["reports"].get(day)
+        if report is None:
+            return jsonify(ok=False, error="No weekly report saved for this date"), 404
         from narrative_checks import checked_report
         return jsonify(ok=True, report=checked_report(report))
 

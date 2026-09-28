@@ -1,6 +1,8 @@
 /* Today at the desk: Fox (broker agent) and Changing Woman (chores and reasoning). Read-only. */
 (() => {
  'use strict';
+ const SOURCE_NAMES={bea:'BEA GDP & income calendar',census:'Census economic calendar',fed:'Fed calendar',bls:'BLS jobs & inflation calendar',president:"President's schedule",fomc_calendar:'FOMC dates'};
+ const sourceName=k=>SOURCE_NAMES[k]||(/^calendar_/.test(k)?'Your calendar '+k.slice(9):/^president_/.test(k)?"President's schedule "+k.slice(10):k);
  const $=id=>document.getElementById(id);
  if(!$('desk-day')&&!$('sidebar-companions'))return;
  const POLL_MS=20000;
@@ -42,14 +44,14 @@
   fill('dd-chores',(woman.chores||[]).map(c=>{const li=sourceRow(el('li',null,'dd-chore is-'+c.state),'chore',c.key);li.append(el('span',CHORE[c.state]||'·','dd-mark'),el('strong',c.label),el('small',c.detail));return li;}),'');
   const ev=d.events||{};
   fill('dd-events',(ev.upcoming||[]).map(e=>{const li=el('li',null,'dd-event is-'+e.impact);li.append(el('span',e.impact,'dd-impact'),' ',link(e.when||e.title,e.url));if(e.guard)li.append(el('small',' · Fox pauses new entries '+e.guard));return li;}),'No medium or high impact events in available sources for the next 36 hours.');
-  const bad=Object.entries((ev.status||{}).sources||{}).filter(([,s])=>!s.ok).map(([k,s])=>k+' ('+(s.fallback?s.fallback+'; ':'')+(s.error||'unavailable')+')');
-  set('dd-events-note',(ev.guard_enabled?'Event pause is on.':'Event pause is off (Settings).')+(bad.length?' Unavailable: '+bad.join(', ')+'.':''));
+  const bad=Object.entries((ev.status||{}).sources||{}).filter(([,s])=>!s.ok).map(([k,s])=>sourceName(k)+' — '+(s.fallback==='dated schedule'?'showing saved dates. ':s.fallback==='last good feed'?'showing the last good copy. ':'')+(s.error||'unavailable'));
+  set('dd-events-note',(ev.guard_enabled?'Event pause is on.':'Event pause is off (Settings).')+(bad.length?' Not loading: '+bad.join('; ')+'.':''));
   const w=d.wsb||{};
   const rows=(w.top||[]).slice(0,6).map(r=>{const tr=el('tr');const lean=r.bull_share==null?'—':r.bull_share>=.5?Math.round(r.bull_share*100)+'% bull':Math.round((1-r.bull_share)*100)+'% bear';
    tr.append(el('td','$'+r.ticker),el('td',r.mentions_60m+(r.live_chat_pasted?' +'+r.live_chat_pasted+' chat':'')),el('td',r.velocity==null?'building':r.velocity+'×'),el('td',lean));return tr;});
   $('dd-wsb').replaceChildren(...(rows.length?rows:[(()=>{const tr=el('tr'),td=el('td',w.configured?'No ticker mentions in the last hour yet.':'Reddit is not connected.');td.colSpan=4;tr.append(td);return tr;})()]));
   const threads=(w.threads||[]).map(t=>t.label).join(', ');
-  set('dd-wsb-note',w.configured?((threads?'Reading '+threads+'. ':'')+(w.error?w.error+'. ':'')+(w.live_chat_note||'')):'Set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET to read the WSB threads. '+(w.live_chat_note||''));
+  set('dd-wsb-note',w.configured?((threads?'Reading '+threads+'. ':'')+(w.error?w.error+'. ':'')+(w.live_chat_note||'')):'Reddit access is not connected. Approved Reddit access is needed for WSB discussions; other news sources can still work. '+(w.live_chat_note||''));
   followSource();
  }
  async function poll(){

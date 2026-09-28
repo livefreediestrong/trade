@@ -62,7 +62,7 @@ def test_automatic_restart_is_deferred_for_active_session(isolated, monkeypatch)
     ({'ok': True, 'risk_ready': True, 'positions': []}, {'ok': True, 'orders': [{}]}),
 ])
 def test_automatic_restart_waits_for_verified_empty_broker(isolated, monkeypatch, book, orders):
-    import broker_router
+    import broker_alpaca as broker_router
     monkeypatch.setattr(desk, '_broker_is_configured', lambda: True)
     monkeypatch.setattr(desk, '_broker_book_cached', lambda: book)
     monkeypatch.setattr(broker_router, 'get_open_orders', lambda: orders)
@@ -80,6 +80,22 @@ def test_automatic_exit_rechecks_permission_after_acceptance(isolated, monkeypat
     monkeypatch.setattr(desk.os, '_exit', lambda *a: pytest.fail('Must not exit'))
     desk._exit_desk_process(automatic=True)
     assert journal[0][0] == 'app_stop_cancelled'
+
+
+@pytest.mark.parametrize("exposure,blocked", [
+    ({"ok": True, "has_positions": True}, True),
+    ({"ok": False, "has_positions": None}, True),
+    ({"ok": True}, True),
+    ({"ok": True, "has_positions": False}, False),
+])
+def test_automatic_restart_checks_nonstock_exposure(isolated, monkeypatch, exposure, blocked):
+    import broker_alpaca as broker_router
+    monkeypatch.setattr(desk, '_broker_is_configured', lambda: True)
+    monkeypatch.setattr(desk, '_broker_book_cached', lambda: {'ok': True, 'risk_ready': True, 'positions': []})
+    monkeypatch.setattr(broker_router, 'public_status', lambda: {'broker': 'ibkr'})
+    monkeypatch.setattr(broker_router, 'get_open_orders', lambda: {'ok': True, 'orders': []})
+    monkeypatch.setattr(broker_router, 'get_position_exposure', lambda: exposure, raising=False)
+    assert bool(desk._automatic_restart_error()) is blocked
 
 
 @pytest.fixture
@@ -111,3 +127,16 @@ def test_watchdog_repairs_worker_without_process_restart(upkeep, monkeypatch):
     monkeypatch.setattr(upkeep, 'run_launcher', lambda reason: pytest.fail('Must not restart'))
     assert upkeep.watchdog()['action'] == 'recover_workers'
     assert asked == ['/api/desk/recover']
+
+
+def test_watchdog_preserves_connection_for_browser_only_update(upkeep, monkeypatch):
+    monkeypatch.setattr(upkeep, 'health', lambda **kw: {'pid': 12,
+        'instance': {'source_root': str(upkeep.ROOT.resolve())},
+        'code': {'started': 'older', 'on_disk': 'new', 'serving': 'new',
+                 'stale': False, 'browser_files_changed': True},
+        'broker': {'configured': True, 'connected': True},
+        'recovery': {'expected': True, 'missing': []}})
+    monkeypatch.setattr(upkeep, 'request_recovery', lambda *a: pytest.fail('Browser edit must not restart the desk'))
+    monkeypatch.setattr(upkeep, 'run_launcher', lambda *a: pytest.fail('Browser edit must not launch a process'))
+    monkeypatch.setattr(upkeep, 'ensure_gateway_via_desk', lambda: pytest.fail('Healthy Gateway must be left alone'))
+    assert upkeep.watchdog()['action'] == 'none'

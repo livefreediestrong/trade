@@ -99,9 +99,10 @@ def _price(value: float) -> str:
     return f"${value:,.4f}" if value < 1 else f"${value:,.2f}"
 
 
-def move_alerts(quotes: dict[str, dict[str, Any]], move_pct: float) -> list[dict[str, Any]]:
+def move_alerts(quotes: dict[str, dict[str, Any]], move_pct: float, *, now: datetime | None = None) -> list[dict[str, Any]]:
     """One alert per symbol, day and size band (3%, then 6%, 9%… with a 3% setting)."""
     out = []
+    now = now or datetime.now(timezone.utc)
     for sym, q in quotes.items():
         try:
             price, prev = float(q.get("regularMarketPrice")), float(q.get("regularMarketPreviousClose"))
@@ -115,9 +116,12 @@ def move_alerts(quotes: dict[str, dict[str, Any]], move_pct: float) -> list[dict
             continue
         stamp = q.get("regularMarketTime")
         try:
-            day = datetime.fromtimestamp(float(stamp), ET).date().isoformat()
+            quoted_at = datetime.fromtimestamp(float(stamp), ET)
         except (TypeError, ValueError, OverflowError, OSError):
-            day = datetime.now(ET).date().isoformat()
+            continue
+        if quoted_at.date() != now.astimezone(ET).date() or quoted_at > now + timedelta(seconds=15):
+            continue
+        day = quoted_at.date().isoformat()
         example = f"$1,000 of {sym} would now be worth about ${1000 * price / prev:,.0f}."
         out.append({"key": f"move|{sym}|{day}|{'up' if change > 0 else 'down'}|{band}", "kind": "watch_move",
                     "ticker": sym, "level": "warning" if abs(change) >= 2 * move_pct else "info", "change": change,
@@ -194,7 +198,7 @@ def run(desk, *, now: datetime | None = None, force_earnings: bool = False) -> d
             try:
                 import data_sources
                 moves = move_alerts({s: q for s, q in (data_sources.yahoo_quote_batch(symbols, timeout=10) or {}).items()
-                                     if s in symbols}, settings["move_pct"])
+                                     if s in symbols}, settings["move_pct"], now=now)
                 candidates += limit_moves(moves, settings["move_pct"], raw["sent"])
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"prices unavailable ({type(exc).__name__})")
@@ -213,20 +217,27 @@ def run(desk, *, now: datetime | None = None, force_earnings: bool = False) -> d
         import desk_alerts
         fresh = []
         stamp = now.isoformat()
-        for alert in candidates:
-            if alert["key"] in raw["sent"]:
-                continue
-            raw["sent"][alert["key"]] = stamp
-            for covered in alert.get("covers") or []:
-                raw["sent"][covered] = stamp
-            desk_alerts.emit(alert["kind"], alert["message"], level=alert["level"], dedupe_key=alert["key"],
-                             detail={"ticker": alert["ticker"], "url": alert.get("url"), "source": "watch_alerts"})
-            fresh.append({"at": stamp, **{k: alert.get(k) for k in ("kind", "ticker", "message", "url")}})
-        cutoff = (now - timedelta(days=KEEP_SENT_DAYS)).isoformat()
-        raw["sent"] = {k: v for k, v in raw["sent"].items() if str(v) >= cutoff}
-        raw["history"] = (fresh + raw["history"])[:50]
-        save(desk, raw)
         with _lock:
+            # A settings save during slow data collection wins. Never overwrite it
+            # with the snapshot from before the network requests or emit obsolete alerts.
+            current = load(desk)
+            if current["settings"] != settings or not current["settings"]["enabled"]:
+                _state.update(last_run=stamp, last_error=None, last_earnings=0.0)
+                return status(desk)
+            raw = current
+            for alert in candidates:
+                if alert["key"] in raw["sent"]:
+                    continue
+                raw["sent"][alert["key"]] = stamp
+                for covered in alert.get("covers") or []:
+                    raw["sent"][covered] = stamp
+                desk_alerts.emit(alert["kind"], alert["message"], level=alert["level"], dedupe_key=alert["key"],
+                                 detail={"ticker": alert["ticker"], "url": alert.get("url"), "source": "watch_alerts"})
+                fresh.append({"at": stamp, **{k: alert.get(k) for k in ("kind", "ticker", "message", "url")}})
+            cutoff = (now - timedelta(days=KEEP_SENT_DAYS)).isoformat()
+            raw["sent"] = {k: v for k, v in raw["sent"].items() if str(v) >= cutoff}
+            raw["history"] = (fresh + raw["history"])[:50]
+            save(desk, raw)
             _state.update(last_run=stamp, last_error="; ".join(errors) or None, symbols=len(symbols))
         return status(desk)
     finally:

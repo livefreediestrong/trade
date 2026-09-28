@@ -26,6 +26,8 @@ def setup_label(key: str) -> str:
 
 def _net_bps(row: dict[str, Any]) -> float | None:
     for value in (row.get("outcome_executable_move_bps"),):
+        if isinstance(value, bool):
+            continue
         try:
             n = float(value)
         except (TypeError, ValueError):
@@ -47,9 +49,18 @@ def _verdict(calls: int, avg: float | None) -> tuple[str, str]:
 
 def scorecard(rows: list[dict[str, Any]], *, days: int = 30, now: datetime | None = None) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
-    cutoff = (now - timedelta(days=days)).isoformat()
-    scored = [r for r in rows if r.get("outcome_status") == "scored" and not r.get("mock") and not r.get("routed")
-              and str(r.get("ts") or "") >= cutoff]
+    cutoff = now - timedelta(days=days)
+    scored = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("outcome_status") != "scored" or row.get("mock") or row.get("routed"):
+            continue
+        try:
+            stamp = datetime.fromisoformat(str(row.get("ts") or "").replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        # Compare instants, not strings: offsets can put a call outside the window.
+        if stamp.tzinfo is not None and cutoff <= stamp <= now:
+            scored.append(row)
     groups: dict[str, list[dict[str, Any]]] = {}
     stayed_out = {"calls": 0, "right": 0}
     for row in scored:

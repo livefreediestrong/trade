@@ -66,7 +66,8 @@ def test_exits_still_run_in_an_event_window(live, monkeypatch):  # noqa: F811
     live.service.tick()  # buys 2 TEST at 100 before the event
     high_event_now(5)
     now = datetime.now(timezone.utc).isoformat()
-    monkeypatch.setitem(router.__dict__, "get_positions", lambda: {"ok": True, "positions": [{"symbol": "TEST", "qty": 2}]})
+    monkeypatch.setitem(router.__dict__, "get_positions", lambda: {"ok": True, "identity": live.identity,
+        "positions": [{"symbol": "TEST", "qty": 2, "side": "long"}]})
     monkeypatch.setattr(desk, "_broker_position_qty", lambda t: (2.0, None))
     monkeypatch.setitem(router.__dict__, "stock_quote", lambda t: {"ok": True, "fresh": True, "price": 99.0, "bid": 99.0,
                                                                    "source": "IBKR", "market_time": now, "received_at": now})
@@ -252,6 +253,9 @@ def test_option_fills_are_described_as_contracts():
 
 def test_wsb_half_size_carries_over_to_option_contracts(live, monkeypatch):  # noqa: F811
     import auto_live_options
+    cfg=desk.load_config()
+    cfg['live_agent']['auto_options']=auto_live_options.validate(dict(enabled=True,automatic_exits=True))
+    desk.save_config(cfg)
     signal = {"ticker": "TEST", "side": "buy", "signal_price": 100.0, "advisory_size_mult": 0.5}
     monkeypatch.setitem(router.__dict__, "get_account", lambda: {"ok": True, "risk_ready": True, "account": {"day_pnl": 0}})
     monkeypatch.setattr(auto_live_options, "risk_ready_error", lambda book: None)

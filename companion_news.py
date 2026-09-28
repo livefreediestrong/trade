@@ -5,6 +5,7 @@ import copy
 import hashlib
 import html
 import json
+import os
 import re
 import threading
 import time
@@ -19,7 +20,7 @@ import requests
 TTL = 300
 MAX_AGE = 36 * 3600
 MAX_BYTES = 1_000_000
-# Ten complementary sources, not ten independent confirmations of a story.
+# Complementary sources, not independent confirmations of a syndicated story.
 SOURCES = (
     {"id":"cnbc", "name":"CNBC", "kind":"Reporting", "focus":"US markets and business", "group":"CNBC", "home":"https://www.cnbc.com/rss-feeds/", "feeds":["https://www.cnbc.com/id/100003114/device/rss/rss.html"], "domains":["cnbc.com"]},
     {"id":"marketwatch", "name":"MarketWatch", "kind":"Reporting / commentary", "focus":"Market context and investing", "group":"Dow Jones", "home":"https://www.marketwatch.com/rss/", "feeds":["https://feeds.content.dowjones.io/public/rss/mw_topstories"], "domains":["marketwatch.com"]},
@@ -31,6 +32,8 @@ SOURCES = (
     {"id":"bls", "name":"Bureau of Labor Statistics", "kind":"Official release", "focus":"Employment and consumer inflation", "group":"BLS", "home":"https://www.bls.gov/feed/", "feeds":["https://www.bls.gov/feed/empsit.rss","https://www.bls.gov/feed/cpi.rss"], "domains":["bls.gov"]},
     {"id":"eia", "name":"Energy Information Administration", "kind":"Official analysis", "focus":"Energy supply, demand and prices", "group":"EIA", "home":"https://www.eia.gov/tools/rssfeeds/", "feeds":["https://www.eia.gov/rss/todayinenergy.xml"], "domains":["eia.gov"]},
     {"id":"ftc", "name":"Federal Trade Commission", "kind":"Official release", "focus":"Competition and consumer protection", "group":"FTC", "home":"https://www.ftc.gov/stay-connected/rss", "feeds":["https://www.ftc.gov/feeds/press-release.xml"], "domains":["ftc.gov"]},
+    {"id":"bea", "name":"Bureau of Economic Analysis", "kind":"Official release", "focus":"GDP, personal income, spending and international accounts", "group":"BEA", "home":"https://www.bea.gov/news", "feeds":["https://apps.bea.gov/rss/rss.xml"], "domains":["bea.gov"]},
+    {"id":"census", "name":"Census Bureau economic indicators", "kind":"Official release", "focus":"Retail sales, durable goods, housing and trade", "group":"Census Bureau", "home":"https://www.census.gov/about/contact-us/feeds.html", "feeds":["https://www.census.gov/economic-indicators/indicator.xml"], "domains":["census.gov"]},
 )
 
 
@@ -79,7 +82,8 @@ def parse_feed(content: bytes, source: dict, now: float) -> tuple[list[dict], in
         if not title or not link or stamp is None or stamp > now:
             rejected += 1
             continue
-        ident = hashlib.sha256(link.encode()).hexdigest()[:24]
+        # Some official release feeds reuse the same landing page every month.
+        ident = hashlib.sha256(f"{link}|{stamp}".encode()).hexdigest()[:24]
         rows.append({"id":ident,"title":title,"url":link,"published_ts":stamp,
                      "published_at":datetime.fromtimestamp(stamp,timezone.utc).isoformat(),
                      "source_id":source["id"],"source":source["name"],"kind":source["kind"],"group":source["group"]})
@@ -87,12 +91,16 @@ def parse_feed(content: bytes, source: dict, now: float) -> tuple[list[dict], in
 
 
 def fetch_source(source: dict, now: float) -> dict:
-    rows, errors, rejected = [], [], 0
+    rows, errors, rejected, retry_at = [], [], 0, None
+    agent = "NadzeelDesk/1.0 personal local RSS reader"
+    contact_key = {"bls": "BLS_USER_AGENT", "sec": "EDGAR_USER_AGENT"}.get(source["id"])
+    if contact_key:
+        agent = os.environ.get(contact_key, "").strip() or agent
     for url in source["feeds"]:
         try:
             # Fixed publisher endpoints only; no user-provided URL is fetched.
             with requests.get(url, timeout=(3,12), stream=True,
-                              headers={"User-Agent":"NadzeelDesk/1.0 personal local RSS reader"}) as r:
+                              headers={"User-Agent":agent}) as r:
                 r.raise_for_status()
                 chunks, total, began = [], 0, time.monotonic()
                 for chunk in r.iter_content(16384):
@@ -103,13 +111,24 @@ def fetch_source(source: dict, now: float) -> dict:
             items, excluded = parse_feed(b"".join(chunks), source, now)
             rows.extend(items); rejected += excluded
         except requests.HTTPError as exc:
-            errors.append("HTTP "+str(exc.response.status_code))
+            status = exc.response.status_code if exc.response is not None else None
+            errors.append("HTTP " + str(status))
+            if status in (429, 503):
+                value = exc.response.headers.get("Retry-After", "")
+                try:
+                    delay = float(value)
+                    due = now + delay if 0 <= delay < float("inf") else now + TTL
+                except (TypeError, ValueError):
+                    due = published(value) or now + TTL
+                retry_at = max(retry_at or 0, now + TTL, due)
         except requests.RequestException:
             errors.append("Connection unavailable")
         except (ET.ParseError, ValueError):
             errors.append("Invalid or unsupported feed")
+    if not rows and rejected and not errors:
+        errors.append("No entries have a valid source link and publication time")
     return {"items":rows,"checked_at":now,"status":"partial" if rows and errors else "unavailable" if errors else "connected",
-            "error":"; ".join(errors) or None,"rejected":rejected}
+            "error":"; ".join(errors) or None,"rejected":rejected,"retry_at":retry_at}
 
 
 class HeadlineDesk:
@@ -145,10 +164,20 @@ class HeadlineDesk:
     def _work(self):
         try:
             now = time.time()
+            with self.lock:
+                previous = copy.deepcopy(self.cache)
+            def read(source):
+                saved = previous.get(source["id"], {})
+                retry = saved.get("retry_at")
+                if isinstance(retry, (int, float)) and now < retry < float("inf"):
+                    return saved  # Respect the publisher's retry time across restarts.
+                return fetch_source(source, now)
             with ThreadPoolExecutor(max_workers=4,thread_name_prefix="headline-feed") as pool:
-                results = list(pool.map(lambda s: fetch_source(s,now), SOURCES))
+                results = list(pool.map(read, SOURCES))
             with self.lock:
                 for source,result in zip(SOURCES,results):
+                    prior = self.cache.get(source["id"], {})
+                    result["last_good_at"] = result.get("checked_at") if result.get("status") in ("connected", "partial") else prior.get("last_good_at")
                     # A failed refresh never passes older cached articles off as newly fetched.
                     if result["status"] == "unavailable":
                         result["items"] = self.cache.get(source["id"],{}).get("items", [])
@@ -183,6 +212,9 @@ class HeadlineDesk:
             providers.append({k:source[k] for k in ("id","name","kind","focus","group","home")}|{
                 "status":result.get("status","waiting") if current or not checked else "stale",
                 "error":result.get("error"),"checked_at":checked,"recent":len(eligible),
+                "retry_at":result.get("retry_at"),
+                "last_good_at":result.get("last_good_at"),
+                "next_at":max(result.get("retry_at") or 0, (checked + TTL) if isinstance(checked,(int,float)) else 0) or None,
                 "latest_published_at":max((r.get("published_at","") for r in result.get("items",[])),default=None),
                 "rejected":result.get("rejected",0)})
             for row in eligible:

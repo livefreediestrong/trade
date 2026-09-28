@@ -28,7 +28,7 @@ setImmediate(()=>{
  assert.equal(nodes['dd-notes'].children[0].id,'dd-note-x');assert.equal(nodes['dd-notes'].children[0].tabIndex,-1);
  assert.equal(nodes['dd-chores'].children[0].id,'dd-chore-wsb','thought links have stable source rows');
  const event=nodes['dd-events'].children[0];assert.ok(!event.children.some(c=>c.tag==='a'),'unsafe links are not links');
- assert.match(nodes['dd-events-note'].textContent,/bls \(HTTP 503\)/);
+ assert.match(nodes['dd-events-note'].textContent,/Not loading: BLS jobs & inflation calendar — .*HTTP 503/);
  assert.equal(nodes['dd-wsb'].children[0].children[3].textContent,'75% bear');assert.equal(nodes['dd-wsb'].children[0].children[2].textContent,'building');
  assert.equal(dispatched.type,'desk:day');assert.equal(dispatched.detail,snap);
  console.log('Desk day panel: text-only rendering, positions, notes, events with safe links, WSB lean and companion event passed.');

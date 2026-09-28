@@ -2,9 +2,9 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\Register-AutoUpkeep.ps1 -Register
 #   ... -Unregister     removes both tasks
 # Watchdog: every 5 min - relaunches the desk only if unreachable, or runs the
-#           normal launcher (Gateway check) if the broker socket is down.
-# Daily:    16:40 local - archive root clutter, prune old _archive items,
-#           roll oversized logs, SQLite checkpoint/quick_check, run tests,
+#           desk's guarded Gateway check if the broker socket is down.
+# Daily:    16:40 local - verified backup before logs and SQLite housekeeping;
+#           test changed builds after close, retain source/archive files,
 #           write data\upkeep\last_daily.json, flag problems in TASKS.md.
 # Neither task edits config, orders, sessions or broker settings.
 param(
@@ -40,7 +40,7 @@ try {
   Register-ScheduledTask -TaskName $Names.Watchdog -Action $wdAction -Trigger $wdTrigger -Settings $settings `
     -Description 'Tomahawk desk watchdog: relaunch if unreachable; never touches trading state' -Force | Out-Null
   Register-ScheduledTask -TaskName $Names.Daily -Action $dAction -Trigger $dTrigger -Settings $settings `
-    -Description 'Tomahawk desk daily upkeep: archive, prune, logs, SQLite, tests, report' -Force | Out-Null
+    -Description 'Tomahawk desk daily upkeep: backup first, logs, SQLite, changed-build tests after close, report' -Force | Out-Null
   Write-Host "Registered $($Names.Watchdog) and $($Names.Daily)."
 } catch {
   Write-Warning "Register-ScheduledTask failed: $($_.Exception.Message) - trying schtasks"

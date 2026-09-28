@@ -13,3 +13,5 @@ Settings page → **Watchlist alerts**. Every 5 minutes the desk checks the stoc
 - Each alert is sent once. Its key (symbol, day, direction and size band, earnings date or headline) is remembered for 7 days in `data/watch_alerts.json`, so a restart does not repeat it.
 - **Notification only (owner decision):** alerts never place, size or block a trade. Their settings are stored apart from trading configuration.
 - Routes: `GET/POST /api/watch-alerts` (settings: `enabled`, `move_pct` 1–50, `earnings_days` 0–14, `news`), `POST /api/watch-alerts/check` (check now). The background check is skipped when `TOMAHAWK_NO_BG=1`.
+
+Quotes without a usable provider timestamp, from a previous Eastern date, or from the future cannot produce a "today" move alert. If alert settings change while sources load, the saved settings win and that obsolete batch is discarded. This prevents a slow refresh from silently turning alerts back on.

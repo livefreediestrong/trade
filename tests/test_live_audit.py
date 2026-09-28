@@ -17,7 +17,7 @@ from test_execution_repairs import execution
 
 # Initialize Windows' local event-loop socket pair before network denial fixtures.
 asyncio.set_event_loop(asyncio.new_event_loop())
-from ib_insync import IB, Stock, Order, OrderState, OrderStatus, Trade, Execution, Fill, CommissionReport
+from ib_async import IB, Stock, Order, OrderState, OrderStatus, Trade, Execution, Fill, CommissionReport
 
 
 BASE = "http://127.0.0.1:5056"

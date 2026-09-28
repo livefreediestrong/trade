@@ -69,8 +69,8 @@
       if($('moss-trades-summary'))$('moss-trades-summary').innerHTML=Object.entries(j.real.by_currency).map(([currency,r])=>`<p>${esc(currency)} · broker-reported realized P&L ${Number(r.broker_realized_pnl).toFixed(2)} (${r.pnl_missing} missing) · reported fees ${Number(r.fees_reported).toFixed(2)} (${r.fees_missing} missing)</p>`).join('')+`<p class="hint-line">${esc(j.real.note)}</p>`;
       if($('moss-trades-rows'))$('moss-trades-rows').innerHTML=j.executions.length?`<table><thead><tr><th>Time / instrument</th><th>Side / quantity</th><th>Price</th><th>Fee</th><th>Broker P&L</th><th>Record</th></tr></thead><tbody>${j.executions.map(r=>`<tr><td>${esc(new Date(r.ts).toLocaleString())}<br>${esc(instrument(r))}</td><td>${esc(r.side)} · ${esc(r.shares)} ${r.asset_type==='OPT'?'contracts':'shares'}</td><td>${esc(r.price)} ${esc(r.currency)}</td><td>${r.commission==null?'Unknown':esc(r.commission)+' '+esc(r.commission_currency)}</td><td>${r.broker_realized_pnl==null?'Unknown':esc(r.broker_realized_pnl)}</td><td>${r.superseded_by?'Corrected':esc(r.source)}<br>${r.reference_slippage_bps==null?'Slippage unavailable':esc(r.reference_slippage_bps)+' bps vs recorded quote'}</td></tr>`).join('')}</tbody></table>`:'<p>No real fills have been exposed to this journal yet.</p>';
     }
-    txt('moss-title', `${s.settings.name} · your research companion`);
-    txt('moss-mode-note',`Desk execution mode: ${s.desk_execution_mode}. Moss test plan: not armed.`);
+    txt('moss-title', `${(s.settings.name === "Moss" ? "Changing Woman" : s.settings.name)} · your research companion`);
+    txt('moss-mode-note',`Desk execution mode: ${s.desk_execution_mode}. Practice plan: not armed.`);
     txt('moss-status',issue ? 'Research needs attention' : w?.active ? `Paper workday · ${w.busy?'researching':w.phase.replaceAll('_',' ')}` : s.busy ? 'Writing research notebook' : !s.settings.enabled ? 'Daily notebook paused' : s.market_open ? 'Market open · observing' : 'Market closed · resting');
     const last=s.briefs[0];
     txt('moss-insight', issue || last?.summary || 'We can control our preparation and our risk. There is no need to force a trade to meet a target.');
@@ -90,7 +90,7 @@
     if($('moss-weights'))$('moss-weights').innerHTML=trained?.weights?.length ? `<p>${trained.qualified_samples} qualified outcomes · version ${esc(trained.version)}</p><div class="table-wrap"><table><thead><tr><th>Stock / model / setup</th><th>Horizon</th><th>Samples</th><th>Weight</th><th>Mean net move</th></tr></thead><tbody>${trained.weights.map(w=>`<tr><td>${esc(w.ticker)} / ${esc(w.model)} / ${esc(w.setup)} / ${esc(w.side)}<br>${esc(w.workspace)}</td><td>${esc(w.horizon_min)} min</td><td>${w.samples}</td><td>${w.weight}${w.active_for_ranking?'':' · neutral until 20 samples'}</td><td>${esc(w.mean_net_bps)} basis points</td></tr>`).join('')}</tbody></table></div>`:'No qualified outcomes yet. No strategy weights have been learned; no skill level is invented.';
     if(!initialized) {
       if($('moss-settings-form')){
-        $('moss-name').value=s.settings.name; $('moss-goal').value=s.settings.daily_target;
+        $('moss-name').value=(s.settings.name === "Moss" ? "Changing Woman" : s.settings.name); $('moss-goal').value=s.settings.daily_target;
         $('moss-enabled').checked=s.settings.enabled; $('moss-model').checked=s.settings.use_model; $('moss-shorts').checked=s.settings.research_short_selling;
       }
       if($('automation-form')){

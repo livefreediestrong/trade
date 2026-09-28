@@ -1,0 +1,20 @@
+<section id="research-live" class="desk-module" aria-labelledby="research-live-heading">
+ <h2 id="research-live-heading" class="module-title">Use research with real money</h2>
+ <p>Fox can use the shared news evidence, past setup results and reference library when evaluating real-money trades. Research supplies context; current prices, account checks and your saved limits still decide whether an order can proceed.</p>
+ <p>To let Fox trade automatically, review the connected account and saved limits below. Opening this review does not start trading. Practice results and paper sizing rules stay separate from real-money results and limits.</p>
+ <div class="inline-actions"><button id="research-live-review" type="button" class="btn">Review and arm live trading</button> <a href="/desk/auto#live-agent">Open Fox's live settings and status</a></div>
+ <p id="research-live-message" role="status">No activation review is open.</p>
+ <form id="research-live-confirm" hidden>
+  <h3 id="research-live-account" tabindex="-1"></h3>
+  <p id="research-live-effect"></p>
+  <dl id="research-live-limits"></dl>
+  <p id="research-live-open-limits"></p>
+  <p id="research-live-universe"></p>
+  <p id="research-live-options"></p>
+  <details><summary>Other saved controls</summary><dl id="research-live-details"></dl></details>
+  <p id="research-live-expiry"></p>
+  <label class="chk"><input id="research-live-ack" type="checkbox" /> I reviewed this account and these limits. I understand eligible orders can follow automatically after I arm Fox.</label>
+  <label><span id="research-live-word">Type the account confirmation word</span><input id="research-live-typed" type="text" autocomplete="off" spellcheck="false" maxlength="5" required /></label>
+  <div class="inline-actions"><button id="research-live-start" type="submit" disabled>Confirm and arm</button> <button id="research-live-cancel" type="button">Close review</button></div>
+ </form>
+</section>

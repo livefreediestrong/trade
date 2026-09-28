@@ -13,6 +13,7 @@ import os
 import re
 import copy
 import random
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -40,7 +41,7 @@ except Exception:
     _fallback_load_env()
 
 DEFAULT_MODEL = "gemini-3.6-flash"
-PROMPT_VERSION = "thesis-v2-evidence"
+PROMPT_VERSION = "thesis-v3-context"
 THESIS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -220,6 +221,25 @@ def _read_usage() -> dict:
         data = json.loads(USAGE_PATH.read_text(encoding="utf-8"))
         if not isinstance(data, dict) or not isinstance(data.get("days"), dict):
             raise ValueError("invalid usage ledger")
+        for day in data["days"].values():
+            if not isinstance(day, dict) or not isinstance(day.get("providers"), dict):
+                raise ValueError("invalid usage day")
+            if not isinstance(day.get("scopes", {}), dict) or not isinstance(day.get("reservations", {}), dict):
+                raise ValueError("invalid usage collections")
+            for subtotal in [day, *day.get("scopes", {}).values()]:
+                if not isinstance(subtotal, dict):
+                    raise ValueError("invalid usage subtotal")
+                cost, count = subtotal.get("model_usd"), subtotal.get("calls")
+                if (isinstance(cost, bool) or not isinstance(cost, (int, float)) or not math.isfinite(cost) or cost < 0
+                        or isinstance(count, bool) or not isinstance(count, int) or count < 0):
+                    raise ValueError("invalid usage totals")
+            for row in day.get("reservations", {}).values():
+                if (not isinstance(row, dict) or row.get("status") not in ("pending", "unknown", "settled")
+                        or not isinstance(row.get("scope"), str) or not row["scope"]):
+                    raise ValueError("invalid reservation")
+                estimate = row.get("estimate_usd")
+                if isinstance(estimate, bool) or not isinstance(estimate, (int, float)) or not math.isfinite(estimate) or estimate <= 0:
+                    raise ValueError("invalid reservation estimate")
     except FileNotFoundError:
         data = {"tracking_since": _time.time(), "days": {}}
     except (OSError, ValueError) as exc:
@@ -334,6 +354,7 @@ def _gemini_generate(
     timeout_sec: float = 45,
     response_schema: Optional[dict] = None,
     max_output_tokens: Optional[int] = None,
+    bounded_reasoning: bool = False,
 ) -> str:
     """Call Gemini generateContent REST. Raises RuntimeError on hard failures."""
     cfg = cfg or load_llm_config()
@@ -363,6 +384,10 @@ def _gemini_generate(
             body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": level}
     else:
         body["generationConfig"] = {"temperature": 0.5}
+        if bounded_reasoning:
+            level = gemini_thinking_level(model)
+            if level:
+                body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": level}
 
     if max_output_tokens is not None:
         if isinstance(max_output_tokens, bool) or not isinstance(max_output_tokens, int) or not 1 <= max_output_tokens <= 8192:
@@ -377,21 +402,27 @@ def _gemini_generate(
         timeout = 45.0
 
     deadline = _time.monotonic() + timeout
+    estimate = estimate_gemini_cost(model=model, input_tokens=len(prompt.encode()) + len((system or "").encode()),
+                                   output_tokens=max_output_tokens or 8192)
     for attempt in range(3):
         remaining = deadline - _time.monotonic()
         if remaining <= 0:
             raise RuntimeError("llm_timeout")
         _GEMINI_BUDGET.acquire()  # Every HTTP attempt consumes the persistent budget.
+        reservation = reserve_model_attempt(estimate, model=model)
         try:
             r = requests.post(url, json=copy.deepcopy(body),
                               headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
                               timeout=remaining)
         except requests.Timeout as exc:
+            settle_model_attempt(reservation)
             raise RuntimeError("llm_timeout") from exc
         except requests.RequestException as exc:
+            settle_model_attempt(reservation)
             raise RuntimeError(f"gemini_request_failed: {redact_secrets(str(exc), api_key)}") from exc
         if r.status_code == 200:
             break
+        settle_model_attempt(reservation)  # No usage receipt: retain an unknown estimate, including retries.
         try:
             err = r.json()
             detail = (err.get("error") or {}).get("message") or str(err)[:200]
@@ -419,19 +450,19 @@ def _gemini_generate(
     try:
         data = r.json()
     except Exception as exc:
-        _note_call_cost(estimate_gemini_cost(model=model), "gemini_bad_json")
+        settle_model_attempt(reservation)
         raise RuntimeError("gemini_bad_json") from exc
 
-    usage = data.get("usageMetadata") or {}
-    _note_call_cost(
-        estimate_gemini_cost(
-            model=model,
-            input_tokens=usage.get("promptTokenCount"),
-            output_tokens=(usage.get("candidatesTokenCount") or 0) + (usage.get("thoughtsTokenCount") or 0)
-            if usage else None,
-        ),
-        "gemini", model=data.get("modelVersion") or model,
-    )
+    usage = data.get("usageMetadata") if isinstance(data, dict) else None
+    known = isinstance(usage, dict) and "promptTokenCount" in usage and all(
+        isinstance(usage.get(k, 0), int) and not isinstance(usage.get(k, 0), bool) and usage.get(k, 0) >= 0
+        for k in ("promptTokenCount", "candidatesTokenCount", "thoughtsTokenCount"))
+    cost = estimate_gemini_cost(model=model, input_tokens=usage["promptTokenCount"],
+                               output_tokens=usage.get("candidatesTokenCount", 0) + usage.get("thoughtsTokenCount", 0)) if known else None
+    settle_model_attempt(reservation, cost)
+    _CALL_COST.last = cost if cost is not None else estimate
+    if not isinstance(data, dict):
+        raise RuntimeError("gemini_bad_json")
 
     _CALL_COST.last_model = data.get("modelVersion") or model
     candidates = data.get("candidates") or []
@@ -797,21 +828,106 @@ class cost_scope:
     desk-wide total, so paper Moss spending can never pause live research.
     """
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, *, scope_cap=None, total_cap=None) -> None:
         self.name, self.prev = str(name), None
+        self.limits = {"scope_cap": scope_cap, "total_cap": total_cap}
 
     def __enter__(self):
         self.prev = getattr(_COST_SCOPE, "name", None)
+        self.prev_limits = getattr(_COST_SCOPE, "limits", {})
         _COST_SCOPE.name = self.name
+        _COST_SCOPE.limits = self.limits
         return self
 
     def __exit__(self, *exc):
         _COST_SCOPE.name = self.prev
+        _COST_SCOPE.limits = self.prev_limits
         return False
 
 
 def current_cost_scope() -> str | None:
     return getattr(_COST_SCOPE, "name", None)
+
+
+# Identifies reservations made by this process; others can no longer settle.
+_PROCESS_ID = uuid.uuid4().hex
+
+
+def _committed_usage(data, day_key, scope=None):
+    day = data["days"][day_key]
+    base = day if scope is None else day.get("scopes", {}).get(scope, {})
+    spent = float(base.get("model_usd", 0))
+    reserved = unknown = 0.
+    for key, entry in data["days"].items():
+        for row in entry.get("reservations", {}).values():
+            if scope is not None and row["scope"] != scope:
+                continue
+            # This process's in-flight calls count on every day, including across
+            # midnight. A reservation left pending by an earlier process (restart
+            # or crash mid-call) can never settle: keep its estimate as an unknown
+            # charge on its dispatch day instead of on every future day.
+            if row["status"] == "pending" and row.get("process") == _PROCESS_ID:
+                reserved += float(row["estimate_usd"])
+            elif key == day_key and row["status"] in ("pending", "unknown"):
+                unknown += float(row["estimate_usd"])
+    if any(not math.isfinite(v) or v < 0 for v in (spent, reserved, unknown)):
+        raise RuntimeError("model_usage_unavailable")
+    return {"reserved_usd": round(reserved, 6), "unknown_cost_usd": round(unknown, 6),
+            "committed_usd": round(spent + reserved + unknown, 6)}
+
+
+def reserve_model_attempt(estimate, *, model):
+    """Atomically reserve each HTTP attempt across the desk's worker threads."""
+    amount = float(estimate)
+    if not math.isfinite(amount) or amount <= 0:
+        raise RuntimeError("model_cost_estimate_unavailable")
+    scope = current_cost_scope() or "desk"
+    limits = getattr(_COST_SCOPE, "limits", {})
+    with _USAGE_LOCK:
+        data = _read_usage()
+        day_key = _usage_day()
+        for key, group in (("scope_cap", scope), ("total_cap", None)):
+            cap = limits.get(key)
+            if cap is None:
+                continue
+            if isinstance(cap, bool) or not math.isfinite(float(cap)) or float(cap) < 0:
+                raise RuntimeError("model_budget_unavailable")
+            if _committed_usage(data, day_key, group)["committed_usd"] + amount > float(cap) + 1e-9:
+                raise RuntimeError("model_dollar_budget_exceeded")
+        ident = uuid.uuid4().hex
+        data["days"][day_key].setdefault("reservations", {})[ident] = {
+            "estimate_usd": amount, "scope": scope, "model": model,
+            "status": "pending", "started_at": _time.time(), "process": _PROCESS_ID}
+        _write_usage(data)
+        return day_key, ident
+
+
+def settle_model_attempt(reservation, cost=None):
+    """Settle once on the dispatch day; unknown failures retain estimated cost."""
+    with _USAGE_LOCK:
+        data = _read_usage()
+        day = data["days"][reservation[0]]
+        row = day["reservations"][reservation[1]]
+        if row["status"] != "pending":
+            raise RuntimeError("model_reservation_already_settled")
+        if cost is None:
+            row["status"] = "unknown"
+        else:
+            add = float(cost)
+            if not math.isfinite(add) or add < 0:
+                raise RuntimeError("model_cost_unavailable")
+            _add_model_cost(day, add, row["model"], row["scope"])
+            row.update(status="settled", cost_usd=add)
+        _write_usage(data)
+
+
+def _add_model_cost(day, add, model, scope):
+    day["model_usd"] = round(day["model_usd"] + add, 6)
+    day["calls"] += 1
+    for collection, key in (("models", model), ("scopes", scope)):
+        subtotal = day.setdefault(collection, {}).setdefault(key, {"model_usd": 0, "calls": 0})
+        subtotal["model_usd"] = round(subtotal["model_usd"] + add, 6)
+        subtotal["calls"] += 1
 
 
 def record_model_cost(usd: float, *, meta: Optional[dict] = None) -> float:
@@ -822,16 +938,9 @@ def record_model_cost(usd: float, *, meta: Optional[dict] = None) -> float:
     with _USAGE_LOCK:
         data = _read_usage()
         day = data["days"][_usage_day()]
-        day["model_usd"] = round(day["model_usd"] + add, 6)
-        day["calls"] += 1
         name = str((meta or {}).get("model") or (meta or {}).get("brain") or "unknown")
-        subtotal = day.setdefault("models", {}).setdefault(name, {"model_usd": 0, "calls": 0})
-        subtotal["model_usd"] = round(subtotal["model_usd"] + add, 6)
-        subtotal["calls"] += 1
         scope = str((meta or {}).get("scope") or current_cost_scope() or "desk")
-        scoped = day.setdefault("scopes", {}).setdefault(scope, {"model_usd": 0, "calls": 0})
-        scoped["model_usd"] = round(scoped["model_usd"] + add, 6)
-        scoped["calls"] += 1
+        _add_model_cost(day, add, name, scope)
         _write_usage(data)
         return day["model_usd"]
 
@@ -841,11 +950,13 @@ def model_cost_today() -> dict[str, Any]:
         try:
             data = _read_usage()
             day = data["days"][_usage_day()]
+            scopes = set(day.get("scopes", {})) | {r["scope"] for d in data["days"].values() for r in d.get("reservations", {}).values()}
             return {"day": _usage_day(), "model_usd": round(day["model_usd"], 4),
+                    **_committed_usage(data, _usage_day()),
                     "calls": day["calls"], "models": day.get("models", {}),
-                    "scopes": day.get("scopes", {}), "estimated": True,
+                    "scopes": {s: {**day.get("scopes", {}).get(s, {}), **_committed_usage(data, _usage_day(), s)} for s in scopes}, "estimated": True,
                     "persistent": True, "tracking_since": data["tracking_since"],
-                    "pricing_as_of": "2026-09-23", "scope": "Recorded responses since tracking began; excludes earlier usage, taxes and unknown failed-call charges."}
+                    "pricing_as_of": "2026-09-23", "scope": "Estimated response costs plus reserved and unknown attempt costs. Vendor invoices are authoritative; this is not a guaranteed billing ceiling."}
         except (RuntimeError, ValueError, KeyError, TypeError):
             return {"day": _usage_day(), "model_usd": None, "calls": None, "error": "model_usage_unavailable"}
 
@@ -1088,10 +1199,6 @@ def jev_trade_thesis(
                     "flat": "No clear directional edge — abstain",
                 },
             },
-            "confidence": {
-                "type": "noul",
-                "instructions": "How confident is the directional call? (0–1)",
-            },
         },
     }
     try:
@@ -1125,16 +1232,23 @@ def jev_trade_thesis(
     import math
     answers = data.get("answers") if isinstance(data, dict) else None
     side_ans = answers.get("side") if isinstance(answers, dict) else None
-    conf_ans = answers.get("confidence") if isinstance(answers, dict) else None
-    if not isinstance(side_ans, dict) or not isinstance(conf_ans, dict):
+    if not isinstance(side_ans, dict) or side_ans.get("type") != "choice":
         return _empty_thesis("jev-latest", "invalid_jev_schema")
     side = side_ans.get("choice")
-    conf = conf_ans.get("noul")
+    # TypeSafe supplies confidence on the Choice itself. Noul answers are
+    # probabilities of a yes/no question, not confidence in another answer.
+    conf = side_ans.get("confidence")
     if (not isinstance(side, str) or side not in ("buy", "sell", "flat")
             or isinstance(conf, bool) or not isinstance(conf, (int, float))
             or not math.isfinite(conf) or not 0 <= conf <= 1):
         return _empty_thesis("jev-latest", "invalid_jev_schema")
-    probs = side_ans.get("probabilities") if isinstance(side_ans.get("probabilities"), dict) else None
+    probs = side_ans.get("probabilities")
+    if (not isinstance(probs, dict) or set(probs) != {"buy", "sell", "flat"}
+            or any(isinstance(p, bool) or not isinstance(p, (int, float))
+                   or not math.isfinite(p) or not 0 <= p <= 1 for p in probs.values())
+            or not math.isclose(sum(probs.values()), 1.0, abs_tol=.001)
+            or probs[side] < max(probs.values()) - 1e-12):
+        return _empty_thesis("jev-latest", "invalid_jev_schema")
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
     cost = estimate_jev_cost(
         input_tokens=usage.get("input_tokens"),

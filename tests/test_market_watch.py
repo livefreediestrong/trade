@@ -78,6 +78,7 @@ def test_google_story_dedupes_with_the_same_yahoo_story(monkeypatch):
 # --- social_intelligence ----------------------------------------------------
 
 def test_social_rows_sort_by_parsed_time_not_string(monkeypatch):
+    monkeypatch.setattr(social_intelligence.time, "time", lambda: NOW)
     monkeypatch.setenv("SOCIAL_SUBREDDITS", "stocks")
     monkeypatch.setattr(social_intelligence, "_reddit_rows", lambda sub: [])
     monkeypatch.setattr(social_intelligence, "_x_rows", lambda symbols: [])
@@ -88,7 +89,8 @@ def test_social_rows_sort_by_parsed_time_not_string(monkeypatch):
         {"source": "public_rss", "created_at": "Tue, 01 Sep 2026 10:00:00 GMT", "title": "old", "excerpt": "",
          "ticker_candidates": [], "author_hash": "b"}])
     result = social_intelligence.snapshot(["AAPL"], force=True)
-    assert [r["title"] for r in result["items"]] == ["new", "old"]
+    assert [r["title"] for r in result["items"]] == ["new"]
+    assert result["excluded"]["stale"] == 1
 
 
 def test_word_tickers_count_only_as_cashtags():
@@ -208,6 +210,15 @@ def test_x_access_denied_is_explained(xw):
     responses.append(Resp(status=403, payload={"detail": "client-not-enrolled"}))
     x_watcher.poll(["AAPL"], now=T0)
     assert "403" in x_watcher.status()["error"] and "client-not-enrolled" in x_watcher.status()["error"]
+
+
+def test_x_credit_exhaustion_is_not_treated_as_a_connection_retry(xw):
+    calls, responses = xw
+    responses.append(Resp(status=402, payload={"detail": "credits depleted"}))
+    x_watcher.poll(["AAPL"], now=T0)
+    assert "credits" in x_watcher.status()["error"] and "402" in x_watcher.status()["error"]
+    x_watcher.poll(["AAPL"], now=T0 + 3600, force=True)
+    assert len(calls) == 1 and x_watcher._state['backoff_until'] == T0 + 6 * 3600
 
 
 @pytest.mark.parametrize("status", [400, 403])

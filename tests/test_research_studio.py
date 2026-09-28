@@ -197,7 +197,10 @@ def test_scenario_rejects_invalid_inputs(field, value):
 
 
 def test_portfolio_shocks_signed_exposure_missing_marks():
-    book = {"ok": True, "positions": [{"ticker": "A", "shares": 10, "last": 100}, {"ticker": "B", "shares": 5, "last": 100, "side": "short"}, {"ticker": "C", "shares": 4, "last": None}]}
+    book = {"ok": True, "checked_at":datetime.now(timezone.utc).isoformat(), "positions": [
+        {"ticker":"A","shares":10,"last":100,"side":"long","asset_type":"STK","currency":"USD"},
+        {"ticker":"B","shares":5,"last":100,"side":"short","asset_type":"STK","currency":"USD"},
+        {"ticker":"C","shares":4,"last":None,"side":"long","asset_type":"STK","currency":"USD"}]}
     result = studio.portfolio_context(book, {})
     assert result["net_usd"] == 500 and result["gross_usd"] == 1500
     assert result["missing_marks_or_unsupported"] == ["C"] and result["status"] == "partial"

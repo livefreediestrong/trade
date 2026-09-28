@@ -10,6 +10,7 @@ import desk_alerts
 import watch_alerts as wa
 
 BASE = "http://127.0.0.1:5056"
+NOW = datetime(2026, 9, 25, 20, tzinfo=timezone.utc)
 STAMP = datetime(2026, 9, 25, 15, tzinfo=timezone.utc).timestamp()
 
 
@@ -18,13 +19,13 @@ def quote(price, prev=100.0):
 
 
 def test_moves_alert_by_band_with_a_dollar_example():
-    alerts = wa.move_alerts({"AAA": quote(103.5), "BBB": quote(101.0), "CCC": quote(93.0)}, 3.0)
+    alerts = wa.move_alerts({"AAA": quote(103.5), "BBB": quote(101.0), "CCC": quote(93.0)}, 3.0, now=NOW)
     by = {a["ticker"]: a for a in alerts}
     assert set(by) == {"AAA", "CCC"}
     assert "AAA is up 3.5% today" in by["AAA"]["message"] and "$1,000 of AAA would now be worth about $1,035" in by["AAA"]["message"]
     assert by["AAA"]["key"] == "move|AAA|2026-09-25|up|1"
     assert by["CCC"]["key"].endswith("|down|2") and by["CCC"]["level"] == "warning"
-    assert wa.move_alerts({"BAD": {"regularMarketPrice": None}}, 3.0) == []
+    assert wa.move_alerts({"BAD": {"regularMarketPrice": None}}, 3.0, now=NOW) == []
 
 
 def test_earnings_and_news_alerts():
@@ -60,10 +61,10 @@ def fake_desk(tmp_path, monkeypatch):
 
 def test_run_follows_held_stocks_first_and_never_repeats_an_alert(fake_desk):
     assert wa.followed(fake_desk.desk) == ["ZZZ", "AAA", "BBB"]
-    out = wa.run(fake_desk.desk, force_earnings=True)
+    out = wa.run(fake_desk.desk, force_earnings=True, now=NOW)
     kinds = sorted(k for k, _, _ in fake_desk.emitted)
     assert kinds == ["watch_earnings", "watch_move"] and out["notification_only"] and len(out["history"]) == 2
-    wa.run(fake_desk.desk, force_earnings=True)
+    wa.run(fake_desk.desk, force_earnings=True, now=NOW)
     assert len(fake_desk.emitted) == 2  # remembered on disk, not re-sent
 
 
@@ -71,7 +72,7 @@ def test_disabled_alerts_do_nothing_and_routes_save_settings(fake_desk, monkeypa
     raw = wa.load(fake_desk.desk)
     raw["settings"]["enabled"] = False
     wa.save(fake_desk.desk, raw)
-    wa.run(fake_desk.desk, force_earnings=True)
+    wa.run(fake_desk.desk, force_earnings=True, now=NOW)
     assert fake_desk.emitted == []
     import app as desk
     monkeypatch.setattr(desk, "DATA_DIR", fake_desk.desk.DATA_DIR)
@@ -85,10 +86,29 @@ def test_disabled_alerts_do_nothing_and_routes_save_settings(fake_desk, monkeypa
 def test_a_volatile_day_is_grouped_not_flooded_and_cheap_stocks_show_real_prices():
     quotes = {f"S{i}": quote(103 + i * 0.5) for i in range(10)}
     quotes["PENNY"] = quote(0.30, prev=0.34)
-    moves = wa.move_alerts(quotes, 3.0)
+    moves = wa.move_alerts(quotes, 3.0, now=NOW)
     assert moves[0]["ticker"] == "PENNY" and "$0.3400 → $0.3000" in moves[0]["message"] and "11.8%" in moves[0]["message"]
     limited = wa.limit_moves(moves, 3.0, {})
     assert len(limited) == wa.MAX_MOVE_ALERTS + 1
     summary = limited[-1]
     assert summary["message"].startswith("5 more followed stocks moved at least 3% today") and len(summary["covers"]) == 5
     assert wa.limit_moves(moves, 3.0, {m["key"]: "x" for m in moves}) == []
+
+
+def test_unknown_future_or_previous_session_quotes_do_not_become_today_alerts():
+    bad = {str(i): dict(quote(105), regularMarketTime=t) for i, t in enumerate(
+        [None, 'bad', float('inf'), NOW.timestamp()+60, NOW.timestamp()-86400])}
+    assert wa.move_alerts(bad, 3, now=NOW) == []
+
+
+def test_settings_saved_while_a_source_loads_win_and_obsolete_alerts_are_discarded(fake_desk, monkeypatch):
+    import data_sources
+    def during_fetch(*a, **k):
+        raw = wa.load(fake_desk.desk)
+        raw['settings']['enabled'] = False
+        wa.save(fake_desk.desk, raw)
+        return {'AAA': quote(110)}
+    monkeypatch.setattr(data_sources, 'yahoo_quote_batch', during_fetch)
+    result = wa.run(fake_desk.desk, force_earnings=True, now=NOW)
+    assert not result['settings']['enabled'] and fake_desk.emitted == []
+    assert not wa.load(fake_desk.desk)['settings']['enabled']

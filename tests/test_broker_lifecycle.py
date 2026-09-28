@@ -156,6 +156,8 @@ class FakeIB:
             pnl, self._pnl_pending = self._pnl_pending, None
             ibkr._pnl_update(pnl)
     def reqAllOpenOrders(self): return self.trades
+    def openTrades(self):
+        return [t for t in self.trades if t.orderStatus.status not in ("Filled", "Cancelled", "ApiCancelled", "Inactive")]
     def reqCompletedOrders(self, apiOnly=False): return []
     def reqExecutions(self, filters): return []
     def cancelOrder(self, order): self.canceled.append(order)

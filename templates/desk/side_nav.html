@@ -5,19 +5,23 @@
   {% if desk_page == 'overview' %}
     <span class="nav-caption">THIS PAGE</span>
     <a href="#desk-overview">Account</a>
+    <a href="#live-switch">Live trading on / off</a>
     <a href="#market-today">Market today</a>
-    <a href="#beginner-ready">Ready &amp; money</a>
+    <a href="#desk-day">Activity &amp; calendar</a>
+    <a href="#companion-context">Evidence &amp; memory</a>
   {% elif desk_page == 'auto' %}
     <span class="nav-caption">FOX’S WORKSPACE</span>
+    <a href="#live-switch">Live trading on / off</a>
     <a href="#fox-workspace">Live trading status</a>
     <a href="#trading-goals">Goals &amp; milestones</a>
-    {% if config.get('COMPANION_AVAILABLE') %}<a href="#nightly-review">After-close learning</a>{% endif %}
+    <a href="#portfolio-concentration">Holdings concentration</a>
+    <a href="#strategy-scorecard">Strategy scorecard</a>
+    {% if config.get('COMPANION_AVAILABLE') %}<a href="#nightly-review">Daily review</a><a href="#weekly-review">Weekly review</a>{% endif %}
     <a href="#fox-reviews">Top ten under review</a>
     <a href="#fox-calendar-days">Seven-day calendar</a>
-    <a href="#market-today">Market today</a>
-    <a href="#beginner-ready">Ready &amp; money</a>
+    <a href="#beginner-ready">Account data &amp; balances</a>
     <a href="#beginner-moss">What Fox is doing</a>
-    <a href="#live-stock-ticket">Buy or sell</a>
+    <a href="/desk/ticket">Buy or sell ↗</a>
     <a href="#broker-book">Positions</a>
     <a href="#broker-orders-list">Orders</a>
     <a href="#opp-panel">Ideas waiting</a>
@@ -28,13 +32,15 @@
     <a href="#trading-goals">Goals &amp; milestones</a>
     <a href="#paper-research-title">Start / stop</a>
     {% if config.get('OPTIONS_AVAILABLE') %}<a href="/desk/paper#desk-options">Calls &amp; puts</a>{% endif %}
-    {% if config.get('COMPANION_AVAILABLE') %}<a href="/desk/paper#moss-desk">Moss &amp; workday</a>{% endif %}
+    {% if config.get('COMPANION_AVAILABLE') %}<a href="/desk/paper#moss-desk">Changing Woman &amp; workday</a>{% endif %}
   {% elif desk_page == 'research' %}
     <span class="nav-caption">RESEARCH</span>
+    <a href="#company-check">Company check</a>
+    <a href="#strategy-scorecard">Strategy scorecard</a>
     <a href="#desk-research">Records</a>
-    {% if config.get('COMPANION_AVAILABLE') %}<a href="#nightly-review">After-close learning</a>{% endif %}
+    {% if config.get('COMPANION_AVAILABLE') %}<a href="#nightly-review">Daily review</a><a href="#weekly-review">Weekly review</a>{% endif %}
     {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}<a href="#research-studio">Studio</a><a href="/desk/research#stocks-on-sale">On sale</a>{% endif %}
-    {% if config.get('COMPANION_AVAILABLE') %}<a href="#agent-research">Moss brief</a>{% endif %}
+    {% if config.get('COMPANION_AVAILABLE') %}<a href="#agent-research">Changing Woman’s brief</a>{% endif %}
   {% elif desk_page == 'ticket' %}
     <span class="nav-caption">TICKET</span>
     <a href="#live-stock-ticket">Buy or sell</a>
@@ -42,17 +48,20 @@
     <a href="#broker-orders-list">Orders</a>
   {% elif desk_page == 'settings' %}
     <span class="nav-caption">SETTINGS</span>
+    <a href="#connection-summary">Connections &amp; routines</a>
+    <a href="#watch-alerts">Watchlist alerts</a>
     <a href="#desk-settings">All settings</a>
   {% elif desk_page == 'all' %}
     <span class="nav-caption">LEGACY</span>
     <a href="/desk/overview">Use new Overview</a>
-    <a href="/desk/auto">Auto</a>
+    <a href="/desk/fox">Fox</a>
     <a href="/desk/paper">Paper</a>
     <a href="/desk/research">Research</a>
   {% endif %}
   <div class="nav-bottom">
-    <details class="scene-controls desk-module scene-preferences"><summary>Appearance <span aria-hidden="true">⌄</span></summary><div class="scene-preferences-body">
-      <label class="scene-motion-label"><input id="desk-scene-rotate" type="checkbox" checked /> Rotate scenery</label>
+    <details id="desk-appearance" class="scene-controls desk-module scene-preferences"><summary>Appearance <span aria-hidden="true">⌄</span></summary><div class="scene-preferences-body">
+      <div class="experience-preferences"><label>Theme <select id="desk-skin"><option value="desert">Desert</option><option value="plain">Plain</option></select></label><label><input id="desk-portraits" type="checkbox" checked /> Show companion portraits</label><p>The theme changes appearance. Light/dark and the amount of detail are separate choices.</p></div>
+      <label class="scene-motion-label scene-only"><input id="desk-scene-rotate" type="checkbox" checked /> Rotate scenery</label>
       <label for="desk-sky">Desert sky</label><select id="desk-sky"><option value="auto">Follow Eastern time</option><option value="dawn">Dawn</option><option value="day">Day</option><option value="dusk">Dusk</option><option value="night">Night</option></select>
       <label for="desk-landscape">Landscape</label><select id="desk-landscape"><option value="banded">Banded sky</option><option value="clouds">Sculpted clouds</option><option value="earth">Earth &amp; grain</option></select>
       <label class="scene-motion-label"><input id="desk-scene-motion" type="checkbox" checked /> Gentle motion</label>
@@ -64,3 +73,4 @@
   </div>
   </div>
 </nav>
+{% include "desk/companion_chat.html" %}

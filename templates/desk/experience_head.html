@@ -1,0 +1,19 @@
+{# Appearance never changes accounts, orders, or saved form values. #}
+<script>
+try {
+ const r=document.documentElement, p=JSON.parse(localStorage.getItem('desk_appearance_v1')||'{}');
+ r.dataset.skin=['plain','desert'].includes(p.skin)?p.skin:p.skin==null?'desert':'plain';
+ r.dataset.detail=['focused','full'].includes(p.detail)?p.detail:'full';
+ r.dataset.portraits=p.portraits===false?'off':'on';
+} catch (_) { document.documentElement.dataset.skin='plain'; document.documentElement.dataset.detail='full'; }
+</script>
+<link rel="stylesheet" href="/static/theme_desert.css?v=experience-20260926-1" />
+<link rel="stylesheet" href="/static/desk_themes.css?v=experience-20260926-1" />
+<link rel="stylesheet" href="/static/companion_chat.css?v=experience-20260926-1" />
+<script defer src="/static/desk_experience.js?v=experience-20260926-1"></script>
+<script defer src="/static/companion_chat.js?v=experience-20260926-1"></script>
+<script defer src="/static/weekly_review.js?v=experience-20260926-1"></script>
+<script defer src="/static/desk_brief.js?v=account-funds-20260927-1"></script>
+<script defer src="/static/desk_connections.js?v=experience-20260926-1"></script>
+<script defer src="/static/desk_maintenance.js?v=maintenance-20260926-4"></script>
+<script defer src="/static/broker_safety.js?v=commitments-20260927-1"></script>

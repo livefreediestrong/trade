@@ -48,6 +48,34 @@ def test_missing_credentials_is_not_a_public_connection():
     assert 'REDDIT_CLIENT_ID' in buzz._reddit_get('/r/stocks/hot')[1]
 
 
+def test_legacy_json_reuses_cache_and_normalizes_query_suffix(monkeypatch):
+    monkeypatch.setenv('REDDIT_PUBLIC_JSON','1')
+    calls=[]
+    def get(url,**kwargs):
+        calls.append((url,kwargs))
+        return Reply(body={'data': {'children': []}})
+    monkeypatch.setattr(buzz.requests,'get',get)
+    first,error=buzz._reddit_get('/r/stocks/hot.json?limit=5',params={'limit':5})
+    assert error is None
+    first['data']['children'].append('mutation')
+    second,_=buzz._reddit_get('/r/stocks/hot',params={'limit':5})
+    assert second['data']['children']==[] and len(calls)==1
+    assert calls[0][0]=='https://www.reddit.com/r/stocks/hot.json'
+    assert calls[0][1]['allow_redirects'] is False
+    status=buzz.reddit_auth_status()
+    assert status['state']=='public_opt_in' and 'not approved OAuth' in status['message']
+
+
+@pytest.mark.parametrize('code', [403,429])
+def test_legacy_json_denial_cools_down_all_consumers(monkeypatch,code):
+    monkeypatch.setenv('REDDIT_PUBLIC_JSON','1')
+    calls=[]
+    monkeypatch.setattr(buzz.requests,'get',lambda *a,**k:calls.append(1) or Reply(code,headers={'Retry-After':'1800'}))
+    assert buzz._reddit_get('/r/stocks/hot')[0] is None
+    assert buzz._reddit_get('/r/wallstreetbets/new')[0] is None
+    assert len(calls)==1 and buzz.reddit_auth_status()['retry_in_sec']>1790
+
+
 def test_401_renews_once_and_all_readers_share_success(monkeypatch):
     credentials(monkeypatch)
     tokens, reads = [], []

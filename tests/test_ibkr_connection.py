@@ -53,12 +53,15 @@ def test_concurrent_reads_reuse_one_owned_connection_and_reconnect(monkeypatch):
             self.touch()
             return []
         def sleep(self, interval): self.touch()
-    monkeypatch.setitem(sys.modules, 'ib_insync', NS(IB=Client))
+    monkeypatch.setitem(sys.modules, 'ib_async', NS(IB=Client))
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda _: broker.verify_execution_context(), range(8)))
     assert all(result['ok'] for result in results)
     assert len(instances) == 1 and instances[0].connected
-    assert broker.get_positions() == {'ok': True, 'positions': []}
+    holdings = broker.get_positions()
+    assert holdings['ok'] and holdings['positions'] == []
+    assert holdings['identity']['account_id'] == 'DU123' and holdings['identity']['client_id'] == 37
+    assert holdings['checked_at']
     assert len(threads) == 1 and threading.get_ident() not in threads
     assert broker.public_status()['connected']
     broker._on_api_thread(instances[0].disconnect)()
@@ -108,7 +111,7 @@ def test_gateway_outage_backs_off_between_dashboard_reads(monkeypatch):
                         ('_CONNECTION', {'connected':False, 'error':None})):
         monkeypatch.setattr(broker, name, value)
     monkeypatch.setattr(broker.time, 'monotonic', lambda: clock[0])
-    monkeypatch.setitem(sys.modules, 'ib_insync', NS(IB=Client))
+    monkeypatch.setitem(sys.modules, 'ib_async', NS(IB=Client))
     monkeypatch.setenv('IB_CLIENT_ID', '37')
     with pytest.raises(ConnectionError, match='IB Gateway did not answer'): broker._ib()
     for _ in range(5):

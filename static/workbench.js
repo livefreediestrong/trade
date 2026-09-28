@@ -76,11 +76,13 @@
   });
 
   let symbolSequence = 0, symbolAbort, currentChart = null;
-  async function selectSymbol(symbol) {
+  async function selectSymbol(symbol, announce = true) {
+    if (!$('linked-symbol')) return;
     symbol = String(symbol || "").trim().toUpperCase();
     const global = symbol.startsWith('YF:') || /[=^]/.test(symbol) || /^\d/.test(symbol) || /\.(?![AB]$)/.test(symbol) || /-USD$/.test(symbol);
     if (!/^(?:YF:)?[A-Z0-9^][A-Z0-9.^=\-]{0,31}$/.test(symbol)) { text("symbol-status", "Enter a stock symbol or an exact provider identity such as YF:7203.T."); return; }
     $("linked-symbol").value = symbol;
+    if (announce && !global && /^[A-Z][A-Z0-9.\-]{0,9}$/.test(symbol)) window.dispatchEvent(new CustomEvent('desk:research-symbol', {detail:{ticker:symbol,source:'chart'}}));
     symbolAbort?.abort(); symbolAbort = new AbortController();
     const sequence = ++symbolSequence;
     currentChart = null;
@@ -132,6 +134,7 @@
   }
   $("symbol-form")?.addEventListener("submit", e => { e.preventDefault(); selectSymbol($("linked-symbol").value); });
   window.addEventListener('desk:instrument', e => selectSymbol(e.detail.id));
+  window.addEventListener('desk:research-symbol', e => { if(e.detail?.source !== 'chart') selectSymbol(e.detail?.ticker, false); });
   $("chart-window")?.addEventListener("change", drawChart);
   $("chart-inspector")?.addEventListener("input", inspectBar);
   $("linked-watchlist-symbol")?.addEventListener("change", e => { if (e.target.value) selectSymbol(e.target.value); });
@@ -153,6 +156,8 @@
   $("journal-filter")?.addEventListener("input", () => { try { const q = journalQuery(); q.set("format","csv"); $("journal-export").href = `/api/workbench/journal?${q}`; } catch (_) {} });
   $("evaluation-refresh")?.addEventListener("click", e => task(e.currentTarget,"evaluation-results",async()=>{
     const result = await api("/api/workbench/evaluation");
+    const v=result.policy_validation;
+    if(v&&$("policy-validation"))$("policy-validation").textContent=v.note+' '+(v.groups.length?v.groups.map(g=>g.policy_hash.slice(0,10)+': '+g.state+' · earlier '+g.earlier.samples+' / later '+g.later.samples+' · later mean '+g.later.mean_net_bps+' bps · sequence drawdown '+g.later.sequence_drawdown_bps+' bps').join(' | '):'No eligible prospective receipts yet.')+' Exclusions: '+JSON.stringify(v.exclusions);
     $("evaluation-results").innerHTML = result.groups.length ? table(["Model / prompt","Workspace","Horizon s","Calls","Scored","Coverage","Abstained","After-cost positive","Brier","Evidence"], result.groups.map(g=>[`${g.model} / ${g.prompt_version}`,g.workspace,g.horizon_sec,g.decisions,g.scored,pct(g.coverage),pct(g.abstention_rate),pct(g.win_rate),fmt(g.brier,4),g.evidence])) : "No captured decisions yet.";
   }));
   function showExperiments(result) {

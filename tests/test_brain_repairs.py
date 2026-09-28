@@ -19,6 +19,7 @@ import session_track
 def isolated(tmp_path, monkeypatch):
     for name in ("CONFIG", "LEDGER", "SIGNALS", "JOURNAL", "LESSONS"):
         monkeypatch.setattr(desk, name + "_PATH", tmp_path / (name.lower() + ".json"))
+    monkeypatch.setattr(desk, "DATA_DIR", tmp_path)
     monkeypatch.setattr(desk, "_decision_ring", paper_loop.DecisionRing(tmp_path / "decisions.json"))
     monkeypatch.setattr(desk, "_QUOTE_SNAPSHOTS", {})
     monkeypatch.setattr(llm, "USAGE_PATH", tmp_path / "usage.json")
@@ -119,6 +120,10 @@ def test_shared_research_records_inputs_and_outcome_for_all_paths(source, monkey
     assert row["source"] == source and row["shadow"]["method"] == row["advisory"]["method"] == "fixture"
     assert row["input_hash"] and row["requested_model"] and row["prompt_version"]
     assert "research_evidence" in seen[0] and row["execution_attempted"] is False
+    references = seen[0]["companion_context"]["reference_library"]
+    assert references["kind"] == "reference_knowledge_not_trading_evidence" and 0 < len(references["sources"]) <= 3
+    assert row["inputs"]["companion_context"]["reference_library"] == references
+    assert "companion_context" not in original
     original["quote"]["price"] = 500
     assert row["inputs"]["quote"]["price"] == 100
     assert not desk.load_ledger().get("broker_fills")

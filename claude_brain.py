@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import math
 from typing import Any, Optional
 
 try:
@@ -154,9 +155,13 @@ def decide(analysis: dict, *, horizon_min: int = 20, context_blob: Optional[str]
         "lower, or flat?"
     )
     effort = (os.environ.get("CLAUDE_EFFORT") or "low").strip().lower()
+    reservation = None
     try:
         llm_trader._GeminiBudget(rpm=int(os.environ.get("CLAUDE_RPM") or 30),
                                 daily=int(os.environ.get("CLAUDE_DAILY") or 500), provider="claude").acquire()
+        pin, pout = PRICES.get(model, PRICES[DEFAULT_MODEL])
+        estimate = ((len(prompt.encode()) + len(SYSTEM.encode())) * pin * CACHE_WRITE_MULT + 16000 * pout) / 1e6
+        reservation = llm_trader.reserve_model_attempt(estimate, model=model)
         resp = client.beta.messages.create(**request_params(model, effort, prompt))
     except anthropic.RateLimitError:
         return _hold("claude_rate_limited", model)
@@ -168,12 +173,23 @@ def decide(analysis: dict, *, horizon_min: int = 20, context_blob: Optional[str]
         return _hold("claude_network_error", model)
     except Exception as exc:  # noqa: BLE001
         return _hold(f"claude_error:{type(exc).__name__}", model)
+    finally:
+        if reservation is not None and "resp" not in locals():
+            try:
+                llm_trader.settle_model_attempt(reservation)
+            except Exception:
+                # The durable pending reservation still consumes headroom. An
+                # unavailable ledger must not turn a provider error into a crash.
+                return _hold("model_usage_unavailable", model)
 
-    cost = _cost(getattr(resp, "model", model) or model, getattr(resp, "usage", None))
+    usage = getattr(resp, "usage", None)
+    known = usage is not None and all(isinstance(getattr(usage, k, None), int) and not isinstance(getattr(usage, k), bool)
+                                      and getattr(usage, k) >= 0 for k in ("input_tokens", "output_tokens"))
+    cost = _cost(getattr(resp, "model", model) or model, usage) if known else estimate
     try:
-        llm_trader.record_model_cost(cost, meta={"brain": "claude", "model": getattr(resp, "model", model)})
+        llm_trader.settle_model_attempt(reservation, cost if known and math.isfinite(cost) else None)
     except Exception:
-        pass
+        return _hold("model_usage_unavailable", model)
     if resp.stop_reason != "end_turn":
         out = _hold("claude_refusal" if resp.stop_reason == "refusal" else "claude_incomplete", model)
         out["model_cost_usd"] = cost

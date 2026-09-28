@@ -1,4 +1,4 @@
-"""Tomahawk desk auto upkeep. Stdlib only; run with the desk's .venv python.
+"""Tomahawk desk auto upkeep. Run with the desk's .venv python.
 
     python tools/desk_upkeep.py watchdog   # every few minutes
     python tools/desk_upkeep.py daily      # once a day after the close
@@ -10,8 +10,8 @@ logs Gateway out. Dead schedulers can be recovered in place. An updated running
 desk restarts only through its guarded endpoint while inactive and broker-flat.
 The watchdog runs the normal launcher (without opening Gateway) when the desk
 is unreachable or has completed a guarded stop. When the broker socket is down it asks the running desk, as an
-automatic caller, whether Gateway should be reopened; the desk never reopens a
-Gateway window the owner closed. It never submits orders.
+automatic caller, whether Gateway should be reopened; inactive sessions are
+held by that policy. It never submits orders.
 """
 from __future__ import annotations
 
@@ -28,6 +28,9 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+import code_version
 PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 LAUNCHER = ROOT / "Start-Tomahawk.ps1"
 ARCHIVE = ROOT / "_archive"
@@ -40,14 +43,9 @@ def _env(name: str, default: str) -> str:
     value = os.environ.get(name)
     if value is not None:
         return value
-    env = ROOT / ".env"
-    if env.exists():
-        for line in env.read_text(encoding="utf-8", errors="replace").splitlines():
-            key, sep, raw = line.partition("=")
-            if sep and key.strip() == name:
-                raw = raw.split(" #", 1)[0].strip().strip("'\"")
-                return raw or default
-    return default
+    # Use the same parser as the app: last duplicate wins, quoted # stays data.
+    from dotenv import dotenv_values
+    return dotenv_values(ROOT / ".env").get(name) or default
 
 
 PORT = int(_env("TOMAHAWK_PORT", "5056") or 5056)
@@ -96,9 +94,22 @@ def health(timeout: float = 10.0) -> dict | None:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/health", timeout=timeout) as resp:
             data = json.load(resp)
-        return data if isinstance(data, dict) and data.get("app_id") == "tomahawk-desk" else None
+        return data if matching_instance(data) else None
     except Exception:
         return None
+
+
+def matching_instance(data) -> bool:
+    """Never maintain a different checkout or data directory on the same port."""
+    if not isinstance(data, dict) or data.get("app_id") != "tomahawk-desk" or data.get("port") != PORT:
+        return False
+    instance = data.get("instance") or {}
+    try:
+        source, storage = Path(instance["source_root"]), Path(instance["data_root"])
+        return (source.is_absolute() and storage.is_absolute()
+                and source.resolve() == ROOT.resolve() and storage.resolve() == DATA.resolve())
+    except (TypeError, KeyError, ValueError, OSError):
+        return False
 
 
 def run_launcher(reason: str) -> dict:
@@ -317,14 +328,36 @@ def run_tests() -> dict:
         env.pop(key, None)
     try:
         done = subprocess.run([str(PYTHON), "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider", "-rf",
-                               "--tb=no", "tests"], cwd=ROOT, env=env, capture_output=True, text=True, timeout=900,
+                               "--tb=short", "--color=no", "tests"], cwd=ROOT, env=env, capture_output=True, text=True, timeout=900,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "summary": "test suite timed out (900s)"}
-    lines = [l for l in done.stdout.splitlines() if l.strip()]
+    except subprocess.TimeoutExpired as exc:
+        result = {"ok": False, "summary": "test suite timed out (900s)", "exit_code": None}
+        stdout, stderr = exc.stdout or "", exc.stderr or ""
+    except OSError as exc:
+        return {"ok": False, "summary": f"Test runner could not start ({type(exc).__name__})", "exit_code": None}
+    else:
+        result = {"ok": done.returncode == 0, "exit_code": done.returncode}
+        stdout, stderr = done.stdout or "", done.stderr or ""
+    if isinstance(stdout, bytes): stdout = stdout.decode("utf-8", errors="replace")
+    if isinstance(stderr, bytes): stderr = stderr.decode("utf-8", errors="replace")
+    lines = [l for l in stdout.splitlines() if l.strip()]
     summary = next((l for l in reversed(lines) if " passed" in l or " failed" in l), lines[-1] if lines else "")
     failed = [l[7:] for l in lines if l.startswith("FAILED ")][:20]
-    return {"ok": done.returncode == 0, "summary": summary.strip("= "), "failed": failed}
+    result.setdefault("summary", summary.strip("= ") or "Test runner returned no summary; inspect the local details")
+    result["failed"] = failed
+    # Keep bounded details locally. The read-only API exposes the relative
+    # filename and result, never traceback contents or local environment data.
+    output = stdout + ("\n--- stderr ---\n" + stderr if stderr else "")
+    result["output_truncated"] = len(output) > 200_000
+    name = "test-results/" + now().strftime("%Y%m%dT%H%M%S%f") + ".txt"
+    try:
+        path = UPKEEP / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(result["summary"] + "\n" + output[-200_000:], encoding="utf-8")
+        result["details_file"] = "upkeep/" + name
+    except OSError as exc:
+        result["details_error"] = f"Could not save test details ({type(exc).__name__})"
+    return result
 
 
 TASK_MARK = "<!-- auto-upkeep -->"
@@ -350,6 +383,8 @@ def update_tasks(problems: list[str]) -> None:
 
 def verified_backup() -> dict:
     """The running app captures JSON under its own lock and uses SQLite online backup."""
+    if health() is None:
+        raise ValueError("The expected desk instance could not be verified; backup deferred")
     req = urllib.request.Request(f"http://127.0.0.1:{PORT}/api/backups", data=b"{}",
                                  headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=180) as resp:
@@ -379,10 +414,15 @@ def request_recovery(path: str, body: dict) -> dict:
 def daily(with_tests: bool = True) -> dict:
     started = time.time()
     report = {"at": now().isoformat(), "rules": "never touches config, orders, sessions or broker"}
-    steps = [("archived", archive_root_clutter), ("pruned", prune_archive), ("logs", rotate_logs),
-             ("caches_removed", clean_caches), ("sqlite", sqlite_maintenance),
-             ("backup", verified_backup), ("data_usage_mb", data_usage)]
+    # Preserve recovery evidence before housekeeping. Filename/age alone does
+    # not prove an _archive item is disposable; no unattended recursive cleanup.
+    steps = [("backup", verified_backup), ("logs", rotate_logs),
+             ("sqlite", sqlite_maintenance), ("data_usage_mb", data_usage)]
+    report["cleanup"] = {"skipped": "Source files, archives and caches are retained for manual review"}
     for name, fn in steps:
+        if name in ("logs", "sqlite") and report.get("backup", {}).get("ok") is not True:
+            report[name] = {"skipped": "A verified backup is required before housekeeping"}
+            continue
         try:
             report[name] = fn()
         except Exception as exc:
@@ -392,7 +432,31 @@ def daily(with_tests: bool = True) -> dict:
         "ok": h.get("ok"), "broker": (h.get("broker") or {}).get("connected_label"),
         "connected": (h.get("broker") or {}).get("connected"), "corrupt_files": h.get("corrupt_files"),
         "automation": (h.get("loop") or {}).get("automation_health")}
-    report["tests"] = run_tests() if with_tests else {"skipped": "--no-tests"}
+    # StartWhenAvailable can run yesterday's daily task during today's market.
+    # Do not spend production CPU on a full suite while the session is open or
+    # its state is unknown. Test changed builds after close; retain the receipt.
+    previous = _load("last_tests.json")
+    code = (h or {}).get("code") or {}
+    version = code.get("serving", code.get("started"))
+    suite_version = code_version.test_fingerprint(ROOT)
+    if not with_tests:
+        report["tests"] = {"skipped": "--no-tests"}
+    elif (not h or h.get("ok") is not True or (h.get("code") or {}).get("stale") is not False
+          or (h.get("loop") or {}).get("rth_ok") is not False
+          or (h.get("loop") or {}).get("decision_in_flight") is not False
+          or (h.get("loop") or {}).get("pending_intents") != 0):
+        report["tests"] = {"skipped": "Full tests deferred until the desk is healthy, loaded and outside market hours with no decision or unresolved order in flight"}
+    elif (previous.get("ok") is True and version and previous.get("code") == version
+          and previous.get("test_code") == suite_version):
+        report["tests"] = {"skipped": "This build already passed the upkeep test suite", "last_passed_at": previous.get("at"), "code": version}
+    else:
+        report["tests"] = {**run_tests(), "code": version, "test_code": suite_version, "at": now().isoformat()}
+        # A concurrent edit must not turn a test run into a pass for other code.
+        if code_version.fingerprint(ROOT) != version or code_version.test_fingerprint(ROOT) != suite_version:
+            report["tests"]["ok"] = False
+            report["tests"]["summary"] = "Files changed during testing; run the full suite again on the saved version"
+            report["tests"]["changed_during_run"] = True
+        _save("last_tests.json", report["tests"])
     problems = []
     for name, _ in steps:
         if isinstance(report.get(name), dict) and report[name].get("error"):
@@ -412,7 +476,7 @@ def daily(with_tests: bool = True) -> dict:
     report["seconds"] = round(time.time() - started, 1)
     _save("last_daily.json", report)
     update_tasks(problems)
-    log(f"daily: archived={len(report.get('archived') or [])} pruned={len(report.get('pruned') or [])} "
+    log(f"daily: backup={report.get('backup', {}).get('ok', False)} "
         f"tests={report['tests'].get('summary', report['tests'].get('skipped'))} problems={len(problems)}")
     return report
 

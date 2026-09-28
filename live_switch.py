@@ -1,8 +1,8 @@
 """One plain Live trading ON/OFF switch (docs/LIVE_SWITCH.md).
 
 OFF always returns the desk to `manual`: no broker orders from this desk (no Fox trades,
-no tickets, no automatic exits) and Fox is switched off. OFF needs no confirmation
-because it only removes risk.
+no tickets, no automatic exits) and Fox is switched off. Existing broker positions
+remain exposed; this is a submission switch, not a liquidation or protection action.
 
 ON only ever selects `live_manual` (you approve every order). It can never arm
 `auto_live`; Fox is started separately on the Fox page. ON goes through the same

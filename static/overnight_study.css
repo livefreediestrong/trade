@@ -1,0 +1,17 @@
+#overnight-study .overnight-form { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:16px 0; }
+#overnight-study label { display:flex; flex-direction:column; gap:5px; min-width:0; }
+#overnight-study input, #overnight-study select { width:100%; min-width:0; box-sizing:border-box; }
+#overnight-study .overnight-form button { justify-self:start; align-self:end; }
+#overnight-study [hidden] { display:none!important; }
+#overnight-study .overnight-card { border-top:1px solid var(--border,#566278); margin-top:18px; padding-top:14px; }
+#overnight-study .overnight-scroll { overflow:auto; max-width:100%; }
+#overnight-study table { border-collapse:collapse; min-width:580px; width:100%; font-variant-numeric:tabular-nums; }
+#overnight-study th, #overnight-study td { text-align:right; padding:9px 8px; border-bottom:1px solid var(--border,#566278); }
+#overnight-study th { font-size:.85rem; font-family:inherit; letter-spacing:normal; }
+#overnight-study th:first-child, #overnight-study td:first-child { text-align:left; }
+#overnight-study caption { text-align:left; padding:8px 0; }
+#overnight-study .overnight-method { margin-top:18px; }
+#overnight-study summary { cursor:pointer; padding:8px 0; }
+#overnight-study .overnight-note { overflow-wrap:anywhere; }
+@media(max-width:700px) { #overnight-study .overnight-form { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:440px) { #overnight-study .overnight-form { grid-template-columns:1fr; } }

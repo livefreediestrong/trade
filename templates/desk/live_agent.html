@@ -9,7 +9,61 @@
  <p id="live-agent-result" role="status"></p>
  <p id="live-agent-today"></p>
  <div class="live-agent-positions"><h4>Tracked stock positions</h4><p id="live-agent-managed" class="hint-line keep-visible">Reading tracked positions…</p><ul id="live-agent-position-list" aria-label="Tracked stock positions"></ul></div>
+ <section id="stop-correction-review" aria-labelledby="stop-correction-title" hidden>
+  <h4 id="stop-correction-title">Broker correction review</h4>
+  <p class="hint-line keep-visible">For the IBKR paper account. Pause Fox and end the trading session first. Checking reads the broker's latest information; recording a review leaves trading paused.</p>
+  <ul id="stop-correction-list" aria-label="Broker corrections"></ul>
+  <div id="stop-correction-detail" hidden>
+   <h4 id="stop-correction-heading" tabindex="-1">Check the corrected trade</h4>
+   <p id="stop-correction-account"></p>
+   <div class="table-wrap"><table aria-label="Original and corrected stop fill"><thead><tr><th scope="col">What changed</th><th scope="col">Before</th><th scope="col">Corrected</th></tr></thead><tbody id="stop-correction-comparison"></tbody></table></div>
+   <p id="stop-correction-position"></p>
+   <ul id="stop-correction-issues" aria-label="What still needs attention"></ul>
+   <p id="stop-correction-expiry" class="hint-line keep-visible"></p>
+   <label class="chk"><input type="checkbox" id="stop-correction-ack" /> I checked the changed shares, price and fees.</label>
+   <div class="live-agent-actions"><button class="btn" id="stop-correction-accept" type="button" disabled>Record review · keep paused</button><button class="btn" id="stop-correction-close" type="button">Close review</button></div>
+  </div>
+  <p id="stop-correction-result" role="status" aria-live="polite"></p>
+ </section>
+ <details><summary>Exit and options coverage</summary><p>Automatic exits need this app, Gateway, fresh quotes and an active session. The optional paper-account option test closes confirmed contracts at saved loss, profit or expiry rules. A limit order can remain unfilled. Unexpected option or stock holdings stop new automatic entries and require a broker activity review. The desk does not exercise options or automatically sell shares received through assignment. Broker-paper recovery qualification is still open.</p></details>
+ <div class="option-lifecycle-panel" aria-labelledby="option-lifecycle-heading">
+  <h3 id="option-lifecycle-heading">Options being watched</h3>
+  <p id="option-lifecycle-status" class="hint-line keep-visible">Reading saved option positions…</p>
+  <ul id="option-lifecycle-rows"></ul>
+  <p id="option-review-result" class="hint-line keep-visible" role="status"></p>
+  <div id="option-review-details" hidden>
+   <p id="option-review-evidence" class="hint-line keep-visible"></p>
+   <label>Broker activity date or reference<input id="option-review-reference" type="text" maxlength="200" autocomplete="off" /></label>
+   <label class="chk"><input id="option-review-ack" type="checkbox" /> I checked the broker's activity and resolved this exposure. I understand the original fill accounting is still incomplete.</label>
+   <button id="option-review-save" type="button" disabled>Record review · keep current pause</button>
+   <p class="hint-line keep-visible">This optional review requires Fox and the session to be paused by you. The review button cannot pause trading, place orders or clear a position that still exists at the broker.</p>
+  </div>
+ </div>
+ {% include 'desk/option_activity.html' %}
+ <section id="broker-safety" aria-labelledby="broker-safety-title">
+  <h4 id="broker-safety-title">What protection is at the broker?</h4>
+  <p id="broker-safety-summary" role="status">Waiting for a broker protection check.</p>
+  <small id="broker-safety-time"></small>
+  <ul id="broker-safety-rows" aria-label="Protection and option expiry checks"></ul>
+  <details id="broker-commitments">
+   <summary>All holdings and unfinished orders</summary>
+   <p>Includes the asset types and currencies the broker returns for this account, even if Fox did not open the holding. Buy estimates use only the quantity still waiting to fill. They are not extra cash or a complete account risk calculation.</p>
+   <p>A limit buy sets the highest price you will pay. A standalone order is not linked to another order. This view estimates supported US-dollar stock and option limit buys; other order costs stay unknown.</p>
+   <div id="broker-commitment-body"><p>Waiting for a fresh broker read…</p></div>
+  </details>
+  <p class="hint-line keep-visible">Checks actual holdings and working orders, including option expiry. A stop may fill at a worse price or fail to execute. This check never changes your orders.</p>
+ </section>
  <details class="live-agent-policy"><summary>Policy settings · saving pauses the agent</summary>
+  <aside class="risk-draft-panel">
+   <h3>Prepare practical limits</h3>
+   <p id="risk-draft-summary" class="hint-line keep-visible"></p>
+   <p class="hint-line keep-visible">These buttons only fill the form for review. Your saved settings and live controls stay unchanged until you explicitly save. Dollar loss limits stop new entries; they cannot cap the final loss on open positions.</p>
+   <div class="inline-actions">
+    <button type="button" id="risk-draft-paper">Draft paper test: $100 / $200 / 10</button>
+    <button type="button" id="risk-draft-small">Draft small stock limits: $10 / $2 / 3</button>
+   </div>
+   <p class="hint-line keep-visible">Amounts mean maximum per new order, daily-loss stop, and broker attempts per day. Protective exits remain eligible after those entry limits are reached. The paper draft uses one long call or put at a time; fees add to its premium risk. The stock draft disables new option entries in the draft only. Whole-share prices may leave no affordable trade.</p>
+  </aside>
  <p id="live-agent-draft" role="status">Showing saved policy.</p>
  <p id="live-agent-universe" class="hint-line keep-visible"></p>
  <form id="live-agent-form"><div class="compact-form">
@@ -17,23 +71,35 @@
   <label>Seconds between research cycles<input id="la-interval_sec" type="number" min="30" max="3600" step="1" required /></label>
   <fieldset><legend>Order type</legend><label class="chk"><input type="radio" name="la-order-type" value="limit" checked /> DAY limit</label><label class="chk"><input type="radio" name="la-order-type" value="market" /> Market</label></fieldset>
   <label title="A limit is placed this far from the research price: above it for buys, below it for sells. It may not fill.">Limit offset · basis points<input id="la-limit_offset_bps" type="number" min="0" max="100" step="0.1" required /></label>
-  <label title="Price-based sizing before fees. A market order can fill beyond its estimated amount.">Maximum amount per order · $<input id="la-max_order_usd" type="number" min="0.01" max="1000000000" step="0.01" required /></label>
-  <label>Daily account loss stop · $<input id="la-max_daily_loss_usd" type="number" min="0.01" max="1000000000" step="0.01" required /></label>
+  <label title="An extra ceiling. The account preset can impose a smaller amount; see Effective account limits above. Fees can add cost.">Additional order ceiling · $<input id="la-max_order_usd" type="number" min="0.01" max="1000000000" step="0.01" required /></label>
+  <label title="An extra loss ceiling. The smaller account-based loss limit still applies.">Additional daily-loss ceiling · $<input id="la-max_daily_loss_usd" type="number" min="0.01" max="1000000000" step="0.01" required /></label>
   <label title="Every broker submission attempt counts, including rejected or uncertain attempts. Exits count too.">Broker attempts per day<input id="la-max_orders_per_day" type="number" min="1" max="100000" step="1" required /></label>
   <label>Research attempts per day<input id="la-max_research_per_day" type="number" min="1" max="10000" step="1" required /></label>
-  <label title="Pauses new agent research when recorded live-agent AI cost reaches this amount. Paper research is counted separately; one attempt may use several model calls.">Recorded agent AI budget · $<input id="la-model_budget_usd" type="number" min="0.01" max="100000" step="0.01" required /></label>
+  <label title="Reserves estimated live-agent cost before each model attempt, including shadow calls. Failed calls can retain unknown-cost estimates. Paper research is counted separately; provider invoices can differ.">Estimated agent AI budget · $<input id="la-model_budget_usd" type="number" min="0.01" max="100000" step="0.01" required /></label>
   <label title="A model confidence score is not a calibrated probability of profit.">Minimum decision confidence · 0–1<input id="la-min_confidence" type="number" min="0" max="1" step="0.01" required /></label>
   <label title="Keeps Fox from piling into one part of the market. Example: with 2, once he holds AAPL and MSFT (both Technology) he skips NVDA until one of them is sold. Buys still waiting to fill count too. Funds with no sector, like SPY, are never limited. 0 turns this off.">Most positions in one sector<input id="la-max_positions_per_sector" type="number" min="0" max="10" step="1" required /></label>
   <fieldset id="la-exits"><legend>Protective exits (stocks the agent bought)</legend>
    <label class="chk"><input type="checkbox" id="la-protective_exits" checked /> Sell at the planned stop or target</label>
+   <label class="chk"><input type="checkbox" id="la-broker_stops" aria-describedby="la-broker-stops-help" /> Test broker-held stops · IBKR paper account only</label>
+   <p id="la-broker-stops-help" class="hint-line keep-visible">Off by default. In the broker simulator, Fox can place a stop for shares he bought, then check that the broker accepted it. Accepted stops stay at the broker when the desk closes and operate during regular market hours. After a stop sells shares, further orders wait until its fills, fees and remaining holdings agree. Broker corrections need review. This check does not turn trading on. Real-money use is unavailable.</p>
    <label title="Once the price rises this many times the planned risk, the checked stop moves to entry. Gaps, fees and unfilled exits can still cause a loss. 0 turns this off.">Move stop to entry after · R<input id="la-breakeven_after_r" type="number" min="0" max="10" step="0.1" required /></label>
    <label title="Sell a position held this long. 0 means no time limit.">Maximum hold · minutes<input id="la-max_hold_min" type="number" min="0" max="1440" step="1" required /></label>
    <label title="Sell agent positions this many minutes before the regular close. 0 lets them stay open overnight.">Sell before the close · minutes<input id="la-flatten_before_close_min" type="number" min="0" max="120" step="1" required /></label>
-   <p class="hint-line keep-visible">Exits use fresh real-time quotes only and are limit orders below the bid, so a fast market can still skip past them. Positions you open yourself are not touched.</p>
+   <p class="hint-line keep-visible">App-managed exits use fresh real-time quotes and limit orders below the bid, so a fast market can skip past them. The optional paper test uses broker-held stop orders, whose fill price can be worse than the stop price. Positions you open yourself are not adopted.</p>
   </fieldset>
   <fieldset id="la-auto-options"><legend>Fox LIVE options (auto)</legend>
-   <p class="hint-line keep-visible" id="la-auto-options-label">Fox LIVE options | calls/puts | shorts gated | BAG verticals</p>
-   <label class="chk"><input type="checkbox" id="la-ao-enabled" /> Enable auto options conversion on PASS stock setups</label>
+   <p class="hint-line keep-visible" id="la-auto-options-label">Checking automatic options eligibility…</p>
+   <label class="chk"><input type="checkbox" id="la-ao-enabled" /> Request automatic options conversion when the exit test is eligible</label>
+   <p class="hint-line keep-visible">Real-money automatic options entries are blocked until exits and assignment handling are qualified. This does not turn off the stock agent. A saved checkbox alone does not arm options.</p>
+   <label class="chk"><input type="checkbox" id="la-ao-automatic_exits" /> Paper test: track option entries and close them automatically</label>
+   <p class="hint-line keep-visible">IBKR paper account only. One managed option position at a time. Existing option holdings are not adopted. Exit checks use the policy saved with each entry, so later edits do not quietly loosen an open position's rules.</p>
+   <div class="form-grid">
+    <label>Close after premium loss (%)<input id="la-ao-exit_loss_pct" type="number" min="1" max="95" step="1" value="25" /></label>
+    <label>Close after premium gain (%)<input id="la-ao-exit_profit_pct" type="number" min="1" max="500" step="1" value="50" /></label>
+    <label>Trading sessions before expiry<input id="la-ao-exit_before_expiry_sessions" type="number" min="1" max="10" step="1" value="1" /></label>
+    <label>Widest bid/ask gap (% of midpoint)<input id="la-ao-exit_max_spread_pct" type="number" min="1" max="50" step="1" value="20" /></label>
+   </div>
+   <p class="hint-line keep-visible">Expiry exits start 30 minutes before that session ends, including early closes. Loss/profit triggers are before fees and cannot guarantee the final sale price. For short positions, a lower buyback price is a gain.</p>
    <label class="chk"><input type="checkbox" id="la-ao-long_call" checked /> Long call BTO/STC</label>
    <label class="chk"><input type="checkbox" id="la-ao-long_put" checked /> Long put BTO/STC</label>
    <label class="chk"><input type="checkbox" id="la-ao-short_call" /> Short call STO/BTC (covered if shares held)</label>
@@ -49,6 +115,6 @@
  </div><div class="live-agent-budget"><button class="btn" id="live-agent-budget-check" type="button">Check symbol budget</button><p id="live-agent-budget-status" role="status">Check whole-share capacity using current quotes. No policy is saved and no order is sent.</p><ul id="live-agent-budget-list" aria-label="Symbol budget estimates"></ul></div>
  <button class="btn" id="live-agent-save" type="submit">Save policy · leaves agent paused</button> <button class="btn" id="live-agent-reload" type="button">Reload saved policy</button></form>
  </details>
- <p class="hint-line keep-visible">Regular US sessions only. Existing desk risk limits also apply. Pause stops future decisions; a submission already committed may finish. Working orders and positions remain at the broker. Protective exits (above) watch the stocks this agent bought on each cycle; they are not resting broker orders, so they only act while the desk is running. Whole shares for stock; options use contracts × premium × 100. Naked shorts and assignment remain residual risks.</p>
+ <p class="hint-line keep-visible">Regular US sessions only. Existing desk risk limits still apply. Pause stops future decisions; an order already being sent may finish. Existing broker orders and positions stay in place. Standard stock exits need the desk running. The optional IBKR paper test can leave accepted stops at the broker. Stock orders use whole shares. Options can create obligations at expiry; automatic options exits and assignment handling still need qualification.</p>
  <h4>Recent decisions</h4><ol id="live-agent-history" aria-label="Recent live agent decisions"></ol>
 </section>

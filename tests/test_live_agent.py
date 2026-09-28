@@ -356,20 +356,22 @@ def test_delayed_ibkr_quote_prefers_fresh_realtime_quote(live, monkeypatch):
     assert len(live.sent) == 1 and live.sent[0]["limit"] == 100.05
 
 
-def test_delayed_ibkr_quote_is_kept_when_no_realtime_quote(live, monkeypatch):
+def test_delayed_ibkr_quote_blocks_when_no_realtime_quote(live, monkeypatch):
     now = datetime.now(timezone.utc)
     monkeypatch.setitem(router.__dict__, "stock_quote", lambda s: {
         "ok": True, "fresh": True, "price": 100., "delayed": True, "market_data_type": 3,
         "source": "IBKR delayed mkt data", "market_time": now.isoformat(), "age_sec": 0})
     monkeypatch.setattr(desk, "_realtime_quote_or_none", lambda _ds, s: None)
     live.service.tick()
-    assert len(live.sent) == 1  # delayed data never blocks live ordering
+    assert not live.sent and 'real-time' in live.service.message
 
 
 def test_auto_option_limit_uses_option_premium_not_stock_price(live, monkeypatch):
     cfg = desk.load_config()
-    cfg["live_agent"]["auto_options"] = dict(agent.auto_live_options.defaults(), enabled=True)
+    cfg["live_agent"]["auto_options"] = dict(agent.auto_live_options.defaults(), enabled=True, automatic_exits=True)
     desk.save_config(cfg)
+    monkeypatch.setitem(router.__dict__, 'option_lifecycle_snapshot', lambda identity: dict(
+        ok=True, identity=copy.deepcopy(identity), checked_at=datetime.now(timezone.utc).isoformat(),positions=[],orders=[]))
     def convert(self, signal, cfg, auto_cfg, context):
         now = datetime.now(timezone.utc)
         signal.update(asset_type="OPT", option_strategy="long_call", option_intent="BTO", right="C",

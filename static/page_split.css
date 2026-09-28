@@ -1,4 +1,31 @@
 /* Page-split UX — top page nav + cleaner chrome */
+/* One primary state, with keyboard-accessible transport and preference details. */
+.public-context-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));gap:12px}
+.public-context-grid article{border:1px solid var(--border);border-radius:9px;padding:12px;overflow-wrap:anywhere}
+#public-context details{padding:10px 0}#public-context summary{cursor:pointer;font-weight:600}
+#public-context-sources{max-height:420px;overflow:auto}#public-context-sources article{border-bottom:1px solid var(--border);padding:8px 0}
+body.unified-desk #execution-summary{position:relative;top:auto;display:flex;flex-wrap:wrap;gap:6px 12px;padding:12px 16px;margin:8px 0}
+#execution-summary #operating-risk,#execution-summary #operating-exposure{flex:1 0 100%;font:500 12px/1.45 var(--sans,system-ui);margin:0;color:var(--text)}
+#execution-summary #operating-exposure{color:var(--muted)}
+.operating-details,.attention-preferences{font:500 12px/1.45 var(--sans,system-ui);margin:6px 0}
+.operating-details>summary,.attention-preferences>summary{cursor:pointer;padding:7px 4px;color:var(--muted)}
+.operating-details>summary:focus-visible,.attention-preferences>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+body.unified-desk .operating-details .paper-chrome{position:static;margin:0}
+body.unified-desk .operating-details .workspace-description{margin:5px 0}
+body.unified-desk .companion-context{padding:4px 12px;margin:8px 0}
+body.unified-desk .topbar{padding:4px 0;margin:0 0 6px;min-height:0}
+body.unified-desk .topbar .brand h1{font-size:15px}
+@media(max-width:800px){
+ body.unified-desk #execution-summary{margin-top:0;padding:10px 12px}
+ body.unified-desk .page-nav-slim .sidebar-scroll>a{display:none}
+ body.unified-desk .page-nav-slim .nav-bottom{display:flex;align-items:center;gap:12px;padding:0}
+ body.unified-desk .page-nav-slim .scene-preferences{flex:1}
+ body.unified-desk .page-nav-slim #desk-clock{display:none}
+ body.unified-desk .page-nav.has-companion-habitat{padding:0 4px;margin:0}
+ body.unified-desk .desk-page-banner{padding:8px 0;margin:0}
+ body.unified-desk .desk-page-banner h1{font-size:23px;margin:4px 0}
+ body.unified-desk .desk-page-banner p{font-size:12px;margin:5px 0}
+}
 .desk-topnav {
   position: sticky;
   top: 0;
@@ -122,3 +149,98 @@ body.desk-page-overview #market-today .mt-tile { min-height: 102px; }
   .desk-topnav { border-radius: 0; margin: 0 -8px 10px; }
   .desk-topnav-hint { display: none; }
 }
+
+/* Task-first workspace: a quiet companion rail beside the work, account first. */
+.desk-skip-link{position:fixed;left:16px;top:-80px;z-index:1000;padding:12px 18px;background:var(--panel);color:var(--text);border:2px solid var(--accent);border-radius:8px}
+.desk-skip-link:focus{top:8px}
+.desk-topnav-link:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+body.unified-desk .desk-topnav{position:sticky;top:var(--execution-summary-h,108px);border-radius:9px;box-shadow:none;padding:8px 10px;gap:8px 16px;margin-bottom:14px}
+.desk-topnav .wordmark{font-size:20px;letter-spacing:-.5px}
+.desk-topnav-link{padding:9px 12px;border-radius:7px;min-height:36px}
+body.unified-desk #execution-summary{position:sticky;top:0;z-index:50;margin-top:0;border-radius:0 0 9px 9px;background:var(--panel)}
+body.unified-desk .operating-details{margin:0 0 6px}
+body.unified-desk .operating-details>summary{padding:6px 2px}
+body.unified-desk .operating-details[open]{border-bottom:1px solid var(--border);padding-bottom:10px}
+body.unified-desk .operating-details .topbar{margin-top:10px}
+body.unified-desk .desk-page-banner{margin-bottom:12px}
+body.unified-desk .desk-overview{padding:0 0 10px}
+body.unified-desk .overview-heading{align-items:center;margin:0 0 12px;gap:12px}
+body.unified-desk .overview-heading h1{font:600 26px/1.2 var(--serif,var(--font));margin:0}
+#overview-session{font-size:12px;color:var(--muted);white-space:nowrap}
+body.unified-desk .overview-grid{gap:12px;grid-template-columns:1fr .85fr 1.2fr}
+body.unified-desk .overview-card{border-radius:10px;padding:16px}
+body.unified-desk .overview-number{font-size:30px;margin:6px 0;white-space:normal;overflow-wrap:anywhere}
+body.unified-desk .overview-card .eyebrow{font:600 10px/1.5 var(--sans,system-ui);letter-spacing:.08em}
+body.unified-desk .overview-intention{grid-column:auto;border-left:3px solid var(--accent)}
+body.unified-desk .overview-intention h3{font:600 18px/1.4 var(--sans,system-ui);margin:8px 0}
+body.unified-desk .overview-pnl-block{gap:4px;margin:8px 0}
+body.unified-desk .overview-pnl-signed{font-size:18px}
+body.unified-desk #live-switch{display:flex;align-items:center;flex-wrap:wrap;gap:6px 16px;padding:12px 14px;margin:4px 0 16px}
+body.unified-desk #live-switch h2{font:600 15px/1.4 var(--sans,system-ui);margin:0}
+body.unified-desk #live-switch .live-switch-row{margin-left:auto}
+body.unified-desk #ls-plain,body.unified-desk #ls-confirm,body.unified-desk #ls-status{flex-basis:100%;margin:0}
+#ls-status:empty{display:none}
+.overview-workspace{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;margin:0 0 14px;align-items:start}
+.overview-workspace>.bx-card{margin:0!important;min-width:0}
+.overview-workspace #beginner-moss-overview .bx-ready-row{align-items:flex-start;flex-direction:column}
+body.desk-page-overview #market-today.bx-market-viz{padding:14px}
+body.desk-page-overview #market-today .mt-grid{grid-template-columns:repeat(auto-fit,minmax(104px,1fr))}
+body.desk-page-overview #market-today .mt-tile{min-height:86px}
+.bx-money-card.is-live,.bx-pulse-dot.is-ready{animation:none}
+@media(min-width:801px){
+ html{scroll-padding-top:var(--desk-sticky-h,190px)}
+ body.unified-desk,body.unified-desk:has(.has-companion-habitat){padding:0 300px 50px 24px}
+ body.unified-desk .page-nav{inset:0 0 0 auto;width:278px;border-right:0;border-left:1px solid var(--border)}
+ body.unified-desk .page-nav.has-companion-habitat{padding:20px 12px}
+ body.unified-desk .has-companion-habitat .sidebar-scroll{left:16px;right:16px}
+ body.unified-desk .sidebar-companions .moss-speech{left:12px;right:12px}
+}
+@media(min-width:1280px){.overview-workspace{grid-template-columns:minmax(0,1.7fr) minmax(240px,1fr)}}
+@media(min-width:801px) and (max-width:1150px){
+ body.unified-desk,body.unified-desk:has(.has-companion-habitat){padding-right:288px;padding-left:18px}
+ body.unified-desk .page-nav{width:270px}
+ body.unified-desk .overview-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+ body.unified-desk .overview-intention{grid-column:1/-1}
+ .desk-topnav .desk-topnav-brand{display:none}
+ .desk-topnav-links{gap:3px}.desk-topnav-link{padding:9px 10px}
+}
+@media(max-width:800px){
+ html{scroll-padding-top:var(--desk-sticky-h,215px)}
+ body.unified-desk,body.unified-desk:has(.has-companion-habitat){padding:0 12px 30px}
+ body.unified-desk .desk-topnav{margin:0 0 12px;padding:5px;border-radius:8px}
+ .desk-topnav .desk-topnav-brand{display:none}
+ .desk-topnav-links{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));width:100%;gap:2px}
+ .desk-topnav-link{font-size:12px;min-height:36px;text-align:center;padding:10px 5px}
+ body.unified-desk #execution-summary{font-size:11px;gap:4px 9px;padding:9px 10px;margin-bottom:0}
+ #execution-summary #operating-risk,#execution-summary #operating-exposure{font-size:11px;line-height:1.45}
+ body.unified-desk .overview-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+ body.unified-desk .overview-card{padding:12px 10px}
+ body.unified-desk .overview-number{font-size:25px}
+ body.unified-desk .overview-card p,body.unified-desk .overview-card a{font-size:11px;line-height:1.6}
+ body.unified-desk .overview-intention{grid-column:1/-1}
+ body.unified-desk .overview-intention h3{font-size:16px;margin:5px 0}
+ body.unified-desk .overview-intention p{margin:4px 0 8px}
+ body.unified-desk .page-nav.has-companion-habitat{border-top:1px solid var(--border);padding-top:10px;margin-top:16px}
+ body.unified-desk #live-switch{padding:10px 12px}
+ body.unified-desk #live-switch .btn{min-height:36px}
+}
+@media print{body.unified-desk,body.unified-desk:has(.has-companion-habitat){padding:0}body.unified-desk #execution-summary{position:static}.desk-skip-link{display:none}}
+#stop-correction-review th,#stop-correction-review td{font-size:14px;line-height:1.5;white-space:normal}
+#stop-correction-review table{width:100%;min-width:0;table-layout:fixed}
+#stop-correction-review th:first-child{width:42%}
+#stop-correction-review th{text-align:left;letter-spacing:normal}
+#stop-correction-review .live-agent-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+#option-activity { margin-block: 1rem; }
+#option-activity input[type="file"] { max-width: 100%; min-width: 0; }
+#option-activity li, #option-activity p { overflow-wrap: anywhere; }
+#option-activity li { margin-block: .65rem; }
+#research-live p,#research-live dd { overflow-wrap:anywhere; }
+#research-live .inline-actions { display:flex;flex-wrap:wrap;gap:12px;align-items:center; }
+#research-live dl { display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px 18px; }
+#research-live dt { font-weight:600; }
+#research-live dd { margin:0; }
+#research-live form { margin-top:18px;border-top:1px solid var(--border);padding-top:16px; }
+#research-live form[hidden] { display:none; }
+#research-live label { display:block;margin:16px 0; }
+#research-live input[type="text"] { display:block;max-width:100%;width:180px;margin-top:8px; }
+#research-live-open-limits:not(:empty) { border-left:3px solid currentColor;padding-left:12px;font-weight:600; }

@@ -1,8 +1,8 @@
 <section id="desk-research" class="desk-section research-section" aria-labelledby="desk-research-title">
-<div class="section-heading"><h2 id="desk-research-title">Research</h2><p>Recorded by Moss · inspect details and run optional investigations here</p></div>
+<div class="section-heading"><h2 id="desk-research-title">Research</h2><p>Recorded by Changing Woman · inspect details and run optional investigations here</p></div>
 {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}{% include "desk/scanner_link.html" %}{% endif %}
 <div class="section-grid">
-{% if config.get('COMPANION_AVAILABLE') %}{% include "desk/after_close.html" %}{% endif %}
+{% if config.get('COMPANION_AVAILABLE') %}{% include "desk/after_close.html" %}{% include "desk/weekly_review.html" %}{% endif %}
 {% include "desk/market_watch.html" %}
 {% if config.get('COMPANION_AVAILABLE') %}{% include "desk/news_sources.html" %}{% endif %}
 {% if config.get('MARKETS_AVAILABLE') %}{% include "desk/market_operations.html" %}{% endif %}
@@ -95,15 +95,9 @@
     <div class="buzz-list" id="buzz-list" aria-live="polite"></div>
   </section>
 <section class="desk-module panel chat-panel adv-only" id="chat-panel">
-    <h3 class="module-title" tabindex="-1">Ask Gemini <span class="title-ctx">(chat about a ticker — research only)</span></h3>
-    <div class="chat-body">
-      <div class="chat-log" id="chat-log"></div>
-      <div class="chat-form">
-        <input type="text" id="chat-ticker" placeholder="Ticker (optional)" maxlength="12" />
-        <input type="text" id="chat-input" placeholder="Ask about a stock or idea..." />
-        <button type="button" class="btn primary" id="btn-chat-send">Send</button>
-      </div>
-    </div>
+    <h3 class="module-title" tabindex="-1">Ask your companions</h3>
+    <p>Talk with Fox, Changing Woman, or both. Conversations and saved notes are available across the desk.</p>
+    <button type="button" data-open-companion-chat>Open companion chat</button>
   </section>
 <div id="churn-strip" class="churn-strip hidden adv-only" aria-live="polite"></div>
 </div></section>

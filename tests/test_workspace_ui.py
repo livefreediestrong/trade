@@ -17,7 +17,7 @@ def run_js(names, body):
     code = "const assert = require('node:assert/strict');\n"
     names = list(names)
     # Shared UI helpers called by renderers (e.g. the beginner pulse strip).
-    for helper in ("syncBeginnerPulse",):
+    for helper in ("syncBeginnerPulse", "syncOperatingStatus"):
         if helper not in names and any(helper + "(" in function(n) for n in names):
             names.append(helper)
     code += "\n".join(function(name) for name in names) + "\n" + body
@@ -80,6 +80,14 @@ assert.match($('#broker-book-pnl-feed').textContent,/waiting 65s · Gateway resp
 assert.doesNotMatch($('#broker-book-pnl-feed').textContent,/active subscription|last value update/);
 assert.equal($('#broker-book-risk').textContent,book.risk_error);
 assert.equal($('#broker-book-risk').hidden,false);
+book.pnl_diagnostics.account_download_completed=true;
+renderBrokerBook({broker_book:book});
+assert.match($('#broker-book-pnl-feed').textContent,/Account download completed; Daily P&L is still missing/);
+assert.match($('#broker-book-day').textContent,/Daily P&L unavailable/);
+assert.equal(book.risk_ready,false);
+book.pnl_diagnostics.account_download_completed=false;
+renderBrokerBook({broker_book:book});
+assert.doesNotMatch($('#broker-book-pnl-feed').textContent,/Account download completed/);
 
 book.risk_error='Broker connection is recovering; new live risk is blocked.';
 Object.assign(book.pnl_diagnostics,{status:'recovering',api_response_age_seconds:null});
@@ -419,9 +427,39 @@ assert.equal($('#risk-trade-allowed').textContent,'Order checks required');
 """)
 
 
+def test_primary_status_distinguishes_account_data_exits_and_stale_snapshot():
+    run_js(["syncOperatingStatus", "syncBeginnerPulse"], r"""
+const nodes=new Map();
+const $=id=>{if(!nodes.has(id))nodes.set(id,{textContent:'',classList:{add(){},remove(){},toggle(){}}});return nodes.get(id);};
+const fmtMoney=n=>'$'+n,fmtSigned=fmtMoney;
+const data={config:{mode:'manual',session_active:true},strategy_status:{live_agent_enabled:false},
+ broker_book:{ok:true,risk_ready:true,day_pnl_usd:0,positions:[]},ledger:{positions:[{ticker:'PAPER'}]}};
+const before=JSON.stringify(data);
+syncOperatingStatus(data);syncBeginnerPulse(data);
+assert.match($('#operating-risk').textContent,/inputs available/);
+assert.equal($('#operating-exposure').textContent,'0 broker positions. Automatic exits OFF.');
+assert.equal($('#bx-ready-label').textContent,'Data available','broker data availability is not trade readiness');
+assert.equal(JSON.stringify(data),before,'status presentation must not mutate account or trading state');
+data.config.mode='auto_live';syncOperatingStatus(data);
+assert.match($('#operating-exposure').textContent,/not active/,'auto mode alone does not prove supervised exits');
+data.strategy_status.live_agent_enabled=true;syncOperatingStatus(data);
+assert.match($('#operating-exposure').textContent,/exits need this app and Gateway/);
+syncOperatingStatus(data,true);
+assert.match($('#operating-risk').textContent,/stale/);
+assert.equal($('#operating-exposure').textContent,'Broker exposure unverified. Exit supervision unverified.');
+data.broker_book.day_pnl_usd=null;syncOperatingStatus(data);
+assert.match($('#operating-risk').textContent,/New risk blocked/);
+data.broker_book.day_pnl_usd=Infinity;syncOperatingStatus(data);
+assert.match($('#operating-risk').textContent,/New risk blocked/);
+data.broker_book={ok:false,positions:[],day_pnl_usd:0,risk_ready:true};syncOperatingStatus(data);
+assert.match($('#operating-risk').textContent,/data unavailable/);
+assert.match($('#operating-exposure').textContent,/exposure unverified/,'no invented flat book on connection failure');
+""")
+
+
 def test_compact_stream_preserves_history_clears_removed_rows_and_updates_risk():
     run_js(['liteSignature','applyStateLite'], r'''
-let _liteSig='',fullStateSeen=false,stateLiteGeneration=0;
+let _liteSig='',fullStateSeen=false,stateLiteGeneration=0,refreshLiteFields=null;
 let state={config:{mode:'live_manual'},signals:{expired:[{id:'old'}],approved:[{id:'filled'}],pending:[{id:'pending'}]},ledger:{}};
 const emitted=[];
 const window={dispatchEvent:e=>emitted.push(JSON.parse(JSON.stringify(e.detail)))};

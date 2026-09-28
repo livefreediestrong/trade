@@ -19,7 +19,7 @@
   else if(!fresh){label='Checking account';cls='is-waiting';}
   else if(pending){label='Reconciling order';cls='is-waiting';}
   else if(book.risk_ready!==true||!Number.isFinite(book.day_pnl_usd)){label='New entries blocked';cls='is-blocked';}
-  else if(['blocked','error','budget','daily_limit','event_window'].includes(s.phase)){label=s.phase==='blocked'||s.phase==='error'?'Needs attention':'Research paused';cls='is-blocked';blocks.push(s.message||'Read the latest agent status.');}
+  else if(['blocked','error','budget','daily_limit','event_window','coverage_wait','option_review','protection_review'].includes(s.phase)){label=['blocked','error','option_review','protection_review'].includes(s.phase)?'Needs attention':'Research paused';cls='is-blocked';blocks.push(s.message||'Read the latest agent status.');}
   else if(s.phase==='researching'){label='Researching';cls='is-scanning';}
   return {label,cls,blocks,connected};
  }
@@ -81,6 +81,11 @@
   set('bx-agent-detail',v.blocks[0]||s?.message||'Reading agent status');
   if($('live-agent-checks'))$('live-agent-checks').replaceChildren(...v.blocks.map(text=>{const li=document.createElement('li');li.textContent=text;return li;}));
   set('live-agent-draft',dirty?'Unsaved policy edits. The agent continues using its saved policy until you save; saving pauses it.':'Showing saved policy. Editing these fields does not change the running agent.');
+  const p=s?.policy||{},equity=deskState?.broker_book?.equity;
+  const caps=p.max_order_usd>=1e8||p.max_daily_loss_usd>=1e8||p.max_orders_per_day>=100000;
+  const effective=deskState?.live_risk_limits,limitsFresh=effective?.verified===true&&Date.now()-deskReceived<=25000;
+  set('risk-draft-summary',(limitsFresh?`Effective limit: ${money(effective.max_order_usd)} per stock position or option maximum loss, ${money(effective.max_daily_loss_usd)} daily-loss entry stop, ${effective.max_orders_per_day} agent attempts. `:'Effective limits await a current verified account reading. ')+(caps?'The large saved values below are extra ceilings; they cannot override the account preset. ':'')+(typeof equity==='number'&&Number.isFinite(equity)?`Last reported account equity: ${money(equity)}. `:'')+'Drafts do not change the running policy until saved.');
+  if($('la-auto-options-label'))set('la-auto-options-label',s?.auto_options_armed?'Automatic options · IBKR paper exit test armed':s?.auto_options?.enabled?(s.auto_options_entry_block||'Automatic options are not armed'):'Automatic options are off');
   const owner=s?.account_scope,entries=Object.entries(s?.managed||{});
   set('live-agent-managed',entries.length?`${entries.length} tracked stock position${entries.length===1?'':'s'}. Exit checks require the matching account, an active agent, market hours and current quotes.`:'No agent stock positions are currently tracked.');
   if($('live-agent-position-list'))$('live-agent-position-list').replaceChildren(...entries.map(([ticker,row])=>{
@@ -96,6 +101,18 @@
  function render(s){
   if(snapshot&&identityKey(snapshot)!==identityKey(s))$('live-agent-confirm').value='';
   snapshot=s;received=Date.now();
+  window.TomahawkStopReview?.render(s);
+  const optionRows=s.option_positions||[];
+  set('option-lifecycle-status',s.option_check_error|| (optionRows.length?'Tracked option fills are compared with broker holdings. Pausing stops automatic exits; exposure checks continue.':'No option positions are tracked. The automatic lifecycle is an optional IBKR paper test.'));
+  if($('option-lifecycle-rows'))$('option-lifecycle-rows').replaceChildren(...optionRows.map(row=>{
+   const li=document.createElement('li'),title=document.createElement('strong'),detail=document.createElement('p');
+   title.textContent=`${row.ticker} · ${String(row.strategy).replaceAll('_',' ')} · ${row.remaining} remaining`;
+   detail.textContent=(row.externally_resolved?'External resolution reviewed; broker was verified flat. Original fill accounting remains incomplete.':row.hold|| (row.awaiting_entry?'Waiting for confirmed entry details.':row.remaining?'Exit checks use the saved rules.':'Recorded fills have closed this position.'))+` Expiry ${row.expiry}. Planned latest exit ${new Date(row.deadline).toLocaleString()}.`;
+   if(row.externally_resolved)title.textContent=`${row.ticker} · reviewed external closure`;
+   li.append(title,detail);
+   if(row.hold){const button=document.createElement('button');button.type='button';button.textContent='Review after resolving at broker';button.addEventListener('click',()=>window.TomahawkOptionReview?.prepare(row.id));li.append(button);}
+   return li;
+  }));
   const identity=s.identity,kind=identity?.paper_mode===false?'REAL MONEY':identity?.paper_mode===true?'BROKER PAPER':'UNVERIFIED';
   set('live-agent-account',identity?`Saved account: ${kind} · ${identity.broker} · …${String(identity.account_id||'').slice(-4)}. Connection is checked separately above.`:'Account not yet confirmed for execution · verify IBKR in broker settings');
   set('live-agent-state',!s.configured?'Not configured':!s.enabled?'Paused':s.session_active&&s.mode==='auto_live'?'Enabled':'Session stopped');
@@ -108,14 +125,17 @@
    $('la-symbols').value=s.policy.symbols.join(' ');
    for(const key of fields)$('la-'+key).value=s.policy[key];
    if($('la-protective_exits'))$('la-protective_exits').checked=s.policy.protective_exits!==false;
+   if($('la-broker_stops'))$('la-broker_stops').checked=s.policy.broker_stops===true;
    form.querySelector(`[name="la-order-type"][value="${s.policy.order_type}"]`).checked=true;
    const ao=s.auto_options||{};
    const strats=new Set(ao.strategies||['long_call','long_put']);
    if($('la-ao-enabled'))$('la-ao-enabled').checked=!!ao.enabled;
+   if($('la-ao-automatic_exits'))$('la-ao-automatic_exits').checked=!!ao.automatic_exits;
+   for(const key of ['exit_loss_pct','exit_profit_pct','exit_before_expiry_sessions','exit_max_spread_pct'])if($('la-ao-'+key))$('la-ao-'+key).value=ao[key]??({exit_loss_pct:25,exit_profit_pct:50,exit_before_expiry_sessions:1,exit_max_spread_pct:20})[key];
    for(const strategy of strategies)if($('la-ao-'+strategy))$('la-ao-'+strategy).checked=strats.has(strategy);
    if($('la-ao-naked'))$('la-ao-naked').checked=!!ao.allow_naked_short;
    if($('la-ao-max-contracts') && ao.max_contracts!=null)$('la-ao-max-contracts').value=ao.max_contracts;
-   if($('la-auto-options-label') && s.auto_options_label)$('la-auto-options-label').textContent=s.auto_options_label+(s.auto_options_armed?' · ARMED':' · not armed');
+   // Effective eligibility is rendered from current status, separately from the saved checkbox.
   }
   $('live-agent-history').replaceChildren(...(s.events||[]).slice(0,8).map(e=>{const li=document.createElement('li');li.textContent=`${new Date(e.at).toLocaleTimeString()} · ${e.ticker?e.ticker+' · ':''}${e.message}`;return li;}));
   controls();
@@ -143,16 +163,38 @@
  }
  function edited(){if(!dirty){editRevision=snapshot?.revision;draftOptions=JSON.parse(JSON.stringify(snapshot?.auto_options||{}));}dirty=true;form.dataset.edits=String(Number(form.dataset.edits||0)+1);$('live-agent-confirm').value='';clearBudget();controls();}
  form.addEventListener('input',edited);form.addEventListener('change',edited);
+ function fillRiskDraft(kind){
+  if(!snapshot||busy)return;
+  edited();
+  const paper=kind==='paper';
+  $('la-max_order_usd').value=paper?100:10;
+  $('la-max_daily_loss_usd').value=paper?200:2;
+  $('la-max_orders_per_day').value=paper?10:3;
+  form.querySelector('[name="la-order-type"][value="limit"]').checked=true;
+  if($('la-ao-enabled'))$('la-ao-enabled').checked=paper;
+  if($('la-ao-automatic_exits'))$('la-ao-automatic_exits').checked=paper;
+  if($('la-ao-max-contracts'))$('la-ao-max-contracts').value=1;
+  if($('la-ao-naked'))$('la-ao-naked').checked=false;
+  for(const strategy of strategies)if($('la-ao-'+strategy))$('la-ao-'+strategy).checked=['long_call','long_put'].includes(strategy);
+  for(const [key,value] of Object.entries({exit_loss_pct:25,exit_profit_pct:50,exit_before_expiry_sessions:1,exit_max_spread_pct:20}))if($('la-ao-'+key))$('la-ao-'+key).value=value;
+  set('live-agent-result','Draft filled. Nothing saved, started or paused. Review the fields before saving. Other desk limits can be stricter.');
+  controls();
+ }
+ $('risk-draft-paper')?.addEventListener('click',()=>fillRiskDraft('paper'));
+ $('risk-draft-small')?.addEventListener('click',()=>fillRiskDraft('small'));
  form.addEventListener('submit',event=>{
   event.preventDefault();if(!snapshot||busy)return;
   const policy={symbols:$('la-symbols').value.toUpperCase().split(/[\s,]+/).filter(Boolean),order_type:form.querySelector('[name="la-order-type"]:checked').value};
   for(const key of fields)policy[key]=Number($('la-'+key).value);
   policy.protective_exits=!!$('la-protective_exits')?.checked;
+  policy.broker_stops=!!$('la-broker_stops')?.checked;
   const optionBase=draftOptions||snapshot.auto_options||{};
   const strategyOrder=[...new Set([...(optionBase.strategies||[]),...strategies])];
   const selected=strategyOrder.filter(key=>$('la-ao-'+key)?.checked);
   if(!selected.length){set('live-agent-result','Select at least one options strategy. No settings have been saved.');return;}
   const auto_options={...optionBase,enabled:!!$('la-ao-enabled')?.checked,strategies:selected,allow_naked_short:!!$('la-ao-naked')?.checked,max_contracts:Number($('la-ao-max-contracts')?.value||2)};
+  auto_options.automatic_exits=!!$('la-ao-automatic_exits')?.checked;
+  for(const key of ['exit_loss_pct','exit_profit_pct','exit_before_expiry_sessions','exit_max_spread_pct'])if($('la-ao-'+key))auto_options[key]=Number($('la-ao-'+key).value);
   mutate('policy',{policy,auto_options,revision:dirty?editRevision:snapshot.revision});
  });
  $('live-agent-reload').addEventListener('click',()=>{if(busy)return;dirty=false;clearBudget();$('live-agent-confirm').value='';++epoch;received=0;read();controls();});

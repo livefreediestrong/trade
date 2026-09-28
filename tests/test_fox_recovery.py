@@ -122,6 +122,8 @@ def archive_desk(tmp_path):
 
 
 def test_state_snapshot_includes_committed_wal_and_excludes_credentials(archive_desk):
+    for name, content in [('weekly_reviews.json', {'reports': {}}), ('companion_conversations.json', {'conversations': {}, 'memories': []})]:
+        (archive_desk.DATA_DIR/name).write_text(json.dumps(content), encoding='utf-8')
     dbpath = archive_desk.DATA_DIR/"evidence.sqlite3"
     with sqlite3.connect(dbpath) as db:
         db.execute("PRAGMA journal_mode=WAL")
@@ -131,7 +133,7 @@ def test_state_snapshot_includes_committed_wal_and_excludes_credentials(archive_
         import zipfile
         path = archive_desk.DATA_DIR/"backups"/row["archive"]
         manifest = backups.verify(path)
-        assert set(manifest["files"]) == {"config.json", "evidence.sqlite3"}
+        assert set(manifest["files"]) == {"config.json", "evidence.sqlite3", "weekly_reviews.json", "companion_conversations.json"}
         with zipfile.ZipFile(path) as z:
             restored = archive_desk.DATA_DIR/"test-copy.sqlite3"
             restored.write_bytes(z.read("evidence.sqlite3"))

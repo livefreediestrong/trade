@@ -6,6 +6,7 @@ import hashlib
 from flask import Blueprint, jsonify
 import desk_backups
 import market_events
+from risk_policy import effective_limits
 
 
 def broker_view(desk, cfg):
@@ -19,6 +20,8 @@ def broker_view(desk, cfg):
             "risk_ready": fresh and bool(book.get("ok")) and bool(book.get("risk_ready")),
             "error": (book.get("risk_error") or book.get("error")) if fresh else "Current broker snapshot unavailable or older than 30 seconds. New orders require fresh account checks.",
             "day_pnl": book.get("day_pnl_usd") if fresh and book.get("risk_ready") else None,
+            "equity": book.get("equity") if fresh and book.get("ok") and book.get("risk_ready") else None,
+            "position_count": len(book.get("positions") or []) if fresh and book.get("ok") else None,
             "age_sec": round(age)}
 
 
@@ -38,10 +41,12 @@ def register(app, desk):
             rows = [r for r in events if datetime.fromisoformat(r["start"]).astimezone(market_events.ET).date() == day]
             days.append({"date": day.isoformat(), "label": day.strftime("%a %b %d"),
                          "events": [{**r, "clock": "All day" if r.get("all_day") else market_events.clock_et(r["start"])} for r in rows]})
+        broker = broker_view(desk, cfg)
         return jsonify(ok=True, as_of=now.isoformat(), agent=agent,
+                       risk_limits=effective_limits(cfg, broker.get("equity")),
                        review_scope=hashlib.sha256(json.dumps([cfg.get("broker_identity"), today.isoformat()], sort_keys=True).encode()).hexdigest()[:16],
                        brain=desk.llm_trader.status_public_extended(cfg), backups=desk_backups.status(desk),
                        calendar={"days": days, "status": market_events.status()},
-                       broker=broker_view(desk, cfg))
+                       broker=broker)
 
     app.register_blueprint(bp)

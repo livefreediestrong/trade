@@ -17,6 +17,7 @@ not quality or direction; a ticker on many lists can still be a pump.
 from __future__ import annotations
 
 import os
+import copy
 import re
 import threading
 import time
@@ -62,6 +63,9 @@ _FINANCE_TERMS = re.compile(r"\b(stocks?|shares?|earnings|market|dow|nasdaq|s&p|
 
 _lock = threading.RLock()
 _refresh_lock = threading.Lock()
+_quote_lock = threading.Lock()
+_quote_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_quote_next_at = 0.0
 _cache: dict[str, Any] = {"at": 0.0, "key": None, "payload": None}
 _index_cache: dict[str, Any] = {"updated_at": object(), "index": None}
 
@@ -515,12 +519,17 @@ def wsb_snapshot() -> dict[str, Any]:
 def _build(desk, cfg: dict[str, Any], watchlist: list[str], now: float) -> dict[str, Any]:
     import social_intelligence
     import x_watcher
+    import community_feeds
+    import polygon_client
 
-    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="market-watch") as pool:
+    polygon_client.maybe_check_access()
+    with ThreadPoolExecutor(max_workers=3, thread_name_prefix="market-watch") as pool:
         google_job = pool.submit(google_headlines, now)
         custom_job = pool.submit(custom_headlines, now)
+        community_job = pool.submit(community_feeds.snapshot, enabled=bool(cfg.get("social_enabled")))
         headlines, google_status = google_job.result()
         custom, custom_status = custom_job.result()
+        community = community_job.result()
     trends = trend_scan(desk, watchlist, headlines + custom)
     x_watcher.poll(watchlist)
     x_rows = x_watcher.cached_rows()
@@ -540,18 +549,61 @@ def _build(desk, cfg: dict[str, Any], watchlist: list[str], now: float) -> dict[
         "headlines": headlines[:30],
         "custom_headlines": custom[:30],
         "custom_feeds": configured_feeds(),
+        "community": community,
+        "market_data": polygon_client.public_status(),
         "trends": trends,
         "wsb": wsb_snapshot(),
         "x": {"status": x_watcher.status(),
               "accounts": [r for r in x_rows if r.get("kind") == "account"][:20],
               "cashtags": [r for r in x_rows if r.get("kind") == "cashtag"][:20]},
-        "social": {k: social.get(k) for k in ("ok", "enabled", "error", "pulse", "source_status", "active_sources", "scanned_at")},
+        "social": {k: social.get(k) for k in ("ok", "enabled", "error", "pulse", "source_status", "active_sources", "scanned_at", "window_hours", "window_ends_at", "excluded", "method_note")},
         "watchlist": [index.info(sym) for sym in watchlist],
         "sources": {"google_news": google_status, "custom_rss": custom_status},
         "limitations": ("Headlines and posts are untrusted third-party text, shown for context only. "
                         "Missing items do not mean no news. Google Finance links open Google's page; "
                         "no Google Finance data is scraped."),
     }
+
+
+def research_quote(symbol: str) -> tuple[dict[str, Any], int]:
+    """Explicit research read, bounded/shared cache, no broker or trade actions."""
+    global _quote_next_at
+    symbol = str(symbol or "").strip().upper()
+    if not re.fullmatch(r"[A-Z]{1,5}(?:[.][A-Z])?", symbol):
+        return {"ok": False, "error": "Enter a US stock ticker, such as AAPL.", "display_only": True}, 400
+    if not _quote_lock.acquire(blocking=False):
+        return {"ok": False, "error": "Another price check is running. Try again shortly.", "display_only": True}, 429
+    try:
+        now = time.time()
+        cached = _quote_cache.get(symbol)
+        if cached and 0 <= now - cached[0] < 60:
+            result = copy.deepcopy(cached[1])
+            # Recompute age from market time, never from when we served the cache.
+            import data_sources
+            received_at = result.get("received_at")
+            result.update(data_sources.quote_snapshot(result.get("price"), result.get("market_time"), result["source"]))
+            result["received_at"] = received_at
+            result["ok"] = result.get("price") is not None
+            return dict(result, from_cache=True), 200
+        if now < _quote_next_at:
+            return {"ok": False, "error": "Please wait a few seconds before another price check.", "display_only": True}, 429
+        _quote_next_at = now + 3
+        import data_sources
+        try:
+            quote = data_sources.latest_quote(symbol)
+            # Normalize again so invalid values and dates cannot masquerade as current.
+            result = data_sources.quote_snapshot(quote.get("price"), quote.get("market_time"), str(quote.get("source") or "unavailable"))
+        except Exception:
+            result = data_sources.quote_snapshot(None, None, "unavailable")
+        result.update(ok=result.get("price") is not None, symbol=symbol, display_only=True,
+                      currency=None, from_cache=False,
+                      note="Provider observation, not an executable bid/ask. Currency is not supplied by this reader. A recent timestamp does not establish real-time exchange entitlement.")
+        _quote_cache[symbol] = (time.time(), copy.deepcopy(result))
+        while len(_quote_cache) > 32:
+            del _quote_cache[next(iter(_quote_cache))]
+        return result, 200
+    finally:
+        _quote_lock.release()
 
 
 def register(app, desk) -> None:
@@ -564,5 +616,10 @@ def register(app, desk) -> None:
             return jsonify(snapshot(desk, desk.load_config(), force=force))
         except Exception as exc:  # noqa: BLE001
             return jsonify({"ok": False, "error": str(exc)[:200], "display_only": True}), 500
+
+    @bp.get("/api/market-watch/quote")
+    def market_watch_quote():
+        payload, status = research_quote(request.args.get("symbol", ""))
+        return jsonify(payload), status
 
     app.register_blueprint(bp)

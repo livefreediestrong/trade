@@ -224,6 +224,8 @@
    el.style.setProperty('--frame-blink',facePosition);
    // Crossfade both transparent layers; never replace both at a sheet boundary.
    el.dataset.expression=portrait.expression;
+   const attention=scenes?.attentionFor(action,sceneFrame,elapsed,still)||{};
+   el.dataset.gaze=String(!!attention.gaze);el.dataset.brow=String(!!attention.brow);
    if(!frames[i]){
     el.style.setProperty('--frame-a',facePosition);el.style.setProperty('--frame-b',facePosition);el.style.setProperty('--frame-blend','0');frames[i]={key:faceKey,upper:false};
    }else if(frames[i].key!==faceKey){

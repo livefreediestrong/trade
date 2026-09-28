@@ -107,6 +107,16 @@ def test_thinking_level_refused_once_then_dropped(gemini):
     assert len(bodies) == 3 and "thinkingConfig" not in bodies[2]["generationConfig"]
 
 
+def test_bounded_chat_reasoning_does_not_change_other_text_calls(gemini):
+    bodies, _ = gemini
+    cfg = {"api_key": "k", "model": "gemini-3.6-flash"}
+    llm.gemini_generate("q", cfg=cfg, bounded_reasoning=True, max_output_tokens=1600)
+    assert bodies[0]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+    assert bodies[0]["generationConfig"]["maxOutputTokens"] == 1600
+    llm.gemini_generate("q", cfg=cfg)
+    assert "thinkingConfig" not in bodies[1]["generationConfig"]
+
+
 def test_thinking_level_setting(monkeypatch):
     monkeypatch.setenv("GEMINI_THINKING_LEVEL", "default")
     assert llm.gemini_thinking_level("gemini-3.6-flash") is None

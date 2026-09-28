@@ -31,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from html.parser import HTMLParser
 from zoneinfo import ZoneInfo
 
 import requests
@@ -38,6 +39,8 @@ import requests
 ET = ZoneInfo("America/New_York")
 FED_CALENDAR_URL = "https://www.federalreserve.gov/json/calendar.json"
 BLS_ICS_URL = "https://www.bls.gov/schedule/news_release/bls.ics"
+BEA_ICS_URL = "https://www.bea.gov/news/schedule/ics/online-calendar-subscription.ics"
+CENSUS_CALENDAR_URL = "https://www.census.gov/economic-indicators/calendar-listview.html"
 PRESIDENT_ICS_URL = ("https://calendar.google.com/calendar/ical/"
                      "cantymedia.com_62fqfmv1eejqs9hntbr6hof5kc%40group.calendar.google.com/public/basic.ics")
 UA = "TomahawkDesk/1.0 (local research desk; calendar reader)"
@@ -365,6 +368,78 @@ def _source_fed() -> list[dict[str, Any]]:
     return parse_fed_calendar(json.loads(_fetch(FED_CALENDAR_URL).decode("utf-8-sig")))
 
 
+def parse_bea_calendar(body):
+    rows = []
+    for row in parse_ics(body):
+        title = row.get("summary") or "BEA release"
+        high = title.startswith(("Gross Domestic Product", "Personal Income and Outlays"))
+        rows.append(_event("bea", title, row["start"], impact="high" if high else "medium",
+                           kind="bea_release", all_day=row.get("all_day", False), url="https://www.bea.gov/news/schedule"))
+    if not rows:
+        raise ValueError("BEA returned no timed releases")
+    return rows
+
+
+class _CalendarTable(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.inside = False
+        self.cell = None
+        self.row = []
+        self.rows = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "table" and dict(attrs).get("id") == "calendar":
+            self.inside = True
+        elif self.inside and tag == "tr":
+            self.row = []
+        elif self.inside and tag == "td":
+            self.cell = []
+
+    def handle_data(self, data):
+        if self.inside and self.cell is not None:
+            self.cell.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "td" and self.cell is not None:
+            self.row.append(" ".join("".join(self.cell).split()))
+            self.cell = None
+        elif tag == "tr" and self.inside and self.row:
+            self.rows.append(self.row)
+        elif tag == "table":
+            self.inside = False
+
+
+def parse_census_calendar(body):
+    parser = _CalendarTable()
+    parser.feed(body.decode("utf-8-sig") if isinstance(body, bytes) else body)
+    rows = []
+    for cells in parser.rows:
+        if len(cells) < 4:
+            continue
+        title, day, clock, period = cells[:4]
+        try:
+            start = datetime.strptime(day + " " + clock, "%B %d, %Y %I:%M %p").replace(tzinfo=ET)
+        except ValueError:
+            continue  # Suspended releases and hidden sort keys never become dates.
+        high = title.startswith(("Advance Monthly Sales for Retail", "Advance Report on Durable", "New Residential Construction"))
+        row = _event("census", title + " · " + period, start, impact="high" if high else "medium",
+                     kind="census_release", url=CENSUS_CALENDAR_URL)
+        row["observation_period"] = period
+        rows.append(row)
+    if not rows:
+        raise ValueError("Census returned no timed releases")
+    return rows
+
+
+def _source_bea():
+    return parse_bea_calendar(_fetch(BEA_ICS_URL))
+
+
+def _source_census():
+    return parse_census_calendar(_fetch(CENSUS_CALENDAR_URL))
+
+
 def _source_bls() -> list[dict[str, Any]]:
     contact = bls_user_agent()
     try:
@@ -466,7 +541,7 @@ def refresh(now: datetime | None = None) -> dict[str, Any]:
     if not _refresh_lock.acquire(blocking=False):
         return status()
     try:
-        jobs: dict[str, Any] = {"fed": _source_fed, "bls": _source_bls}
+        jobs: dict[str, Any] = {"fed": _source_fed, "bls": _source_bls, "bea": _source_bea, "census": _source_census}
         for i, url in enumerate(_president_urls()):
             jobs["president" if i == 0 else f"president_{i}"] = (lambda u=url: _source_ics(u, "president", now))
         for i, url in enumerate(_extra_urls()):
@@ -480,6 +555,12 @@ def refresh(now: datetime | None = None) -> dict[str, Any]:
             for name, future in futures.items():
                 try:
                     rows = future.result()
+                    prior = {r.get("title"): r for r in previous.get(name, [])}
+                    for row in rows:
+                        old = prior.get(row.get("title"), {})
+                        row["first_seen_at"] = old.get("first_seen_at") or now.isoformat()
+                        row["last_seen_at"] = now.isoformat()
+                        row["previous_start"] = old.get("start") if old.get("start") != row.get("start") else old.get("previous_start")
                     by_source[name] = rows
                     sources[name] = {"ok": True, "error": None, "count": len(rows), "checked_at": now.isoformat()}
                 except Exception as exc:  # noqa: BLE001 - keep the last good rows for this source

@@ -70,6 +70,12 @@
   return {row:actor?1:0,frame:cautious?2:speaking?3:focused?1:0,
    expression:cautious?'cautious':speaking?'explaining':scene?.expression==='listening'?'listening':focused?'thoughtful':'attentive'};
  }
+ function attentionFor(action,scene,elapsed,still){
+  if(still||['resting','unavailable','sources-unavailable'].includes(action.key))return {gaze:false,brow:false};
+  const reviewing=['researching','reading','reading-news','sourcing','thinking','checking','explaining'].includes(action.key)||scene?.expression==='listening';
+  return {gaze:reviewing&&elapsed%18000>=3000&&elapsed%18000<12000,
+   brow:['blocked','holding','reconciling'].includes(action.key)||scene?.expression==='raised-brow'};
+ }
  function briefFor(actor,day){
   if(!day)return {principle:'Current evidence first.',next:'Waiting for a fresh desk update.'};
   if(!actor){
@@ -95,6 +101,6 @@
 
   return {principle:'A strong idea can survive a question.',next:'I compare sources, look for disconfirming evidence and keep the notebook honest.'};
  }
- const api={PERIOD,anchor,source,sceneFor,scenePose,propFor,thoughtFor,portraitFor,briefFor};
+ const api={PERIOD,anchor,source,sceneFor,scenePose,propFor,thoughtFor,portraitFor,attentionFor,briefFor};
  if(typeof module==='object'&&module.exports)module.exports=api;else window.DeskCompanionScenes=api;
 })();

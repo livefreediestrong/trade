@@ -22,6 +22,7 @@ import io
 import ipaddress
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -1084,6 +1085,9 @@ def _cap_shares_for_broker(
             sig["signal_price"] = px
     if not px or px <= 0:
         return 0, 0.0, "no_real_quote"
+    reviewed_limit = _finite_float((sig.get("review_order") or {}).get("limit"))
+    if sig.get("side") == "buy" and reviewed_limit and reviewed_limit > px:
+        px = reviewed_limit  # The cash ceiling must cover the most this limit order can pay.
     shares = max(0, int(sig.get("suggested_shares") or 0))
     if shares <= 0:
         return 0, 0.0, "zero_shares"
@@ -1252,6 +1256,20 @@ def _broker_position_qty(ticker: str) -> tuple[float, str | None]:
 
 _BROKER_BOOK_CACHE: dict[str, Any] = {"at": 0.0, "val": None}
 _BROKER_BOOK_TTL = 15.0
+_BROKER_BOOK_REFRESH_LOCK = threading.Lock()
+_BROKER_BOOK_CACHE_LOCK = threading.Lock()
+
+
+def _invalidate_broker_book_cache() -> None:
+    with _BROKER_BOOK_CACHE_LOCK:
+        _BROKER_BOOK_CACHE.update(at=0.0, val=None, key=None,
+                                 generation=_BROKER_BOOK_CACHE.get("generation", 0)+1)
+
+
+def _broker_book_key(broker) -> tuple:
+    status = broker.public_status()
+    return (status.get("broker"), status.get("endpoint"), status.get("connected"),
+            status.get("paper_mode"), json.dumps(load_config().get("broker_identity"), sort_keys=True))
 
 
 def _broker_book_cached() -> dict[str, Any] | None:
@@ -1264,20 +1282,60 @@ def _broker_book_cached() -> dict[str, Any] | None:
 
     if not _broker_is_configured():
         return None
-    now = _t.monotonic()
     import broker_router as broker
-    status = broker.public_status()
-    cache_key = (status.get("broker"), status.get("endpoint"), status.get("connected"),
-                 status.get("paper_mode"), json.dumps(load_config().get("broker_identity"), sort_keys=True))
-    if _BROKER_BOOK_CACHE.get("key") == cache_key and _BROKER_BOOK_CACHE["val"] is not None and now - _BROKER_BOOK_CACHE["at"] < _BROKER_BOOK_TTL:
-        return _BROKER_BOOK_CACHE["val"]
+    # "refreshing" marks a busy placeholder, not an observed broker failure.
+    unavailable = {"ok": False, "refreshing": True, "risk_ready": False, "account_id": None,
+                   "day_pnl_usd": None, "error": "An account refresh is in progress. Current balances and holdings are unavailable until it finishes."}
+    cache_key = _broker_book_key(broker)
+    def cached():
+        with _BROKER_BOOK_CACHE_LOCK:
+            if (_BROKER_BOOK_CACHE.get("key") == cache_key and _BROKER_BOOK_CACHE["val"] is not None
+                    and 0 <= _t.monotonic()-_BROKER_BOOK_CACHE["at"] < _BROKER_BOOK_TTL):
+                return copy.deepcopy(_BROKER_BOOK_CACHE["val"])
+        return None
+    value = cached()
+    if value is not None:
+        return value
+    # One slow read may wait on the broker. Concurrent page requests never pile
+    # up behind it or present an expired result as current account evidence.
+    if not _BROKER_BOOK_REFRESH_LOCK.acquire(blocking=False):
+        return unavailable
+    try:
+        value = cached()
+        if value is not None:
+            return value
+        with _BROKER_BOOK_CACHE_LOCK:
+            generation = _BROKER_BOOK_CACHE.get("generation", 0)
+        started = _t.monotonic()
+        val = _read_broker_book()
+        # A changed endpoint/account or explicit refresh invalidates late results.
+        with _lock:
+            if cache_key != _broker_book_key(broker):
+                return {**unavailable, "error": "The broker connection or selected account changed during the refresh. Waiting for a new account read."}
+            with _BROKER_BOOK_CACHE_LOCK:
+                if generation != _BROKER_BOOK_CACHE.get("generation", 0):
+                    return {**unavailable, "error": "This account read was superseded by a newer refresh. Waiting for its result."}
+                note_peak = val.pop("_note_peak", False)
+                _BROKER_BOOK_CACHE.update(at=started, val=copy.deepcopy(val), key=cache_key)
+            if val.get("risk_ready") is True and note_peak:
+                _note_day_pnl_peak(val["day_pnl_usd"])
+        return val
+    finally:
+        _BROKER_BOOK_REFRESH_LOCK.release()
+
+
+def _read_broker_book() -> dict[str, Any]:
+    """One account/position read for the UI; execution uses its own fresh gates."""
     try:
         import broker_router as alpaca
 
         acct = alpaca.get_account()
+        if not isinstance(acct, dict) or not acct.get("ok"):
+            return {"ok": False, "risk_ready": False, "account_id": None, "day_pnl_usd": None,
+                    "error": str((acct.get("error") or "Account data is unavailable") if isinstance(acct, dict) else "Invalid account response")[:120]}
         pos = alpaca.get_positions()
     except Exception as exc:  # noqa: BLE001
-        val = {"ok": False, "error": str(exc)[:120], "account_id": None}
+        val = {"ok": False, "risk_ready": False, "day_pnl_usd": None, "error": str(exc)[:120], "account_id": None}
     else:
         a = (acct or {}).get("account") or {}
         rows = []
@@ -1289,6 +1347,8 @@ def _broker_book_cached() -> dict[str, Any] | None:
                     last = avg  # cost-basis fallback when broker mark not streamed yet
                 rows.append({
                     "ticker": str(p.get("symbol") or "").upper(),
+                    "asset_type": p.get("asset_type") or ("STK" if p.get("asset_class") == "us_equity" else p.get("asset_class")),
+                    "currency": p.get("currency") or ("USD" if p.get("asset_class") == "us_equity" else None),
                     "side": str(p.get("side") or "long").lower(),
                     "shares": abs(float(p.get("qty") or 0)),
                     "avg_price": avg,
@@ -1306,20 +1366,24 @@ def _broker_book_cached() -> dict[str, Any] | None:
             "ok": bool(acct.get("ok")) and bool(pos.get("ok")),
             "paper_mode": alpaca.paper_mode(),
             "equity": _safe_money(a.get("equity")),
+            "currency": a.get("currency"),
             "cash": _safe_money(a.get("cash")),
             "buying_power": _safe_money(a.get("buying_power")),
+            "settled_cash": _safe_money(a.get("settled_cash")),
+            "available_funds": _safe_money(a.get("available_funds")),
+            "excess_liquidity": _safe_money(a.get("excess_liquidity")),
+            "funds_observation": copy.deepcopy(a.get("funds_observation")),
             "day_pnl_usd": day_pnl,
             "risk_ready": acct.get("risk_ready", day_pnl is not None),
             "risk_error": acct.get("risk_error"),
             "account_window_pnl": a.get("account_window_pnl"),
             "pnl_diagnostics": acct.get("pnl_diagnostics"),
             "positions": rows,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
             "account_id": acct.get("account_id") or a.get("id"),
             "error": None if (acct.get("ok") and pos.get("ok")) else acct.get("error") or pos.get("error") or "Couldn't reach configured broker",
         }
-        if acct.get("ok") and acct.get("risk_ready") is True and a.get("day_pnl") is not None and day_pnl is not None:
-            _note_day_pnl_peak(day_pnl)  # the give-back guard also sees peaks between orders
-    _BROKER_BOOK_CACHE.update(at=now, val=val, key=cache_key)
+        val["_note_peak"] = acct.get("ok") and acct.get("risk_ready") is True and a.get("day_pnl") is not None and day_pnl is not None
     return val
 
 
@@ -1342,7 +1406,9 @@ def _money_snapshot(cfg: dict[str, Any]) -> dict[str, Any]:
         "fees_today_usd": round(float((ledger.get("daily") or {}).get(_today_str(), {}).get("fees") or 0), 2),
         "broker_trades_today": _broker_trades_today(ledger),
     }
-    if cfg.get("mode") in ("auto_live", "live_manual") or _broker_trades_today(ledger):
+    # Turning order submission off must not hide broker holdings or account health.
+    # This cached read does not authorize an order or change the saved mode.
+    if _broker_is_configured():
         out["broker_book"] = _broker_book_cached()
     out["live_goal"] = _live_goal_view(cfg, out.get("broker_book"))
     # Strategy rails snapshot for display strip (never authorizes orders).
@@ -1350,6 +1416,9 @@ def _money_snapshot(cfg: dict[str, Any]) -> dict[str, Any]:
     pol = (la or {}).get("policy") if isinstance((la or {}).get("policy"), dict) else {}
     ks = cfg.get("kill_switch") if isinstance(cfg.get("kill_switch"), dict) else {}
     book = out.get("broker_book") if isinstance(out.get("broker_book"), dict) else {}
+    from risk_policy import effective_limits
+    limits = effective_limits(cfg, book.get("equity") if book.get("ok") and book.get("risk_ready") else None)
+    out["live_risk_limits"] = limits
     trades_today = int(out.get("broker_trades_today") or 0)
     max_trades = None
     if la and pol.get("max_orders_per_day") is not None:
@@ -1397,11 +1466,12 @@ def _money_snapshot(cfg: dict[str, Any]) -> dict[str, Any]:
             if la
             else ("Universe: not set")
         ),
-        "max_order_usd": _finite_float(pol.get("max_order_usd") if la else ks.get("max_position_size_usd")),
-        "max_daily_loss_usd": _finite_float(pol.get("max_daily_loss_usd") if la else ks.get("max_daily_loss_usd")),
-        "max_orders_per_day": max_trades,
+        "max_order_usd": limits["max_order_usd"],
+        "max_daily_loss_usd": limits["max_daily_loss_usd"],
+        "max_orders_per_day": limits["max_orders_per_day"],
+        "effective_limits": limits,
         "orders_used": trades_today,
-        "orders_left": (max(0, max_trades - trades_today) if max_trades is not None else None),
+        "orders_left": max(0, limits["max_orders_per_day"] - trades_today),
         "min_confidence": _finite_float(pol.get("min_confidence")) if la else None,
         "risk_ready": bool(book.get("risk_ready")) if book else False,
         "risk_error": book.get("risk_error") if book else None,
@@ -1593,7 +1663,7 @@ def _preserve_broker_state(previous: dict[str, Any], replacement: dict[str, Any]
             replacement[key] = value
 
 
-def _apply_broker_update(sig, broker, confirm, source):
+def _apply_broker_update(sig, broker, confirm, source, *, resting_stop=False):
     """Persist cumulative execution, pending remainder and count together.
 
     Caller holds _BROKER_SUBMIT_LOCK. Updating an existing fill never counts it
@@ -1629,9 +1699,23 @@ def _apply_broker_update(sig, broker, confirm, source):
         if ((quantity > 0 and price > 0 and (prior is None or quantity >= float(prior.get("shares") or 0) or corrected))
                 or (prior is not None and corrected and quantity == 0)):
             fill = _broker_fill_record(sig, broker, source, confirm)
+            if sig.get("source") == "live_agent" and sig.get("asset_type") in ("OPT", "BAG"):
+                fill.update(option_lifecycle=True, asset_type=sig["asset_type"], multiplier=100,
+                            notional=round(float(fill["shares"]) * float(fill["price"]) * 100, 2),
+                            slip_usd=round(float(fill.get("slip_usd") or 0) * 100, 4),
+                            fee_usd=confirm.get("fee_usd"), fees_reported=confirm.get("fees_reported") is True,
+                            fees_by_currency=copy.deepcopy(confirm.get("fees_by_currency") or {}))
+            if resting_stop:
+                fill.update(native_stop_ref=sig["id"], fee_usd=confirm.get("fee_usd"),
+                            fees_reported=confirm.get("fees_reported") is True,
+                            fees_by_currency=copy.deepcopy(confirm.get("fees_by_currency") or {}),
+                            execution_ids=list(confirm.get("execution_ids") or []),
+                            ts=confirm["filled_at"])
             if corrected and quantity == 0:
                 fill.update(shares=0, price=0, notional=0, confirmed=True, price_estimated=False,
-                            price_source="broker_execution_bust", broker_fill_state="voided", fee_usd=0)
+                            price_source="broker_execution_bust", broker_fill_state="voided")
+                if not resting_stop:
+                    fill["fee_usd"] = 0
             if prior:
                 fill["id"], fill["ts"] = prior["id"], prior["ts"]
                 fills[fills.index(prior)] = fill
@@ -1639,7 +1723,8 @@ def _apply_broker_update(sig, broker, confirm, source):
                 fills.insert(0, fill)
             counted = ledger.setdefault("broker_counted_orders", {})
             if order_id not in counted and prior is None:
-                day = _today_str()
+                day = (datetime.fromisoformat(confirm["filled_at"]).astimezone(paper_loop_mod.NY_TZ).date().isoformat()
+                       if resting_stop else _today_str())
                 counted[order_id] = day
                 stats = ledger.setdefault("broker_daily", {}).setdefault(day, {"trades": 0})
                 stats["trades"] = int(stats.get("trades") or 0) + 1
@@ -1665,7 +1750,7 @@ def _apply_broker_update(sig, broker, confirm, source):
                      or (intent_id and x.get("intent_id") == intent_id)), None)
         if terminal:
             ledger["pending_broker_orders"] = [x for x in pending if x is not item]
-        else:
+        elif not resting_stop:
             if item is None:
                 item = {"order_id": order_id, "created_at": _now_iso()}
                 pending.append(item)
@@ -1674,6 +1759,7 @@ def _apply_broker_update(sig, broker, confirm, source):
                 item["intent_id"] = intent_id
         # Keep unresolved fill records even when trimming completed history.
         active = {str(x.get("order_id")) for x in ledger["pending_broker_orders"]}
+        active.update(str(f.get("order_id")) for f in fills if f.get("native_stop_ref") or f.get("option_lifecycle"))
         ledger["broker_fills"] = [f for i, f in enumerate(fills) if i < 200 or str(f.get("order_id")) in active]
         save_ledger(ledger)
         sig["live_response"] = copy.deepcopy(broker)
@@ -1689,6 +1775,13 @@ def _apply_broker_update(sig, broker, confirm, source):
                 signals[i] = dict(sig)
                 break
         save_signals(signals)
+        if sig.get("source") == "live_agent" and sig.get("asset_type") in ("OPT", "BAG"):
+            import option_lifecycle
+            try:
+                option_lifecycle.sync_ledger(_live_agent)
+            except Exception as exc:  # noqa: BLE001
+                # The fill is already saved; the agent's monitor retries and holds new risk.
+                append_journal("option_lifecycle_sync_error", {"signal_id": sig.get("id"), "error": type(exc).__name__})
     return fill, terminal
 
 
@@ -1710,8 +1803,14 @@ def _reconcile_execution_corrections() -> None:
             if not identity or identity.get("broker") != "ibkr":
                 return
             signals = {s.get("id"): s for s in load_signals()}
+            if _live_agent.path.exists():
+                for position in _live_agent.load().get("option_positions", {}).values():
+                    for sid, saved_signal in position.get("broker_records", {}).items():
+                        signals.setdefault(sid, saved_signal)
             retained = {}
             for fill in load_ledger().get("broker_fills") or []:
+                if fill.get("native_stop_ref"):
+                    continue  # The stop reconciler owns fees, quantities and correction review together.
                 sig = signals.get(fill.get("signal_id"))
                 response = (sig or {}).get("live_response") or {}
                 if (not sig or (response.get("order") or {}).get("broker_identity") != identity
@@ -1791,6 +1890,8 @@ def _reconcile_pending_broker_orders() -> None:
             if terminal:
                 append_journal("broker_order_reconciled", {"order_id": item["order_id"], "fill": fill})
     _reconcile_execution_corrections()
+    import stop_fills
+    stop_fills.reconcile(_live_agent)
 
 
 def _broker_day_pnl() -> tuple[float | None, float | None, str | None]:
@@ -1852,7 +1953,7 @@ def _broker_risk_gate(
     max_trades = int(preset["max_trades_per_day"])
     ks = cfg.get("kill_switch") or {}
     if ks.get("armed") and ks.get("max_trades_per_day") is not None:
-        max_trades = int(ks["max_trades_per_day"])
+        max_trades = min(max_trades, int(ks["max_trades_per_day"]))
     if _finite_float(day_pnl) is None or _finite_float(equity) is None or equity <= 0:
         return False, "Broker equity or daily P&L unavailable — new risk is blocked"
     total = _broker_trades_today(ledger)
@@ -1996,6 +2097,13 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
         with _lock:
             if load_ledger().get("pending_broker_orders"):
                 return blocked("A broker order is still unresolved; wait for reconciliation before another order")
+            if provider == "ibkr" and _live_agent.path.exists():
+                import stock_protection
+                import stop_fills
+                stop_state = _live_agent.load()
+                stop_error = stop_fills.gate_error(_live_agent, stop_state, identity or {}) or stock_protection.pending_error(stop_state, identity or {})
+                if stop_error:
+                    return blocked(stop_error)
         px = fetch_last_price(str(sig.get("ticker") or ""))
         if not px or not _finite_float(px) or px <= 0:
             return blocked("no_real_quote")
@@ -2089,6 +2197,11 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                 if reviewed_order and shares != int(reviewed_order.get("contracts") or reviewed_order.get("shares") or 0):
                     return blocked("Risk limits changed the reviewed quantity; open a fresh review")
                 sig["suggested_shares"] = shares
+                if not reducing:
+                    from risk_policy import option_entry_error
+                    size_error = option_entry_error(cfg, equity, risk_notional, agent=agent_order)
+                    if size_error:
+                        return blocked(size_error)
                 ok, reason = _broker_session_gate(cfg, risk_notional, reducing=reducing)
                 if ok and not reducing:
                     ok, reason = _broker_risk_gate(cfg, ledger, day_pnl, equity)
@@ -2185,6 +2298,13 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
             elif agent_order:
                 order["position_intent"] = "sell" if side == "sell" else "cover" if held < 0 else "buy"
                 order["agent_policy"] = {"revision": sig["agent_revision"], "run_id": sig["agent_run_id"]}
+        option_snapshot = None
+        if agent_order and is_opt and (auto_live_options.get_config(cfg)["automatic_exits"] or sig.get("agent_option_position_id")):
+            import option_lifecycle
+            try:
+                option_snapshot = option_lifecycle.snapshot(identity)
+            except (ValueError, TypeError, KeyError) as exc:
+                return blocked(str(exc))
         with _BROKER_EXEC_LOCK:
             with _lock:
                 current = load_config()
@@ -2209,6 +2329,11 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                 # before persisting intent; config POST uses this same outer lock.
                 # Options are capped on worst-case loss, not premium (same as the first gate).
                 gate_notional = risk_notional if is_opt else notional
+                if is_opt and not reducing:
+                    from risk_policy import option_entry_error
+                    size_error = option_entry_error(current, equity, risk_notional, agent=agent_order)
+                    if size_error:
+                        return blocked(size_error)
                 ok, reason = _broker_session_gate(current, gate_notional, reducing=reducing)
                 if ok and not reducing:
                     ok, reason = _broker_risk_gate(current, ledger, day_pnl, equity)
@@ -2219,9 +2344,28 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                 except (ValueError, TypeError, KeyError) as exc:
                     return blocked(str(exc))
                 order["risk_authorization"] = {"day_pnl": day_pnl, "equity": equity, "reducing": reducing}
-                if agent_order:
-                    _live_agent.reserve(sig, current)
-                intent = _persist_broker_intent(sig, order, provider)
+                prepared = False
+                if option_snapshot is not None:
+                    try:
+                        option_lifecycle.prepare(_live_agent, current, sig, option_snapshot)
+                        prepared = True
+                        held_options, stock_qty = option_lifecycle.holdings(option_snapshot, sig["ticker"])
+                        order["option_lifecycle_guard"] = dict(identity=copy.deepcopy(identity), stock_qty=stock_qty,
+                            options={str(k): p["qty"] for k, p in held_options.items() if p["qty"]})
+                    except (ValueError, TypeError, KeyError) as exc:
+                        if prepared:
+                            option_lifecycle.discard_prepared(_live_agent, sig)
+                        return blocked(str(exc))
+                try:
+                    if agent_order:
+                        _live_agent.reserve(sig, current)
+                    intent = _persist_broker_intent(sig, order, provider)
+                except Exception:
+                    # No durable broker intent: a prepared option row must not
+                    # block every later option entry as a phantom position.
+                    if prepared:
+                        option_lifecycle.discard_prepared(_live_agent, sig)
+                    raise
             try:
                 response = live_broker_place_order(order)
             except Exception as exc:
@@ -3072,6 +3216,7 @@ def generate_scan_signal(
         append_journal("scan_errors", {"errors": errors[:10]})
         if notes is not None:
             notes["error"] = "Market data was unavailable; no completed setup assessment"
+            notes["coverage_unavailable"] = all("No data for" in str(error) for error in errors)
     return None
 
 
@@ -4984,12 +5129,15 @@ class _ClaudeShadow:
 
     def __init__(self, analysis: dict, horizon_min: int):
         self._out: dict[str, Any] | None = None
+        self._cost_scope = llm_trader.current_cost_scope() or "desk"
+        self._cost_limits = dict(getattr(llm_trader._COST_SCOPE, "limits", {}))
         self._t = threading.Thread(target=self._run, args=(analysis, horizon_min), daemon=True, name="claude-shadow")
         self._t.start()
 
     def _run(self, analysis: dict, horizon_min: int) -> None:
         try:
-            self._out = claude_brain.decide(analysis, horizon_min=horizon_min)
+            with llm_trader.cost_scope(self._cost_scope, **self._cost_limits):
+                self._out = claude_brain.decide(analysis, horizon_min=horizon_min)
         except Exception as exc:  # noqa: BLE001
             self._out = {"side": "flat", "error": f"claude_shadow:{type(exc).__name__}"}
 
@@ -5096,17 +5244,11 @@ def _loop_trade_thesis(analysis: dict, cfg: dict) -> dict[str, Any]:
 
 def _research_thesis(analysis: dict, cfg: dict, *, source: str) -> dict[str, Any]:
     """Shared research/audit record; execution remains in the workspace adapters."""
-    if source in ("moss_paper", "moss_notebook"):
-        import research_library
-        analysis = copy.deepcopy(analysis)
-        context = dict(analysis.get("companion_context") or {})
-        context["reference_library"] = research_library.context(DATA_DIR, "volume pullback execution spread uncertainty")
-        analysis["companion_context"] = context
-        if source == "moss_paper":
-            import research_studio
-            protocol = research_studio.active_protocol(__import__("sys").modules[__name__])
-        else:
-            protocol = None
+    import live_research
+    analysis = live_research.with_references(analysis, DATA_DIR)
+    if source == "moss_paper":
+        import research_studio
+        protocol = research_studio.active_protocol(__import__("sys").modules[__name__])
     else:
         protocol = None
     started = _now_iso()
@@ -5126,6 +5268,12 @@ def _research_thesis(analysis: dict, cfg: dict, *, source: str) -> dict[str, Any
     llm_cfg = _llm_cfg_for_calls(cfg)
     analysis = _with_lessons(analysis, cfg)
     analysis = dict(analysis, research_evidence=news_stream.cached_evidence(analysis.get("ticker") or ""))
+    analysis['companion_context']['decision_checks'] = live_research.decision_context(analysis, cfg)
+    # Freeze the actual policy and inputs before either model receives them.
+    import policy_evidence
+    facts = json.loads(llm_trader._analysis_context_blob(analysis))
+    started = _now_iso()
+    policy_receipt = policy_evidence.capture(cfg, facts, started, code_version.status()["started"])
     desk = dict(cfg)
     desk["api_key"] = llm_cfg.get("api_key")
     # Keep Gemini model name off resolve_brain_mode fallback (brain_mode is authoritative)
@@ -5192,7 +5340,6 @@ def _research_thesis(analysis: dict, cfg: dict, *, source: str) -> dict[str, Any
     if main.get("execution_block"):
         main["abstain"] = True
 
-    facts = json.loads(llm_trader._analysis_context_blob(analysis))
     scope = _research_scope(cfg)
     quote = analysis.get("quote") or {}
     ev = {"event": "decision", "ts": started, "ticker": analysis.get("ticker"),
@@ -5210,6 +5357,7 @@ def _research_thesis(analysis: dict, cfg: dict, *, source: str) -> dict[str, Any
           "slip_bps": float(cfg.get("slip_bps", 5) or 0), "fee_bps": _cfg_fee_bps(cfg),
           "learning_context": main.get("learning_context"),
           "inputs": facts, "input_hash": hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest(),
+          "policy_receipt": policy_receipt, "decision_available_at": _now_iso(),
           "outcome_tolerance_sec": 120, "paper_only": True, "filled": False}
     if quote.get("fresh") and not main.get("error"):
         if protocol:
@@ -6413,7 +6561,7 @@ def index():
         "overview",
         "live",
         "Overview",
-        "Start here — market pulse and account snapshot. Auto, Paper, and Research are separate pages.",
+        "Start here: your account, the market and what Fox is doing. Fox, Paper, Research and Ticket each have their own page.",
     )
 
 
@@ -6437,7 +6585,7 @@ def desk_root():
         "overview",
         "live",
         "Overview",
-        "Start here — market pulse and account snapshot. Auto, Paper, and Research are separate pages.",
+        "Start here: your account, the market and what Fox is doing. Fox, Paper, Research and Ticket each have their own page.",
     )
 
 
@@ -6447,7 +6595,7 @@ def desk_overview():
         "overview",
         "live",
         "Overview",
-        "Start here — market pulse and account snapshot. Auto, Paper, and Research are separate pages.",
+        "Start here: your account, the market and what Fox is doing. Fox, Paper, Research and Ticket each have their own page.",
     )
 
 
@@ -6511,7 +6659,7 @@ def desk_all_legacy():
         desk_page="all",
         desk_workspace="live",
         page_title="Full desk (legacy)",
-        page_hint="Legacy single-page layout. Prefer Overview / Auto / Paper / Research.",
+        page_hint="Legacy single-page layout. Prefer the Overview, Fox, Paper, Research and Ticket pages.",
     )
 
 # --- END PAGE_SPLIT_DESK_ROUTES ---
@@ -6731,7 +6879,7 @@ def api_broker_pnl_refresh():
     except Exception as exc:
         return jsonify(ok=False, error=str(exc)[:200], risk_ready=False, account={}, refresh={"gateway_restarted": False}), 500
     # Bust cached broker book so /api/state reflects the refresh immediately.
-    _BROKER_BOOK_CACHE.update(at=0.0, val=None, key=None)
+    _invalidate_broker_book_cache()
     return jsonify(result if isinstance(result, dict) else {"ok": False, "error": "unexpected refresh result"})
 
 @app.route("/api/config", methods=["GET", "POST"])
@@ -8690,8 +8838,17 @@ def api_llm_chat():
     if not message:
         return jsonify({"ok": False, "error": "message required"}), 400
 
+    if len(message) > 3000 or (ticker and not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker)):
+        return jsonify(ok=False, error="Use a message up to 3,000 characters and a valid stock symbol"), 400
+
     with _lock:
         cfg = load_config()
+
+    # Without a saved Fox policy, use the policy default instead of disabling chat.
+    cap = ((cfg.get("live_agent") or {}).get("policy") or {}).get("model_budget_usd",
+                                                                    live_agent.DEFAULTS["model_budget_usd"])
+    if not cfg.get("llm_enabled", True) or isinstance(cap, bool) or not isinstance(cap, (int, float)) or not math.isfinite(cap) or cap < 0:
+        return jsonify(ok=False, error="AI replies are disabled or the existing model budget is unavailable"), 503
 
     analysis = None
     analysis_snippet = None
@@ -8713,12 +8870,13 @@ def api_llm_chat():
             analysis = {"ticker": ticker, "error": str(exc)}
 
     llm_cfg = _llm_cfg_for_calls(cfg)
-    reply = llm_trader.chat(
-        [{"role": "user", "content": message}],
-        ticker=ticker,
-        analysis=analysis,
-        cfg=llm_cfg,
-    )
+    with llm_trader.cost_scope("companion_chat", scope_cap=min(.25, cap), total_cap=cap):
+        reply = llm_trader.chat(
+            [{"role": "user", "content": message}],
+            ticker=ticker,
+            analysis=analysis,
+            cfg=llm_cfg,
+        )
     with _lock:
         append_journal(
             "llm_chat",
@@ -9141,7 +9299,8 @@ def worker_health():
                      for name in ("moss-daily-schedule", "moss-paper-workday", "moss-broker-read-only")})
     if _bg_stop.is_set():
         rows.pop("signal-scan", None)
-    return {"expected": expected, "workers": rows,
+    import broker_ibkr
+    return {"expected": expected, "workers": rows, "broker_api": broker_ibkr.worker_snapshot(),
             "missing": [name for name, alive in rows.items() if expected and not alive],
             "memory_error": getattr(_decision_ring, "_load_error", None)}
 
@@ -9185,6 +9344,13 @@ def _automatic_restart_error():
                 return "Broker state unavailable; automatic restart deferred"
             if book["positions"] or not orders.get("ok") or not isinstance(orders.get("orders"), list) or orders["orders"]:
                 return "Broker positions or orders are present or unverified; automatic restart deferred"
+            # The dashboard's IBKR book is stocks only. Options, futures and
+            # foreign-currency holdings must not disappear from restart gates.
+            if broker_router.public_status().get("broker") == "ibkr":
+                exposure = broker_router.get_position_exposure()
+                if (not isinstance(exposure, dict) or exposure.get("ok") is not True
+                        or exposure.get("has_positions") is not False):
+                    return "Broker holdings across all asset types are present or unverified; automatic restart deferred"
         except Exception:
             return "Broker state unavailable; automatic restart deferred"
     return None
@@ -9201,6 +9367,12 @@ def _exit_desk_process(automatic=False) -> None:
         pending = load_ledger().get("pending_broker_orders") or []
         if pending:  # an order started after the request was accepted
             append_journal("app_stop_cancelled", {"reason": "broker order unresolved", "pending": len(pending)})
+            return
+        # os._exit bypasses atexit. Close the existing API owner explicitly;
+        # never kill it during an active operation or let it reconnect behind us.
+        import broker_ibkr
+        if not broker_ibkr.disconnect_for_restart():
+            append_journal("app_stop_cancelled", {"reason": "Broker connection cleanup did not finish; desk left running"})
             return
         append_journal("app_stop", {"reason": "restart_requested", "pid": os.getpid()})
         release_instance_lock()
@@ -9260,14 +9432,24 @@ def recover_interrupted_approvals():
 
 import desk_workbench
 desk_workbench.register(app, __import__("sys").modules[__name__])
+import overnight_study
+overnight_study.register(app, __import__("sys").modules[__name__])
 import broker_controls
 broker_controls.register(app, __import__("sys").modules[__name__])
+import broker_safety
+broker_safety.register(app, __import__("sys").modules[__name__])
+import desk_maintenance
+desk_maintenance.register(app, __import__("sys").modules[__name__])
 import live_ticket
 live_ticket.register(app, __import__("sys").modules[__name__])
 import live_agent
 _live_agent = live_agent.register(app, __import__("sys").modules[__name__])
 import research_companion
 _research_companion = research_companion.register(app, __import__("sys").modules[__name__])
+import companion_chat
+_companion_chat = companion_chat.register(app, __import__("sys").modules[__name__], _research_companion)
+import public_context
+public_context.register(app, __import__("sys").modules[__name__], _research_companion.public_context)
 import options_desk
 _options_desk = options_desk.register(app, __import__("sys").modules[__name__])
 import market_catalog

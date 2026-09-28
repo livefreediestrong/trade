@@ -60,3 +60,14 @@ def test_model_prompt_bounds_examples_without_destroying_full_receipt():
     assert len(blob["learning_context"]["evidence_rows"]) == 12
     assert blob["learning_context"]["retained_receipt_count"] == 200
     assert len(analysis["learning_context"]["evidence_rows"]) == 200
+
+
+def test_daytime_case_is_frozen_record_and_never_claims_two_model_calls():
+    d = {"id":"case1", "input_hash":"original", "ticker":"TEST", "ts":"2026-09-25T15:00:00+00:00",
+         "inputs":{"research_evidence":{"items":[]}}, "thesis":"Hold for costs", "execution_block":"advisory_kill_or_unavailable"}
+    c = context.daytime_case(d, context.decision_detail({"execution_block":d["execution_block"]}))
+    assert c["version"] == "original" and c["roles"]["fox"]["status"] == "blocked"
+    assert c["roles"]["changing_woman"]["status"] == "local evidence review"
+    d["thesis"] = "later text"
+    assert c["roles"]["fox"]["findings"][0]["text"] == "Hold for costs"
+    assert context.daytime_case({}, {}) is None

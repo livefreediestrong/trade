@@ -26,6 +26,10 @@ def concerns(text, evidence, kind="finding"):
     issues = []
     if kind == "hypotheses":
         return issues  # Proposed tests may include future sample sizes and target values.
+    if any(re.search(r"\b(?:no|zero|0)\b.{0,45}(?:live|actual|broker|orders|trades|executions).{0,55}(?:executed|occurred|placed|filled)", sentence)
+           and not re.search(r"recorded|retained|journal|available records|shown in|logged|cannot|can't", sentence)
+           for sentence in re.split(r"(?<=[.!?])\s+|\n", normalized)):
+        issues.append("An incomplete broker journal cannot establish that no trades occurred. Only retained records were checked.")
     caveat = re.search(r"(?:not|never|cannot|can't|do not|does not|don't).{0,60}(?:prove|establish|confirm|reflect|account|cash|realized|return)", normalized)
     if (re.search(r"(?:account returns?|cash p\s*&\s*l|realized p\s*&\s*l|realized profit|live account.{0,20}profit)", normalized)
             and not caveat):

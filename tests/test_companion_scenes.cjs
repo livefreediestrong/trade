@@ -1,5 +1,9 @@
 const assert=require('node:assert/strict');
 const S=require('../static/companion_scenes.js'),A=require('../static/moss_avatar.js');
+assert.deepEqual(S.attentionFor({key:'researching'},null,5000,false),{gaze:true,brow:false});
+assert.deepEqual(S.attentionFor({key:'blocked'},null,5000,false),{gaze:false,brow:true});
+assert.deepEqual(S.attentionFor({key:'researching'},null,5000,true),{gaze:false,brow:false});
+assert.deepEqual(S.attentionFor({key:'unavailable'},null,5000,false),{gaze:false,brow:false});
 const day={fox:{state:'researching',ticker:'TEST',recent:[]},woman:{reasoning:[],chores:[]}},now=Date.now();
 assert.equal(S.sceneFor(day).kind,'research');
 day.woman.reasoning=[{key:'event:actual',level:'caution',text:'A scheduled announcement is approaching.'}];

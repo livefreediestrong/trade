@@ -75,8 +75,9 @@ def test_option_max_loss_by_structure():
 
 
 def _cfg(**policy):
-    auto = alo.validate({"enabled": True, "strategies": ["put_credit"], "max_contracts": 20})
-    return {"live_agent": {"auto_options": auto, "policy": {"order_type": "limit", **policy}}}
+    auto = alo.validate({"enabled": True, "automatic_exits": True, "strategies": ["put_credit"], "max_contracts": 20})
+    return {"broker_identity": {"broker": "ibkr", "account_id": "PAPER", "paper_mode": True},
+            "live_agent": {"auto_options": auto, "policy": {"order_type": "limit", **policy}}}
 
 
 def test_credit_spread_sized_by_max_loss_not_credit():
@@ -135,7 +136,7 @@ class _Refused(Exception):
 def _pos(sec, symbol, qty, right="", con_id=0):
     return SimpleNamespace(account="DU1", position=qty,
                            contract=SimpleNamespace(secType=sec, symbol=symbol, currency="USD",
-                                                    right=right, conId=con_id))
+                                                    right=right, conId=con_id, multiplier="100" if sec == "OPT" else ""))
 
 
 class _FakeIB:
@@ -156,7 +157,7 @@ class _FakeIB:
         return self._trades
 
     def accountSummary(self, *a):
-        return [SimpleNamespace(tag="BuyingPower", value=self._bp)]
+        return [SimpleNamespace(account="DU1", currency="USD", tag="BuyingPower", value=self._bp)]
 
     def placeOrder(self, *a):
         raise _Refused("reached placeOrder")
@@ -182,7 +183,8 @@ def test_covered_call_counts_existing_short_calls():
 def test_covered_call_counts_working_call_sales():
     trade = SimpleNamespace(order=SimpleNamespace(account="DU1", action="SELL", totalQuantity=1),
                             orderStatus=SimpleNamespace(filled=0),
-                            contract=SimpleNamespace(secType="OPT", symbol="SPY", right="C", conId=555))
+                            contract=SimpleNamespace(secType="OPT", symbol="SPY", right="C", conId=555,
+                                                     currency="USD", multiplier="100"))
     ib = _FakeIB([_pos("STK", "SPY", 100)], [trade])
     with pytest.raises(ValueError, match="unpledged"):
         ibkr._place_option_from_desk(ib, _sto(), IDENTITY, "ref")
@@ -198,7 +200,7 @@ def test_covered_call_with_free_shares_reaches_the_final_risk_check():
 def test_naked_short_put_buying_power_uses_strike_risk():
     # $1.50 premium: premium floor is $150, cash-secured risk is $9,850.
     ib = _FakeIB(buying_power="5000")
-    with pytest.raises(ValueError, match="worst-case loss"):
+    with pytest.raises(ValueError, match="risk floor"):
         ibkr._place_option_from_desk(ib, _sto(right="P", covered=False, allow_naked=True), IDENTITY, "ref")
 
 
@@ -236,6 +238,31 @@ def test_bag_close_counts_working_close_orders():
     ib = _FakeIB([_pos("OPT", "SPY", 1, "C", 1000), _pos("OPT", "SPY", -1, "C", 1050)], [working])
     with pytest.raises(ValueError, match="already working"):
         ibkr._place_bag_from_desk(ib, _bag_close(), IDENTITY, "ref")
+
+
+@pytest.mark.parametrize("kind", ["OPT", "BAG"])
+def test_bag_close_refuses_individual_or_overlapping_working_legs(kind):
+    c = SimpleNamespace(secType=kind, conId=1000, symbol="SPY",
+                        comboLegs=[SimpleNamespace(conId=1000), SimpleNamespace(conId=1100)] if kind == "BAG" else [])
+    working = SimpleNamespace(contract=c, order=SimpleNamespace(account="DU1"))
+    ib = _FakeIB([_pos("OPT", "SPY", 1, "C", 1000), _pos("OPT", "SPY", -1, "C", 1050)], [working])
+    with pytest.raises(ValueError, match="already has a working order"):
+        ibkr._place_bag_from_desk(ib, _bag_close(), IDENTITY, "ref")
+
+
+def test_single_option_cannot_close_a_leg_of_a_working_spread():
+    c = SimpleNamespace(secType="BAG", conId=0,
+                        comboLegs=[SimpleNamespace(conId=1000), SimpleNamespace(conId=1050)])
+    ib = _FakeIB([_pos("OPT", "SPY", 1, "C", 1000)],
+                 [SimpleNamespace(contract=c, order=SimpleNamespace(account="DU1"))])
+    with pytest.raises(ValueError, match="working spread"):
+        ibkr._place_option_from_desk(ib, _sto(option_intent="STC"), IDENTITY, "ref")
+
+
+def test_reviewed_spread_contracts_cannot_change_during_qualification():
+    order = _bag_close(contract_identity={"legs": [{"strike": 100, "con_id": 999}, {"strike": 105, "con_id": 1050}]})
+    with pytest.raises(ValueError, match="differ from the reviewed legs"):
+        ibkr._place_bag_from_desk(_FakeIB(), order, IDENTITY, "ref")
 
 
 def test_auto_bag_orders_are_capped_at_ten_contracts():

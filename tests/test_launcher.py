@@ -308,6 +308,22 @@ if ($status.message -notlike '*Updated desk code is waiting*') { throw "Update n
 """)
 
 
+def test_browser_only_update_reuses_desk_without_restart_prompt(tmp_path):
+    run_ps(tmp_path, r"""
+$NoBrowser = $true
+function Get-LaunchSetting($Name,$Default) { if ($Name -eq 'TOMAHAWK_PORT') { return '59446' }; return $Default }
+function Invoke-RestMethod { return @{app_id='tomahawk-desk';port=59446;instance=@{source_root=$Root;data_root=(Join-Path $Root 'data')};code=@{stale=$false;started='older';serving='current';browser_files_changed=$true}} }
+function Confirm-DeskRestart { throw 'Browser edit must not prompt for a restart' }
+function Request-DeskRestart { throw 'Browser edit must not restart the desk' }
+function Ensure-DeskPython { throw 'Running desk is reused' }
+function Start-Process { throw 'No process should be started' }
+function Start-ConfiguredBroker { return @{state='port_ready';message='ready.'} }
+Invoke-DeskLauncher | Out-Null
+$status = Get-Content -Raw (Join-Path $Root 'data\launcher-status.json') | ConvertFrom-Json
+if ($status.message -like '*Updated desk code is waiting*') { throw 'Browser edit incorrectly needs a restart' }
+""")
+
+
 def test_stale_desk_restart_refusal_keeps_desk_and_reports_reason(tmp_path):
     run_ps(tmp_path, r"""
 $NoBrowser = $true; $NoDialogs = $true

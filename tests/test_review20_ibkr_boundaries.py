@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 from types import SimpleNamespace as NS
 
 import pytest
-from ib_insync import IB, CommissionReport, Execution, Fill, Order, OrderStatus, Stock, Trade
-from ib_insync.util import UNSET_DOUBLE
+from ib_async import IB, CommissionReport, Execution, Fill, Order, OrderStatus, Stock, Trade
+from ib_async.util import UNSET_DOUBLE
 
 from test_broker_lifecycle import execution, gateway, desk, ibkr, BASE, REAL_DAY_PNL, REAL_POSITION_QTY, REAL_SUBMIT
 from broker_fixtures import deadline
@@ -38,7 +38,9 @@ def test_final_preflight_change_blocks_before_place_order(execution, gateway, mo
     assert result["broker"]["submission_attempted"] is False and not result["pending"], result
 
 
-def test_reducing_order_keeps_missing_pnl_exception(gateway):
+def test_reducing_order_keeps_missing_pnl_exception(gateway, monkeypatch):
+    monkeypatch.setattr(gateway, "positions", lambda account: [
+        NS(account=account, position=1, contract=Stock("TEST", "SMART", "USD", conId=42))])
     snapshot = ibkr.get_account()
     identity = snapshot["identity"]
     ibkr._PNL_UPDATED.clear()
@@ -46,7 +48,7 @@ def test_reducing_order_keeps_missing_pnl_exception(gateway):
              "broker_identity": identity, "valid_until": deadline(),
              "risk_authorization": {"equity": 100000., "day_pnl": None, "reducing": True}}
     result = ibkr.place_from_desk_order(order)
-    assert result["ok"] and len(gateway.trades) == 1
+    assert result["ok"] and len(gateway.trades) == 1, result
 
 
 def test_missing_risk_authorization_fails_closed(gateway):
@@ -57,10 +59,10 @@ def test_missing_risk_authorization_fails_closed(gateway):
 
 
 def test_account_summary_callback_invalidates_authorized_equity(monkeypatch):
-    import ib_insync
+    import ib_async
     client = IB()
     monkeypatch.setattr(client, "connect", lambda *a, **k: None)
-    monkeypatch.setattr(ib_insync, "IB", lambda: client)
+    monkeypatch.setattr(ib_async, "IB", lambda: client)
     monkeypatch.setattr(ibkr, "_CLIENT", None)
     monkeypatch.setattr(ibkr, "_CLIENT_SETTINGS", None)
     monkeypatch.setattr(ibkr, "_SERVER_UNAVAILABLE", False)

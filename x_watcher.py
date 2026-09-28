@@ -316,6 +316,10 @@ def _poll(symbols: list[str], now: float) -> None:
             _backoff(now + 6 * 3600)
             error = "X API access denied (403); the plan may not include recent search. " + _error_text(response)
             break
+        if response.status_code == 402:
+            _backoff(now + 6 * 3600)
+            error = "X credits depleted or billing access required (402). Check the X developer billing page; retrying in six hours. No credits were purchased."
+            break
         if response.status_code != 200:
             _backoff(now + 300)
             error = "X search failed: " + _error_text(response)

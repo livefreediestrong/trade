@@ -1,0 +1,31 @@
+#market-watch #mw-social td { white-space:normal;overflow-wrap:anywhere;vertical-align:top; }
+#market-watch #mw-social td small { font-size:12px; }
+#market-watch #mw-social td:first-child { min-width:240px;max-width:530px; }
+#market-watch #mw-social summary { cursor:pointer;font-weight:600; }
+#market-watch #mw-social details p { font-size:13px;line-height:1.6; }
+#market-watch .mw-price-form { margin-top:20px; }
+#market-watch .mw-price-form label { display:block;font-size:14px; }
+#market-watch .mw-price-form input { max-width:140px;min-width:0; }
+#market-watch .mw-price-form .mw-actions { display:flex;flex-wrap:wrap;gap:10px; }
+#market-watch .mw-community-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px; }
+#market-watch .mw-community-card { min-width:0;padding:14px;border:1px solid var(--border, #667085);border-radius:10px; }
+#market-watch .mw-community-card h4 { margin:0 0 10px;font-size:16px; }
+#market-watch .mw-community-card .hint-line { line-height:1.6;overflow-wrap:anywhere; }
+#market-watch .mw-community-card table { min-width:0;width:100%; }
+#market-watch .mw-community-card td { white-space:normal;overflow-wrap:anywhere; }
+@media(max-width:1000px){#market-watch .mw-community-grid { grid-template-columns:1fr; }}
+@media(max-width:640px){
+ #market-watch .mw-aggregate,#market-watch .mw-aggregate table,#market-watch .mw-aggregate tbody { display:block;width:100%;overflow:visible; }
+ #market-watch .mw-aggregate thead { display:none; }
+ #market-watch .mw-aggregate tr { display:block;padding:8px 0;border-bottom:1px solid var(--border, #667085); }
+ #market-watch .mw-aggregate td { display:block;padding:4px 0;border:0; }
+ #market-watch .mw-aggregate td[data-label]::before { content:attr(data-label) ': ';font-weight:600; }
+}
+@media(max-width:640px){
+ #market-watch .table-wrap:has(#mw-social) { overflow:visible; }
+ #market-watch table:has(#mw-social),#market-watch #mw-social { display:block;min-width:0;width:100%; }
+ #market-watch table:has(#mw-social) thead { position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%); }
+ #market-watch #mw-social tr { display:block;padding:12px 0;border-bottom:1px solid var(--border); }
+ #market-watch #mw-social td,#market-watch #mw-social td:first-child { display:block;min-width:0;max-width:none;width:100%;border:0;padding:8px 0; }
+ #market-watch #mw-social td[data-label]::before { content:attr(data-label);display:block;font-weight:600;font-size:12px;color:var(--muted);margin-bottom:4px; }
+}

@@ -24,6 +24,17 @@ body.unified-desk:has(.has-companion-habitat){padding-left:332px}
 .moss-sprite[data-buzz=true]{transform-origin:50% 66%;animation:fox-buzz-listen 12s ease-in-out 1}
 @keyframes fox-buzz-listen{0%,100%{rotate:0deg;filter:drop-shadow(0 2px 2px #0003)}30%,55%{rotate:-.6deg;filter:drop-shadow(0 0 6px #e6a39155)}75%{rotate:1deg}}
 .moss-sprite.moss-woman{--frame-a:0% 100%;--frame-b:0% 100%}
+.moss-gaze,.moss-brow{position:absolute;inset:0;z-index:1;pointer-events:none;opacity:0;transition:opacity 2s ease-in-out}
+.moss-gaze::before,.moss-gaze::after,.moss-brow::before,.moss-brow::after{content:'';position:absolute;inset:0;background:url('/static/companion-attention-v1.png') 0 0/400% 200% no-repeat;transition:opacity 1.8s ease-in-out}
+.moss-gaze::before,.moss-brow::before{background-position:var(--frame-a,0% 0%);opacity:calc(1 - var(--frame-blend,0))}
+.moss-gaze::after,.moss-brow::after{background-position:var(--frame-b,0% 0%);opacity:var(--frame-blend,0)}
+.moss-gaze{clip-path:inset(39% 26% 50% 36%)}
+.moss-brow{clip-path:inset(33% 46% 61% 35%)}
+.moss-woman .moss-gaze{clip-path:inset(33% 39% 60% 30%)}
+.moss-woman .moss-brow{clip-path:inset(28% 58% 66% 30%)}
+.moss-sprite[data-gaze=true]:not([data-still=true]) .moss-gaze,.moss-sprite[data-brow=true]:not([data-still=true]) .moss-brow{opacity:1}
+.moss-sprite .moss-eyelids{z-index:2}
+@media(prefers-reduced-motion:reduce){.moss-gaze,.moss-brow{display:none}}
 /* One registered portrait sheet: activity changes never move the face or torso. */
 .moss-action{position:absolute;left:calc(100% + 5px);top:5%;width:var(--caption-width,130px);font:11px/1.5 var(--sans,system-ui);color:var(--text);text-wrap:pretty;image-rendering:auto}
 .moss-woman .moss-action{left:auto;right:calc(100% + 5px);text-align:right}

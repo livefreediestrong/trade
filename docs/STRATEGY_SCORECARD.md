@@ -10,3 +10,5 @@ Research page and Fox page → **Strategy scorecard**. It shows, in one table, h
 - Mock, routed, pending and out-of-period rows are excluded.
 
 It measures the desk's calls, not account profit, and has no SPY comparison. It is **display only**. Fox already stops setups with a losing record through `_evidence_block` in `app.py`. Route: `GET /api/strategy-scorecard?days=30` (1–365).
+
+Scored rows must have valid timezone-aware timestamps within the selected window, including its end; future, ambiguous and invalid dates are excluded. Boolean and nonfinite values are not numerical results. Thirty calls are a display threshold, not statistical proof, independent samples or permission to trade.

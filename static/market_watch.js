@@ -3,6 +3,8 @@
  'use strict';
  const $=id=>document.getElementById(id);if(!$('market-watch'))return;
  let timer=null,busy=false,active=true;
+ let quoteBusy=false;
+ const quotes=new Map();
  const POLL_MS=5*60*1000;
  function el(tag,text,cls){const n=document.createElement(tag);if(text!=null)n.textContent=String(text);if(cls)n.className=cls;return n;}
  function link(text,url){
@@ -48,22 +50,90 @@
   $('mw-x-status').textContent=line||'X watcher idle.';
   $('mw-x').replaceChildren(...posts.slice(0,16).map(post));
  }
+ function showQuote(price,q){
+    if(!q||q.price==null){price.textContent='No provider price available. You can retry after the one-minute cache expires.';return;}
+    // Recompute on render as the snapshot may outlive the quote's freshness.
+    const ts=Date.parse(q.market_time),age=Number.isFinite(ts)?(Date.now()-ts)/1000:null;
+    const recent=age!==null&&age>=-15&&age<=120;
+    price.textContent=`${Number(q.price).toLocaleString(undefined,{maximumFractionDigits:4})} · ${q.source||'provider'} · market time ${when(q.market_time)} · ${recent?'within 2 min when checked':'old or unverified time'}${q.from_cache?' · cached':''}. Currency not supplied. Research price only; timing does not guarantee a real-time feed.`;
+ }
+ async function checkQuote(symbol,button,price){
+    if(quoteBusy){price.textContent='Another price check is running. Try again shortly.';return;}
+    quoteBusy=true;button.disabled=true;price.textContent='Checking the provider price…';
+    const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),35000);
+    try{
+     const r=await fetch('/api/market-watch/quote?symbol='+encodeURIComponent(symbol),{credentials:'same-origin',signal:controller.signal});const q=await r.json();
+     if(!r.ok)throw Error(q.error||'Price check unavailable.');
+     quotes.set(symbol,q);showQuote(price,q);
+    }catch(e){price.textContent=e&&e.name==='AbortError'?'Price check timed out. Try again shortly.':String(e.message||'Price check unavailable.');}
+    finally{clearTimeout(timeout);quoteBusy=false;button.disabled=false;}
+ }
  function renderSocial(s){
-  $('mw-social-status').textContent=s.error||(s.active_sources&&s.active_sources.length?`Active: ${s.active_sources.join(', ')} · scanned ${when(s.scanned_at)}`:'No social rows yet.');
-  $('mw-social').replaceChildren(...((s.pulse||[]).slice(0,10).map(p=>{
-   const tr=el('tr');tr.append(el('td','$'+p.ticker),el('td',p.mentions),el('td',(p.sources||[]).join(', ')),el('td',`${p.bullish} / ${p.bearish}`));return tr;
-  })));
+  const excluded=s.excluded||{}, skipped=Object.values(excluded).reduce((sum,n)=>sum+(Number(n)||0),0);
+  $('mw-social-status').textContent=(s.error||`24-hour sample ending ${when(s.window_ends_at||s.scanned_at)} · available sources: ${(s.active_sources||[]).join(', ')||'none'}`)+(skipped?` · ${skipped} old, undated, future or duplicate records excluded`:'');
+  $('mw-social-method').textContent=s.method_note||'Missing posts do not mean no activity. Word cues can misread sarcasm and negation. Headlines do not vote.';
+  const rows=(s.pulse||[]).slice(0,10).map(p=>{
+   const tr=el('tr'),ticker=el('td'),counts=el('td'),tone=el('td'),detail=el('details'),summary=el('summary',`$${p.ticker} · evidence & price`);
+   detail.append(summary,el('small',`Latest record ${when(p.newest_at)} · ${(p.sources||[]).join(', ')}`));
+   (p.items||[]).forEach(item=>{
+    const article=el('p');article.append(link(item.excerpt||item.title||'Open source',item.permalink),el('small',`${item.source||'source'} · ${when(item.created_at)}`));detail.append(article);
+   });
+   const button=el('button','Check provider price','btn ghost'),price=el('p','No price requested.','hint-line');button.type='button';price.setAttribute('role','status');
+   if(quotes.has(p.ticker))showQuote(price,quotes.get(p.ticker));
+   button.addEventListener('click',()=>checkQuote(p.ticker,button,price));
+   detail.append(button,price);ticker.append(detail);
+   counts.append(el('span',`${p.post_mentions||0} posts / ${p.headline_mentions||0} headlines`));
+   tone.append(el('span',`${p.bullish||0} bullish / ${p.bearish||0} bearish`),el('small',`${p.uncertain||0} unclear · approximate text labels`));
+   const accounts=el('td',`${p.unique_authors||0} identified accounts`);
+   counts.setAttribute('data-label','Posts / headlines');accounts.setAttribute('data-label','Accounts seen');tone.setAttribute('data-label','Post tone');
+   tr.append(ticker,counts,accounts,tone);return tr;
+  });
+  if(!rows.length){const tr=el('tr'),td=el('td','No current community sample to compare. Check Source status below.');td.colSpan=4;tr.append(td);rows.push(tr);}
+  $('mw-social').replaceChildren(...rows);
  }
  function renderWsb(w){
   if(!$('mw-wsb'))return;
   const threads=w.threads||[];
-  $('mw-wsb-status').textContent=!w.configured?'Reddit is not connected: set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET to read the WSB threads.':
+  $('mw-wsb-status').textContent=!w.configured?'Direct Reddit threads need approved access and credentials. Independent WSB summaries are shown separately below.':
    `${(w.comments_read||0).toLocaleString()} comments read${w.fresh?'':' · not read in the last 15 minutes'}${w.error?' · '+w.error:''}`;
   $('mw-wsb-threads').replaceChildren(...threads.map(t=>link(`${t.label}: ${t.title||''}`,t.url)));
   const rows=(w.top||[]).map(r=>{const tr=el('tr');const lean=r.bull_share==null?'—':r.bull_share>=.5?Math.round(r.bull_share*100)+'% bullish':Math.round((1-r.bull_share)*100)+'% bearish';
    tr.append(el('td','$'+r.ticker),el('td',r.mentions_15m),el('td',r.mentions_60m+(r.live_chat_pasted?' (+'+r.live_chat_pasted+' pasted chat)':'')),el('td',r.velocity==null?'building history':r.velocity+'×'),el('td',r.authors_60m),el('td',lean));return tr;});
   $('mw-wsb').replaceChildren(...(rows.length?rows:[(()=>{const tr=el('tr'),td=el('td',w.configured?'No ticker mentions in the last hour.':'Not connected.');td.colSpan=6;tr.append(td);return tr;})()]));
   $('mw-wsb-note').textContent=[w.stats_note,w.live_chat_note].filter(Boolean).join(' ');
+ }
+ function renderCommunity(data){
+  if(!$('mw-community-note'))return;
+  const providers=data.providers||{};
+  $('mw-community-note').textContent=data.note||'Source update times and coverage are unverified.';
+  ['apewisdom','tradestie'].forEach(name=>{
+   const p=providers[name]||{},body=$('mw-'+name),status=$('mw-'+name+'-status');
+   if(!body||!status)return;
+   status.replaceChildren();
+   status.append(link(p.name||(name==='apewisdom'?'ApeWisdom':'Tradestie'),p.docs));
+   let line=data.enabled===false?' · Off':!p.ok?' · '+(p.error||'Unavailable'):
+    ` · fetched ${when(p.fetched_at)}${p.cached?' (cached)':''} · source update time unavailable. Showing up to 10 of ${(p.rows||[]).length} records.`;
+   if(p.rejected_rows)line+=` ${p.rejected_rows} unusable records excluded.`;
+   if(p.next_check_at)line+=` Next check after ${when(p.next_check_at)}.`;
+   status.append(el('span',line));
+   const rows=(p.ok?p.rows||[]:[]).slice(0,10).map(r=>{
+    const tr=el('tr'),stock=el('td',r.symbol),second=el('td'),third=el('td');
+    stock.setAttribute('data-label','Stock');
+    if(name==='apewisdom'){
+     second.textContent=String(r.count);second.setAttribute('data-label','Mentions');
+     third.textContent=r.previous_mentions==null?'Unknown':`${r.previous_mentions} mention${r.previous_mentions===1?'':'s'}`;
+     if(r.rank&&r.previous_rank)third.append(el('small',`Rank ${r.previous_rank} → ${r.rank}`));
+     third.setAttribute('data-label','Previous day');
+    }else{
+     second.textContent=({bullish:'Positive',bearish:'Negative',neutral:'Neutral',unclear:'Unclear'})[r.tone]||'Unclear';
+     second.setAttribute('data-label','Provider outlook');
+     third.textContent=String(r.count);third.setAttribute('data-label','Comments');
+    }
+    tr.append(stock,second,third);return tr;
+   });
+   if(!rows.length){const tr=el('tr'),td=el('td',p.ok?'Provider returned no records. This does not establish no activity.':'No current records available.');td.colSpan=3;tr.append(td);rows.push(tr);}
+   body.replaceChildren(...rows);
+  });
  }
  function statusRows(d){
   const out=[];
@@ -72,19 +142,26 @@
   Object.entries((d.sources&&d.sources.custom_rss)||{}).forEach(([k,v])=>add('RSS · '+k,v));
   Object.entries((d.trends&&d.trends.sources)||{}).forEach(([k,v])=>add('Trend · '+(SOURCE_LABEL[k]||k),v));
   Object.entries((d.social&&d.social.source_status)||{}).forEach(([k,v])=>add('Social · '+k,v));
+  Object.values((d.community&&d.community.providers)||{}).forEach(v=>add('WSB summary · '+v.name,{ok:false,error:v.ok?'response received; source update time unavailable':v.error,aggregate:true,received:v.ok}));
   return out;
  }
  function render(d){
   const trends=(d.trends&&d.trends.tickers)||[];
-  $('mw-health').textContent=`${(d.headlines||[]).length} headlines · ${trends.length} trending${d.x&&d.x.status&&d.x.status.configured?' · X on':' · X off'}`;
+  const xs=d.x?.status||{};
+  $('mw-health').textContent=`${(d.headlines||[]).length} headlines · ${trends.length} trending · X ${!xs.configured?'not configured':xs.error?'unavailable':xs.last_poll_at?'checked':'awaiting check'}`;
   $('mw-status').textContent=`Updated ${when(d.as_of)}${d.from_cache?' (cached)':''}${d.refreshing?' · refreshing in the background':''}. Refreshes every five minutes while this page is open.`;
   renderTrends(d.trends);
   const heads=d.headlines||[];
   $('mw-headlines').replaceChildren(...(heads.length?heads.slice(0,16).map(headline):[el('p','No market headlines available right now. See Source status below; missing headlines do not mean no news.','hint-line')]));
   const custom=d.custom_headlines||[];$('mw-custom').hidden=!custom.length;$('mw-custom').replaceChildren(...custom.slice(0,12).map(headline));
-  renderX(d.x||{});renderSocial(d.social||{});renderWsb(d.wsb||{});
+  renderX(d.x||{});renderSocial(d.social||{});renderWsb(d.wsb||{});renderCommunity(d.community||{});
+  const market=d.market_data||{};
+  if($('mw-massive-status'))$('mw-massive-status').textContent=`Massive (formerly Polygon): ${market.configured?'key configured; access '+({available:'responded',cached:'cached',not_checked:'not checked',access_denied:'denied',authentication_required:'needs authentication',rate_limited:'waiting for request allowance',plan_excluded:'excluded by declared plan',unavailable:'unavailable'}[market.state]||'not checked'):'no key configured'}. ${market.error||market.tier_note||''}`;
+  if($('mw-massive-status'))Object.entries(market.endpoints||{}).forEach(([kind,info])=>{
+   $('mw-massive-status').append(el('small',`${kind==='snapshot'?'Price snapshots':'Historical bars'}: ${info.error||(['available','cached'].includes(info.state)?'response received; live entitlement not established':info.state||'not checked')}`));
+  });
   $('mw-watchlist').replaceChildren(...(d.watchlist||[]).map(w=>link(w.symbol,w.google_finance_url)));
-  $('mw-sources').replaceChildren(...statusRows(d).map(([name,st])=>{const tr=el('tr');tr.append(el('td',name),el('td',st.ok?'connected':('unavailable'+(st.error?' · '+st.error:''))));return tr;}));
+  $('mw-sources').replaceChildren(...statusRows(d).map(([name,st])=>{const tr=el('tr');tr.append(el('td',name),el('td',st.aggregate&&st.received?st.error:st.ok?'connected':('unavailable'+(st.error?' · '+st.error:''))));return tr;}));
  }
  async function poll(force){
   clearTimeout(timer);if(!active||document.hidden||busy)return;busy=true;
@@ -94,9 +171,15 @@
    const d=await r.json();
    if(!r.ok||!d.ok)throw Error(d.error||'Market watch unavailable');
    if(active&&!document.hidden)render(d);
-  }catch(e){$('mw-health').textContent='Sources unavailable';$('mw-status').textContent=(e&&e.name==='AbortError')?'Market watch timed out; it will retry.':String((e&&e.message)||'Market watch unavailable');}
+  }catch(e){$('mw-health').textContent='Sources unavailable';$('mw-status').textContent=(e&&e.name==='AbortError')?'Market watch timed out; it will retry.':String((e&&e.message)||'Market watch unavailable');renderCommunity({note:'Refresh failed. Current community summaries are unavailable.'});}
   finally{clearTimeout(timeout);busy=false;if(active&&!document.hidden)timer=setTimeout(()=>poll(false),POLL_MS);}
  }
+ $('mw-price-form').addEventListener('submit',e=>{
+  e.preventDefault();
+  const symbol=$('mw-price-symbol').value.trim().toUpperCase();
+  if(!/^[A-Z]{1,5}(?:\.[A-Z])?$/.test(symbol)){$('mw-price-result').textContent='Enter a US stock ticker, such as AAPL.';return;}
+  checkQuote(symbol,$('mw-price-check'),$('mw-price-result'));
+ });
  $('mw-refresh').addEventListener('click',()=>poll(true));
  document.addEventListener('visibilitychange',()=>{clearTimeout(timer);if(!document.hidden)poll(false);});
  window.addEventListener('pagehide',()=>{active=false;clearTimeout(timer);});window.addEventListener('pageshow',e=>{active=true;if(e.persisted)poll(false);});

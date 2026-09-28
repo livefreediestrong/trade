@@ -3,6 +3,9 @@ from __future__ import annotations
 
 
 import company_check as cc
+import pytest
+from datetime import datetime, timezone
+from types import SimpleNamespace as NS
 
 BASE = "http://127.0.0.1:5056"
 
@@ -10,15 +13,18 @@ FORM4 = """<?xml version="1.0"?>
 <ownershipDocument>
  <aff10b5One>1</aff10b5One>
  <reportingOwner>
-  <reportingOwnerId><rptOwnerName>DOE JANE</rptOwnerName></reportingOwnerId>
+  <reportingOwnerId><rptOwnerName>DOE JANE</rptOwnerName><rptOwnerCik>1234</rptOwnerCik></reportingOwnerId>
   <reportingOwnerRelationship><isDirector>0</isDirector><isOfficer>1</isOfficer><officerTitle>Chief Financial Officer</officerTitle></reportingOwnerRelationship>
  </reportingOwner>
  <nonDerivativeTable>
   <nonDerivativeTransaction>
+   <securityTitle><value>Common stock</value></securityTitle>
    <transactionDate><value>2026-09-10</value></transactionDate>
    <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
    <transactionAmounts><transactionShares><value>1000</value></transactionShares>
-    <transactionPricePerShare><value>50.5</value></transactionPricePerShare></transactionAmounts>
+    <transactionPricePerShare><value>50.5</value></transactionPricePerShare><transactionAcquiredDisposedCode><value>A</value></transactionAcquiredDisposedCode></transactionAmounts>
+   <postTransactionAmounts><sharesOwnedFollowingTransaction><value>5000</value></sharesOwnedFollowingTransaction></postTransactionAmounts>
+   <ownershipNature><directOrIndirectOwnership><value>D</value></directOrIndirectOwnership></ownershipNature>
   </nonDerivativeTransaction>
   <nonDerivativeTransaction>
    <transactionDate><value>2026-09-11</value></transactionDate>
@@ -34,18 +40,19 @@ def test_form4_rows_carry_role_action_value_and_plan_flag():
     assert [r["code"] for r in rows] == ["P", "F"]
     buy = rows[0]
     assert buy["name"] == "Doe Jane" and buy["role"] == "Chief Financial Officer"
-    assert buy["action"] == "bought on the open market" and buy["value"] == 50500 and buy["planned"] is True
-    assert rows[1]["value"] is None and rows[1]["action"] == "gave shares to pay tax"
+    assert buy["action"] == "purchase (market or private)" and buy["value"] == 50500 and buy["planned"] is True
+    assert rows[1]["value"] is None and rows[1]["action"] == "shares used for tax or exercise payment"
 
 
 def test_insider_summary_puts_buys_first_and_explains_sales():
     rows = cc.parse_form4(FORM4)
     s = cc.summarize_insiders("ABC", rows, 1)
-    assert "1 insider bought ABC" in s["summary"] and "$50.5K" in s["summary"]
-    sale = dict(rows[0], code="S", action="sold on the open market")
+    assert '1 purchase and 0 sale rows' in s['summary'] and s['buys']['value'] == 50500
+    assert 'own money' not in s['summary'] and 'market and private' in s['summary']
+    sale = dict(rows[0], code="S", action="sale (market or private)")
     s = cc.summarize_insiders("ABC", [sale], 1)
-    assert "No insider bought" in s["summary"] and "Sales are common" in s["summary"]
-    assert "no open-market" in cc.summarize_insiders("ABC", [rows[1]], 3)["summary"]
+    assert '0 purchase and 1 sale rows' in s['summary']
+    assert '0 purchase and 0 sale rows' in cc.summarize_insiders('ABC', [rows[1]], 3)['summary']
 
 
 def test_company_names_are_cleaned_for_name_matched_databases():
@@ -112,3 +119,50 @@ def test_route_rejects_bad_symbols_and_serves_cached_checks(monkeypatch, tmp_pat
     assert first["cached"] is False and second["cached"] is True and calls == ["LMT"]
     client.get("/api/research/company?ticker=LMT&refresh=1", base_url=BASE)
     assert calls == ["LMT", "LMT"] and (tmp_path / "company_checks.json").exists()
+
+
+@pytest.fixture
+def sec_responses(monkeypatch):
+    import edgar_client
+    monkeypatch.setattr(cc, "_sec_headers", lambda: {"User-Agent": "test owner"})
+    monkeypatch.setattr(edgar_client, "cik_for_ticker", lambda t: "0000000123")
+    monkeypatch.setattr(cc.time, "sleep", lambda *a: None)
+    listing = {"filings": {"recent": {"form": ["4", "4"], "filingDate": ["2026-09-11", "2026-09-12"],
+                                     "accessionNumber": ["0001-01", "0001-02"], "primaryDocument": ["a.xml", "b.xml"]}}}
+    return listing
+
+
+def test_failed_filings_never_become_no_insider_buys(monkeypatch, sec_responses):
+    monkeypatch.setattr(cc.requests, "get", lambda url, **kw:
+                        NS(status_code=200, json=lambda: sec_responses) if "submissions" in url else NS(status_code=403))
+    result = cc.insiders("ABC", datetime(2026, 9, 25, tzinfo=timezone.utc))
+    assert not result["ok"] and result["reviewed_filings"] == 0
+    assert "unknown" in result["error"] and "no insider" not in result["error"].lower()
+
+
+def test_partial_coverage_is_explicit_and_old_transactions_excluded(monkeypatch, sec_responses):
+    old = FORM4.replace("2026-09-10", "2026-01-10")
+    monkeypatch.setattr(cc.requests, "get", lambda url, **kw:
+                        NS(status_code=200, json=lambda: sec_responses) if "submissions" in url else
+                        NS(status_code=200, content=old.encode(), text=old) if url.endswith("a.xml") else NS(status_code=503))
+    result = cc.insiders("ABC", datetime(2026, 9, 25, tzinfo=timezone.utc))
+    assert result["ok"] and not result["complete"] and result["reviewed_filings"] == 1
+    assert result["buys"]["people"] == 0 and "Partial filing coverage" in result["summary"]
+    assert "Unread filings" in result["summary"]
+
+
+@pytest.mark.parametrize("text", ["<html><body>Access denied</body></html>", "<!DOCTYPE x><ownershipDocument/>"])
+def test_nonfiling_responses_are_not_empty_valid_filings(text):
+    with pytest.raises(ValueError):
+        cc.parse_form4(text)
+
+
+@pytest.mark.parametrize("at", ["bad", float("nan"), float("inf"), 1100, 900])
+def test_corrupt_future_and_failed_cached_reads_are_rechecked(monkeypatch, at):
+    monkeypatch.setattr(cc.time, "time", lambda: 1000)
+    monkeypatch.setattr(cc, "_cache", {"ABC": {"ok": True, "_at": at, "_cache_version": cc.CACHE_VERSION,
+                                               "sections": {"insiders": {"ok": False}}}})
+    monkeypatch.setattr(cc, "_save_cache", lambda: None)
+    calls = []
+    monkeypatch.setattr(cc, "build", lambda t: calls.append(t) or {"ok": True, "sections": {}})
+    assert cc.check("ABC")["cached"] is False and calls == ["ABC"]

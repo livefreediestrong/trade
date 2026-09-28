@@ -70,6 +70,8 @@ END:VCALENDAR
 
 @pytest.fixture(autouse=True)
 def clean(monkeypatch, tmp_path):
+    monkeypatch.setattr(me, "_source_bea", lambda: [])
+    monkeypatch.setattr(me, "_source_census", lambda: [])
     monkeypatch.setattr(me, "_state", {"events": [], "sources": {}, "at": 0.0, "loaded": True, "by_source": {}})
     me.configure(tmp_path)
     monkeypatch.setenv("TOMAHAWK_NO_BG", "1")

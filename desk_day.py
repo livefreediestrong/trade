@@ -98,8 +98,34 @@ def _event_line(event: dict[str, Any]) -> dict[str, Any]:
         kind, text = "pending", f"Waiting on the broker for {ticker}: {message}"
     else:
         kind, text = "info", message or status.replace("_", " ")
-    return {"at": event.get("at"), "kind": kind, "ticker": ticker, "text": text[:220],
+    return {"at": event.get("at"), "kind": kind, "ticker": ticker, "text": plain_words(text)[:220],
             "id": f"{event.get('at')}|{event.get('signal_id')}|{status}"}
+
+
+SOURCE_LABELS = {"fed": "Fed calendar", "bls": "BLS jobs & inflation calendar", "president": "President's schedule",
+                 "fomc_calendar": "FOMC dates"}
+
+_PLAIN = (
+    (re.compile(r"Market data or setup assessment unavailable for (\S+); retrying after the saved research interval"),
+     lambda m: f"Couldn't get price data for {m[1]}; he'll try again later"),
+    (re.compile(r"No qualifying setup for (\S+) \((AVOID|WATCH): "),
+     lambda m: f"Looked at {m[1]}, no trade (screener said {'avoid' if m[2] == 'AVOID' else 'watch only'}: "),
+    (re.compile(r"No qualifying setup for (\S+)$"), lambda m: f"Looked at {m[1]}, no trade"),
+    (re.compile(r"Relative volume only (\d+(?:\.\d+)?)x \(need ≥(\d+(?:\.\d+)?)x\)\.?"),
+     lambda m: f"trading was only {round(float(m[1]) * 100)}% of its usual volume; he needs {round(float(m[2]) * 100)}%."),
+    (re.compile(r"Rel vol (\d+(?:\.\d+)?)x"), lambda m: f"trading at {round(float(m[1]) * 100)}% of usual volume"),
+    (re.compile(r"No unusual interest yet — skip\.?"), lambda m: "No unusual interest yet, so he skipped it."),
+    (re.compile(r"Intraday session not today \(latest=([\d-]+)\)\.\s*"), lambda m: f"Today's trading data isn't in yet (last session {m[1]}); "),
+    (re.compile(r"\s*— WATCH, not AVOID\.?"), lambda m: "."),
+    (re.compile(r"price above all SMAs"), lambda m: "price above its 10, 20 and 50-day averages"),
+)
+
+
+def plain_words(text: str) -> str:
+    """Display-only rewording of screener shorthand; the recorded events keep the original text."""
+    for pattern, repl in _PLAIN:
+        text = pattern.sub(repl, text)
+    return text
 
 
 def fox_view(agent: dict[str, Any] | None, window: dict[str, Any] | None, now: datetime) -> dict[str, Any]:
@@ -115,7 +141,7 @@ def fox_view(agent: dict[str, Any] | None, window: dict[str, Any] | None, now: d
     if match:
         ticker = match.group(1)
     if not agent.get("configured"):
-        state, headline = "off", "Fox is off duty. Save a broker agent policy on the Auto page to put him to work."
+        state, headline = "off", "Fox is off duty. Save his rules on the Fox page to put him to work."
     elif not agent.get("enabled") or agent.get("mode") != "auto_live" or not agent.get("session_active"):
         state, headline = "resting", "Fox is resting: the broker agent is paused. Positions and orders stay at the broker."
     elif phase == "waiting_for_market" or agent.get("market_open") is False:
@@ -172,13 +198,15 @@ def chores(desk, now: datetime, events_today: list[dict[str, Any]], wsb: dict[st
     detail = (f"{len(events_today)} scheduled event(s) today" + (f", {len(high_today)} high impact" if high_today else "")
               if events_today else "No medium or high impact events in available sources today")
     if bad:
-        detail += f" · unavailable: {', '.join(bad)} (saved dates may still be shown)"
+        names = ", ".join(SOURCE_LABELS.get(name, name) for name in bad)
+        detail += f" · not loading: {names} (saved dates are shown where the desk has them)"
     elif not status.get("refreshed_at"):
         detail += " · reading the Fed, BLS and White House calendars"
     out.append(_chore("calendar", "Check the calendar",
                       "attention" if bad else "done" if status.get("refreshed_at") else "working", detail))
     if not wsb.get("configured"):
-        out.append(_chore("wsb", "Read the WSB threads", "off", "Reddit is not connected (REDDIT_CLIENT_ID/SECRET)"))
+        out.append(_chore("wsb", "Read the WSB threads", "off",
+                          "Direct Reddit access needs approved credentials. Independent WSB summaries are available under Research; they do not supply direct-thread crowding checks."))
     else:
         names = ", ".join(t.get("label") or "thread" for t in wsb.get("threads") or []) or "no discussion thread found yet"
         out.append(_chore("wsb", "Read the WSB threads", "done" if wsb.get("fresh") else "attention",
@@ -200,7 +228,10 @@ def chores(desk, now: datetime, events_today: list[dict[str, Any]], wsb: dict[st
         journal = None
     if journal is not None:
         if journal.get("error"):
-            out.append(_chore("journal", "Sync the trade journal", "attention", str(journal["error"])[:160]))
+            error = str(journal["error"])
+            if any(word in error for word in ("ConnectionError", "TimeoutError", "ConnectionRefused", "not connected")):
+                error = "Can't reach the broker, so recent broker trades can't be copied into the journal yet."
+            out.append(_chore("journal", "Sync the trade journal", "attention", error[:160]))
         elif journal.get("last_sync"):
             out.append(_chore("journal", "Sync the trade journal", "done",
                               f"Broker executions synced {_ago(journal.get('last_sync'), now)}"))
@@ -318,7 +349,7 @@ def reasoning(desk, cfg: dict[str, Any], now: datetime, fox: dict[str, Any], win
                            (f"Fox sells what he holds {flat} min before." if flat and policy.get("protective_exits", True)
                             else "Fox is set to hold overnight.")))
     if not wsb_monitor.configured():
-        notes.append(_note("wsb_off", "info", "WSB isn't connected, so crowding checks are off."))
+        notes.append(_note("wsb_off", "info", "Direct WSB threads are not connected, so thread crowding checks are unavailable. Independent WSB summaries remain separate research."))
     return notes
 
 

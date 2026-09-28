@@ -24,6 +24,12 @@ d=snapshot();d.brain.health={state:'unavailable'};assert.match(tradingSummary(d,
 d=snapshot();d.brain={provider:'jev',configured:false,jev_key_present:true,selection_error:'JEV is locked until repaired.'};s=tradingSummary(d,now);assert.equal(s.brain,'JEV · unavailable');assert.ok(s.checks.includes(d.brain.selection_error));
 d=snapshot();d.agent.policy.max_order_usd=1e9;assert.match(tradingSummary(d,now).limits,/1,000,000,000/);assert.ok(tradingSummary(d,now).checks.some(x=>x.includes('$1 billion')));
 d=snapshot();d.agent.policy.max_daily_loss_usd=null;assert.match(tradingSummary(d,now).limits,/incomplete/);
+d=snapshot();d.agent.policy.max_order_usd=1e9;d.agent.policy.max_daily_loss_usd=1e9;
+d.risk_limits={verified:true,max_order_usd:4.4,max_daily_loss_usd:4.4,max_orders_per_day:12};
+d.agent.auto_options={enabled:true};d.agent.auto_options_entry_block='Automatic options await paper qualification. Stocks remain available.';
+s=tradingSummary(d,now);assert.match(s.limits,/Effective account limits.*4.40/);assert.ok(!s.limits.includes('1,000,000,000'));
+assert.ok(s.checks.some(x=>x.includes('paper qualification')));assert.equal(s.switch,'On');
+d.broker.age_sec=31;assert.match(tradingSummary(d,now).limits,/await fresh/);
 // Actual controller: render, expiry, a failed read, and no trading writes.
 const nodes={},requests=[],timers=[],listeners={};
 const node=id=>nodes[id]??={textContent:'',dataset:{},addEventListener(){},replaceChildren(...children){this.children=children;}};

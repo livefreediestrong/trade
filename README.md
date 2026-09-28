@@ -1,6 +1,8 @@
 # nadzeeɫ — Live Trading and Paper Research
 
-Windows-local trading and research desk, also called **Tomahawk** / **Daytrade Signal Desk** in the launcher and code. Includes separate live and paper workspaces, a shared US-market scanner, options research, Moss research memory, and the Fox / Changing Woman sidebar companions.
+Windows-local trading and research desk, also called **Tomahawk** / **Daytrade Signal Desk** in the launcher and code. Includes separate live and paper workspaces, a shared US-market scanner, options research, research memory, and the Fox / Changing Woman sidebar companions.
+
+IBKR maintenance candidate: [P&L library revision and paper diagnostic](docs/PNL_REVISION_2026_09_26.md). The adapter uses the pinned maintained library; real reconnect recovery still requires the documented broker-paper checks.
 
 ## Install from GitHub
 
@@ -13,6 +15,10 @@ This repository contains the application source and artwork. Your API keys, brok
 
 The GitHub upload is a clean source snapshot, preserving the destination repository's history without importing older local diagnostic commits. The original local installation and its data remain separate. Do not run both checkouts against the same broker account or shared data folder.
 
+Current repair status: [September 26 orderly restart and P&L diagnostics](docs/BROKER_RESTART_CONTINUATION_2026_09_26.md), [exit-safety continuation](docs/EXIT_SAFETY_CONTINUATION_2026_09_26.md), [maintenance plan](docs/MAINTENANCE_PLAN_2026_09_26.md), and the historical [September 25 repair pass](docs/FIX_ALL_2026_09_25.md), with remaining work tracked in [TASKS.md](TASKS.md). Feature availability is distinct from broker-paper qualification.
+
+New: [Full/Focused views, changeable themes, companion chat, memory and weekly review](docs/EXPERIENCE_AND_WEEKLY_REVIEW_2026_09_26.md).
+
 Useful feature references:
 
 - [Shared market scanner](docs/SHARED_MARKET_SCANNER.md)
@@ -23,7 +29,7 @@ Useful feature references:
 - [Manual live enablement reference](docs/MANUAL_LIVE_ENABLEMENT.md)
 - [Direct stock tickets and position closing](docs/LIVE_STOCK_TICKETS.md)
 - [Automation debugging and scheduler boundaries](docs/AUTOMATION_DEBUG.md)
-- [Moss broker agent: policy, activation, execution and limits](docs/LIVE_AGENT.md)
+- [Fox broker agent: policy, activation, execution and limits](docs/LIVE_AGENT.md)
 - [Market watch, X watcher and internet-wide trend scanner](docs/MARKET_WATCH.md)
 - [Today at the desk: Fox, Changing Woman, scheduled events and WSB](docs/MARKET_DAY.md)
 - [Research capabilities review](docs/RESEARCH_CAPABILITIES.md)
@@ -53,13 +59,13 @@ Complete **IB Gateway sign-in / 2FA** when prompted. The launcher does not store
 
 The IBKR adapter keeps one API connection on an owner thread and retains its client ID across requests. Disconnects clear identity verification; the next request reconnects. Account balances and holdings can remain readable when the separate daily P&L subscription is unavailable. In that case the desk shows the P&L limitation and blocks new risk. Verified closes can still reduce holdings after accounting for working orders.
 
-If daily P&L stays unavailable, check **Configure → Settings → API → Settings → Prepare portfolio PnL data when downloading positions** in IB Gateway. Prefer the desk **Refresh broker P&L** control (or `POST /api/broker-pnl-refresh`) first: it soft-reconnects only the API client and re-requests `reqPnL` without restarting the Gateway process. The desk also auto-retries silent subscriptions, handles IB error **2100** (competitor account-data request) by soft reconnect + re-subscribe with backoff, and while `auto_live` is on with `risk_ready` false can schedule soft refreshes every `IBKR_PNL_SOFT_REFRESH_MINUTES` (default 5; set `0` to disable). Account-window realized/unrealized figures may still display while Daily P&L is missing; they never satisfy `risk_ready`. The UI shows **Recovering Daily P&L...
+If daily P&L stays unavailable, check **Configure → Settings → API → Settings → Prepare portfolio PnL data when downloading positions** in IB Gateway. Prefer the desk **Refresh broker P&L** control (or `POST /api/broker-pnl-refresh`) first: it soft-reconnects only the API client and re-requests `reqPnL` without restarting the Gateway process. The desk also auto-retries silent subscriptions, records IB error **2100** and re-subscribes with backoff without issuing a new STOP_UPDATE, and while `auto_live` is on with `risk_ready` false can schedule soft refreshes every `IBKR_PNL_SOFT_REFRESH_MINUTES` (default 5; set `0` to disable). Account-window realized/unrealized figures may still display while Daily P&L is missing; they never satisfy `risk_ready`. The UI shows **Recovering Daily P&L...
 
 **2FA / IB Key cannot be eliminated** and must never be disabled. Soft reconnect does not log Gateway out, so it usually avoids 2FA. Human 2FA is required when Gateway fully logs out (weekly reauthentication, explicit logout, cold start after token expiry). To make full logouts rare: in IB Gateway set **Configure → Lock and Exit → Never lock** and **Auto restart** at a time you are around (IB’s recommended API setup). Optional later: [IBC](https://github.com/IbcAlpha/IBC) can drive Auto-Restart; this desk documents it only — it is not bundled. A Windows Task Scheduler proposal lives in `tools/Register-GatewayDailyRestart.ps1` (relaunches `ibgateway.exe`; login may auto if the session is cached, otherwise you still approve IB Key).
 
 Gateway is discovered under `C:\Jts\ibgateway` or your user `Jts\ibgateway` directory. For another location, set `IB_GATEWAY_EXE` in `.env`. `Launch.bat` runs the same launcher; it never blindly terminates a port owner. For diagnostics, run `Launch.bat -NoBrowser -NoDialogs`.
 
-The launcher reuses a running desk only when its health response identifies this checkout and the configured data directory. If the code in this folder changed after that desk started (for example after `git pull`), the launcher asks whether to restart it; the desk refuses to stop while a broker order is unresolved, and headless runs (`-NoDialogs`, the watchdog) never restart it. The page also shows a notice until the desk is restarted. `Launch.vbs` and `Launch.bat` run the launcher with a process-scoped `-ExecutionPolicy Bypass`, so Windows' default script policy does not block the shortcut. Another checkout on the same port is reported as a conflict. Process environment settings override `.env`; inline comments are supported, and quote values that contain a literal `#` after whitespace. Jev request budgets use `JEV_RPM=30` and `JEV_DAILY=500` by default and are reserved before provider requests.
+The launcher reuses a running desk only when its health response identifies this checkout and the configured data directory. If the code in this folder changed after that desk started (for example after `git pull`), the launcher asks whether to restart it; the desk refuses to stop while a broker order is unresolved, and headless runs (`-NoDialogs`, the watchdog) never restart it. The page also shows a notice until the desk is restarted. `Launch.vbs` and `Launch.bat` run the launcher with a process-scoped `-ExecutionPolicy Bypass`, so Windows' default script policy does not block the shortcut. Another checkout on the same port is reported as a conflict. Process environment settings override `.env`; inline comments are supported, and quote values that contain a literal `#` after whitespace. JEV remains unavailable and cannot be selected; saved JEV configurations are held without a silent model fallback.
 
 ## Market-hours data and decision handling
 
@@ -72,9 +78,9 @@ The launcher reuses a running desk only when its health response identifies this
 - Stale and nonactionable pending research cannot monopolize the scan queue. Replacement ideas retain the previous record as superseded history.
 - Waitress reserves capacity for ordinary requests by admitting at most four SSE streams; extra tabs use polling.
 
-## One page, separate live and paper accounts
+## Separate live and paper workspaces
 
-The desk shows **Live trading**, **Paper research**, **Market research**, and **Settings** together on one page, with fixed links between sections. The full interface is always shown; Simple mode is deferred. The weekly report is inline and can be refreshed without leaving the desk.
+The primary interface uses **Overview**, **Fox**, **Paper**, **Research**, **Ticket**, and **Settings** pages. Fox holds broker automation; Paper holds local simulated trading. The legacy combined layout remains available at `/desk/all`. Changing pages never enables trading or changes account limits. The weekly report remains available from Report card.
 
 **Live trading** is the first, primary section. It shows the verified broker account, holdings, broker orders and live ideas. The existing selected account and execution mode are retained. In `live_manual`, an idea needs an explicit order review and matching ticker acknowledgement before submission. A broker market order has **no attached stop-loss, take-profit or trailing stop**; paper exit controls are hidden and rejected on broker submissions.
 
@@ -276,7 +282,7 @@ Open `http://127.0.0.1:5056`
 - "Live · 2s / Not updating" freshness in both modes with a banner when data goes stale; the "(2) waiting" count shows in the browser tab.
 - Order confirmation and the tutorial remain dialogs. Settings and the weekly report are inline; focus rings and reduced-motion preferences are respected.
 
-The desk uses a plain single-page layout. Light and dark colors live in the tokens at the top of `static/app.css`; the header theme button keeps your choice. No generated stylesheet or frontend build step. Edit the four section templates under `templates/desk/`. See [UI structure](docs/UI_STRUCTURE.md) and the [trading platform review](docs/TRADING_PLATFORM_REVIEW.md).
+The desk has six pages: Overview, Fox, Paper, Research, Ticket and Settings. Page templates are in `templates/pages/`, shared components in `templates/desk/`, with a legacy combined view retained. Light/dark tokens are in `static/app.css`; `static/page_split.css` handles page layout. No frontend build step is required. See [UI structure](docs/UI_STRUCTURE.md) and the [trading platform review](docs/TRADING_PLATFORM_REVIEW.md).
 
 The subsequent [workbench implementation](docs/WORKBENCH_IMPLEMENTATION.md) adds reviewed DAY limit orders, explicit cancellation review, linked daily candles/news, saved watchlists, filtered CSV journals, recorded-policy evaluation and reproducible paper stress experiments. It documents the remaining broker qualification and order-capability limits; simulated tests do not establish live execution readiness.
 
@@ -304,51 +310,20 @@ The [Moss paper workday](docs/MOSS_WORKDAY.md) runs local paper research through
 - **Claude (`claude_brain.py`):** choose "Claude" as the brain, or tick "Claude head-to-head" to have Claude answer silently next to your main AI; the report card shows who was right more often on the same decisions. Needs `ANTHROPIC_API_KEY` in `.env`. Model `CLAUDE_MODEL` (default `claude-opus-5`, ~$5/$25 per million tokens; costs for other current models, including cache writes/reads, are in `claude_brain.PRICES`), `CLAUDE_EFFORT` (default `low`; ignored for Haiku 4.5, which takes no effort or adaptive thinking). On Claude Opus 5 and Fable 5/5.1 a safety decline is re-run server-side on Anthropic's recommended fallback (`fallbacks: "default"`); `CLAUDE_FALLBACKS=0` turns that off, and a final refusal stays a hold.
 - **Past-data test (`backtest.py`):** "Test the rules on past data" in the report card replays the screener's PASS rule on ~2 years of hourly prices with a learning/check split and a no-filter baseline. `GET/POST /api/backtest`.
 
-## Auto upkeep (2026-09-24)
+## Maintenance and recovery (2026-09-26)
 
-`tools/desk_upkeep.py` runs from two Windows scheduled tasks registered by
-`tools/Register-AutoUpkeep.ps1 -Register` (remove with `-Unregister`). Register them only on the PC
-that runs the live desk.
+See the [maintenance plan](docs/MAINTENANCE_PLAN_2026_09_26.md). Settings → Connections & automatic routines shows dated local maintenance receipts and the published North American IBKR reset window. The window is a planning assumption, not confirmation of an outage.
 
-- **Tomahawk-Desk-Watchdog** (every 5 min): if `/api/health` is unreachable twice 20s apart, runs the
-  normal launcher headless for the desk only (`-NoBrowser -NoDialogs -NoBroker`, 10-minute cooldown).
-  If the desk is up but the broker socket is down, it asks the desk (`POST /api/broker-ensure-gateway`
-  with `automatic: true`) instead of opening Gateway itself. Never stops or restarts a healthy desk.
+The existing Windows tasks run `tools/desk_upkeep.py` from this checkout's virtual environment:
 
-### When the desk reopens IB Gateway
+- **Tomahawk-Desk-Watchdog**, every five minutes: verify the app ID, port, checkout and data directory; recover missing workers; request a guarded restart only for stale app code when the session is inactive and broker holdings/orders are verified empty. An unavailable desk is checked twice before the normal `-NoBrowser -NoDialogs -NoBroker` launcher is used, with a ten-minute cooldown. Broker/provider errors do not cause blind process restart loops.
+- **Tomahawk-Desk-Upkeep**, daily at 16:40 computer-local time: verify a state backup first, then rotate oversized logs and run SQLite checks/checkpoints. A failed backup defers housekeeping. Source files, archives and caches are retained for manual review. Full regression tests of changed builds wait until the market is closed, the app is healthy/current and no decision or unresolved submission is in flight. A passed build is not retested every day. Reports live in `data/upkeep`; problems also appear in `TASKS.md`.
 
-Unattended callers (the watchdog, the Moss agent's tick, the daily `Ensure-IBGateway.ps1` task) reopen
-Gateway only when it had signed in and served the API since its last launch and has then been gone for
-90 seconds (so Gateway's own auto-restart is not raced). The watchdog and the agent also require an active
-live session (`live_manual` or `auto_live`, session started), so a Gateway you close after trading stays closed. A login window you close, or one that exits
-without signing in, stays closed: the desk shows "closed before it signed in" and waits for you to use
-**Ensure Gateway** (Live trading section) or the desktop shortcut.
+Unattended Gateway checks are delegated to the running desk, including the legacy `tools/Ensure-IBGateway.ps1` helper. They require an active authorized live session, permitted market-day hours (09:00 ET to the session close), a signed-in Gateway that subsequently disappeared, a 90-second absence check, complete Windows process evidence, a shared launch lock and the existing cooldown/budget. A pre-sign-in window that closed is not automatically reopened. Normal sign-in and weekly reauthentication remain with the owner. The existing watchdog already covers this check; an additional daily Gateway task is normally unnecessary.
 
-Every desk launcher follows the same rules, whether it is the desk, the desktop shortcut or the daily task:
+Every launch path avoids another copy when a Gateway/TWS image, window, recorded process or related Java process exists; an incomplete check is unknown. The budget is three launches in 30 minutes and at most two unattended launches per day. `IB_GATEWAY_AUTOLAUNCH=0` disables desk launches. State is recorded in `data/gateway_launch.json`. The app never logs Gateway out, changes trading limits or automatically restores old intents as maintenance.
 
-- **Only one Gateway.** Nothing starts a second Gateway while one is running. Running means any of:
-  - an `ibgateway.exe` or `tws.exe` process (including renamed images such as `ibkrgateway.exe`);
-  - a Gateway/TWS `java.exe`/`javaw.exe` (IBC);
-  - a window titled **IBKR Gateway**, IB Gateway or Trader Workstation;
-  - the process ID the desk last started.
-- **An unknown answer counts as running.** If Windows cannot list running programs, Gateway is not started.
-- **One launch at a time.** Launches share one lock across processes and a 180-second cooldown.
-- **Launch budget.** At most three launches in any 30 minutes. Unattended launches: at most two a day, and only
-  from 9:00 ET to the close on trading days.
-- **Off switch.** Set `IB_GATEWAY_AUTOLAUNCH=0` to stop the desk from ever starting Gateway, for example if you
-  start it yourself or with IBC.
-
-Launches, sign-ins and counts are kept in `data/gateway_launch.json` (`at`, `source`, `api_seen_at`, `launches`,
-`automatic_launches`, `pid`).
-- **Tomahawk-Desk-Upkeep** (daily 16:40): moves root `_*` backups/scratch and `data/_*` probe dumps into
-  `_archive/`, deletes `_archive` items untouched for `UPKEEP_BACKUP_DAYS` (default 30), rolls
-  `data/*.log` over `UPKEEP_LOG_MAX_MB` (default 25) when not in use, clears `__pycache__`, runs SQLite
-  `quick_check` + WAL checkpoint + `optimize`, runs the test suite in an isolated temp data dir, and
-  writes `data/upkeep/last_daily.json`. Problems are flagged on one line in `TASKS.md` and cleared
-  automatically once healthy.
-
-Upkeep never edits config, orders, positions, sessions, policies or broker settings, and never logs
-Gateway out. Check status with `.venv\Scripts\python.exe tools\desk_upkeep.py status`.
+Task registration is available through `tools/Register-AutoUpkeep.ps1 -Register`; do not add duplicate tasks. The schedules were inspected, not re-registered, in this batch. For a read-only report use `.venv\Scripts\python.exe tools\desk_upkeep.py status`.
 
 `tools/Install-DeskShortcut.ps1` creates the Desktop and Start menu shortcuts with the wheel icon
 (`static/desk.ico`, rendered from `static/nadzeel-mark.svg`).
@@ -408,3 +383,5 @@ or in the live agent policy for the exit rules.
   `error_reporting.py` sends exception types, messages and stack frames only, drops request bodies,
   headers, cookies, local variables and breadcrumbs, and redacts broker account numbers and long tokens.
   Without the variable nothing is sent.
+
+WSB research summaries and Massive access handling: [September 28 maintenance](docs/COMMUNITY_FEEDS_2026_09_28.md).

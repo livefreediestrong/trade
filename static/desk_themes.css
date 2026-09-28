@@ -1,0 +1,30 @@
+/* Theme boundary: these appearance tokens/decorations have no trading behavior.
+   Existing nadzeel.css still supplies shared component geometry during migration. */
+:root[data-skin=plain]{--bg:#101820;--panel:#17232e;--panel2:#223342;--text:#f2f6fa;--muted:#bbcbd9;--border:#567086;--accent:#8ecbff;--green:#91d8b4;--red:#ffac9f;--amber:#f4ce83;--radius:12px;--serif:system-ui,-apple-system,'Segoe UI',sans-serif;--sans:system-ui,-apple-system,'Segoe UI',sans-serif;--mono:Consolas,monospace}
+:root[data-skin=plain][data-theme=light]{--bg:#f1f5f8;--panel:#fff;--panel2:#e8eff5;--text:#162a3b;--muted:#425d72;--border:#91a6b7;--accent:#165b94;--green:#19613e;--red:#a92d25;--amber:#785014}
+:root[data-skin=plain] .desert-scene,:root[data-skin=plain] .logo-medallion,:root[data-skin=plain] .scene-only{display:none!important}
+:root[data-skin=plain] .wordmark{font:650 17px/1.3 var(--sans);letter-spacing:0}
+.theme-brand-plain{display:none}:root[data-skin=plain] .theme-brand-desert{display:none}:root[data-skin=plain] .theme-brand-plain{display:inline}
+:root[data-skin=plain] .panel,:root[data-skin=plain] .overview-card,:root[data-skin=plain] .desk-topnav{background:var(--panel);box-shadow:none;backdrop-filter:none}
+:root[data-skin=plain] .page-nav{background:var(--bg);backdrop-filter:none}
+:root[data-skin=plain] h1,:root[data-skin=plain] h2,:root[data-skin=plain] h3{font-family:var(--sans);font-weight:650;letter-spacing:-.02em}
+:root[data-skin=plain] h2{font-size:24px}:root[data-skin=plain] h3{font-size:19px}
+:root[data-portraits=off] #moss-sidebar-stage .moss-sprite{visibility:hidden}
+:root[data-skin=plain] #moss-sidebar-stage{background:var(--panel)}
+:root[data-skin=plain] #moss-trails{visibility:hidden}
+.desk-view-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0 12px;font:500 13px/1.5 var(--sans,system-ui)}
+.desk-view-tools label{display:flex;align-items:center;gap:8px}.desk-view-tools p{margin:0;color:var(--muted);flex:1 1 180px}
+.desk-view-tools select,.desk-view-tools button,.experience-preferences select{min-height:44px}
+.desk-tool-fold{border:1px solid var(--border);border-radius:var(--radius);margin:12px 0;min-width:0}
+.desk-tool-fold>summary{padding:14px;cursor:pointer;font-weight:600;min-height:44px}
+:root[data-detail=full] .desk-tool-fold{border:0;margin:0}
+:root[data-detail=full] .desk-tool-fold>summary{display:none}
+.desk-tool-fold>.panel{margin-top:0}.experience-preferences{display:grid;gap:8px;padding:8px 0}
+.experience-preferences label{display:block}.experience-preferences select{width:100%;margin:4px 0!important;font-size:12px!important}
+.weekly-review{scroll-margin-top:12px}.weekly-review pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.weekly-review article{padding:12px;border:1px solid var(--border);border-radius:10px;margin:10px 0}
+.weekly-review .weekly-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.weekly-review select{max-width:100%;min-height:44px}
+:where(button,a,input,select,textarea,summary):focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+@media(max-width:600px){.desk-view-tools{gap:6px}.desk-view-tools p{flex-basis:100%}.weekly-review .weekly-metrics{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){.desk-tool-fold,.weekly-review{scroll-behavior:auto}}

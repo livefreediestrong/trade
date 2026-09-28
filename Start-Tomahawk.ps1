@@ -69,7 +69,7 @@ function Confirm-DeskRestart([string]$Message) {
     return ([System.Windows.MessageBox]::Show($Message, 'Daytrade Signal Desk', 'YesNo', 'Question') -eq 'Yes')
 }
 function Request-DeskRestart([string]$Url, [int]$Port) {
-    # The desk refuses while a broker order is unresolved; otherwise it exits and frees the port.
+    # The desk refuses unresolved orders or unfinished broker cleanup before freeing the port.
     try {
         Invoke-RestMethod "${Url}api/desk/shutdown" -Method Post -ContentType 'application/json' `
             -Body (@{ confirm = 'RESTART' } | ConvertTo-Json -Compress) -TimeoutSec 10 | Out-Null
@@ -227,13 +227,13 @@ function Ensure-DeskPython([string]$LogDir) {
         $code = Invoke-SetupCommand $bootstrap.Source @('-m', 'venv', ('"' + (Join-Path $Root '.venv') + '"')) (Join-Path $LogDir 'setup.log')
         if ($code -ne 0) { throw 'Could not create the Python environment. See data\setup.log.' }
     }
-    $check = '"import sys; assert sys.version_info >= (3,11); import flask,waitress,yfinance,pandas,numpy,requests,dotenv,tzdata,anthropic,ib_insync,pydantic; assert (2,13) <= tuple(map(int,pydantic.VERSION.split(''.'')[:2])) < (3,0)"'
+    $check = '"import sys; from importlib.metadata import version; assert sys.version_info >= (3,11); import flask,waitress,yfinance,pandas,numpy,requests,dotenv,tzdata,anthropic,ib_async,pydantic; assert ib_async.__version__ == ''2.1.0'' and version(''aeventkit'') == ''2.1.0'' and tzdata.__version__ == ''2025.3''; assert (2,13) <= tuple(map(int,pydantic.VERSION.split(''.'')[:2])) < (3,0)"'
     $code = Invoke-SetupCommand $python @('-c', $check) (Join-Path $LogDir 'dependency-check.log')
     if ($code -ne 0) {
         $code = Invoke-SetupCommand $python @('-m', 'pip', 'install', '-r', ('"' + (Join-Path $Root 'requirements.txt') + '"')) (Join-Path $LogDir 'setup.log')
         if ($code -ne 0) { throw 'Dependency setup failed. Check your connection and data\setup.log, then open the shortcut again.' }
         $code = Invoke-SetupCommand $python @('-c', $check) (Join-Path $LogDir 'dependency-check.log')
-        if ($code -ne 0) { throw 'Dependencies are still incompatible after setup. Python 3.11+ and Pydantic 2.13+ (below 3) are required. See data\dependency-check.log.' }
+        if ($code -ne 0) { throw 'Dependencies are still incompatible after setup. Python 3.11+, Pydantic 2.13+ (below 3), and ib_async 2.1.0 are required. See data\dependency-check.log.' }
     }
     return $python
 }

@@ -7,13 +7,15 @@
  const count=n=>typeof n==='number'&&Number.isInteger(n)&&n>=0?n.toLocaleString('en-US'):'Unavailable';
  const url=value=>{try{const u=new URL(value);return /^https?:$/.test(u.protocol)&&!u.username&&!u.password?u.href:'';}catch(_){return '';}};
  function sourceRows(e){return [e.outcomes,e.executions,e.coverage,...(e.market||[]),...(e.headlines||[]),...(e.documents||[]),...(e.memories||[])].filter(Boolean);}
+ // The summary stays visible; the long reasoning folds away with counts so the page stays scannable.
+ function fullLabel(r){const words={challenge:['challenge','challenges'],findings:['finding','findings'],hypotheses:['idea to test','ideas to test'],uncertainties:['open question','open questions']};const parts=Object.entries(words).map(([k,[one,many]])=>{const c=(r[k]||[]).length;return c?c+' '+(c===1?one:many):'';}).filter(Boolean);return 'Full reasoning'+(parts.length?' · '+parts.join(', '):'');}
  function narrative(model,name,prefix){
   const r=model?.checked_result||model?.result;
   if(!r)return `<article class="nightly-voice"><h3>${name}</h3><p>${esc(model?.note||'Waiting for this review.')}</p></article>`;
   const items=(key,label)=>r[key]?.length?`<h4>${label}</h4><ul>${r[key].map(x=>`<li><p>${esc(x.text)}</p>${x.test?`<p class="nightly-test"><strong>Prospective test:</strong> ${esc(x.test)}</p>`:''}<small>${(x.evidence_ids||[]).map(id=>`<a href="#${prefix}-${encodeURIComponent(id)}">${esc(id)}</a>`).join(' · ')}</small></li>`).join('')}</ul>`:'';
   const flagged=model?.checks?.flagged||[];
   const checks=model?.checks?`<p class="hint-line keep-visible">${esc(model.checks.note)}</p>${flagged.length?`<details><summary>${flagged.length} statement(s) held for review</summary>${flagged.map(x=>`<p>${esc(x.reasons.join(' '))}</p><blockquote>${esc(x.text)}</blockquote>`).join('')}</details>`:''}<details><summary>Original AI interpretation · retained for audit</summary><pre>${esc(JSON.stringify(model.result,null,2))}</pre></details>`:'';
-  return `<article class="nightly-voice"><h3>${name}</h3><small>${esc(model.model)} · AI interpretation${model?.checks?' with local checks':''}</small><p class="nightly-summary">${esc(r.summary)}</p>${checks}${items('challenge','Fox’s challenge')}${items('findings','Interpretation of the evidence')}${items('hypotheses','Ideas to test · unproven')}${items('uncertainties','What remains uncertain')}</article>`;
+  return `<article class="nightly-voice"><h3>${name}</h3><small>${esc(model.model)} · AI interpretation${model?.checks?' with local checks':''}</small><p class="nightly-summary">${esc(r.summary)}</p><details class="nightly-voice-more"><summary>${esc(fullLabel(r))}</summary>${checks}${items('challenge','Fox’s challenge')}${items('findings','Interpretation of the evidence')}${items('hypotheses','Ideas to test · unproven')}${items('uncertainties','What remains uncertain')}</details></article>`;
  }
  function reportHTML(r,prefix){
   if(!r)return '<p>No session review has been saved yet.</p>';

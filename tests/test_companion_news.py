@@ -14,8 +14,9 @@ def rss(title='Markets consider a new rate outlook', date='Thu, 24 Sep 2026 05:0
     return f'<rss><channel><item><title>{title}</title><link>{link}</link><pubDate>{date}</pubDate></item></channel></rss>'.encode()
 
 
-def test_ten_sources_keep_ownership_and_agency_distinctions():
-    assert len(news.SOURCES)==10 and len({s['id'] for s in news.SOURCES})==10
+def test_sources_keep_ownership_and_agency_distinctions():
+    assert len(news.SOURCES)==12 and len({s['id'] for s in news.SOURCES})==12
+    assert {'bea', 'census'} <= {s['id'] for s in news.SOURCES if s['kind'] == 'Official release'}
     assert next(s for s in news.SOURCES if s['id']=='wsj')['group']==next(s for s in news.SOURCES if s['id']=='marketwatch')['group']
     assert len(next(s for s in news.SOURCES if s['id']=='bls')['feeds'])==2
 
@@ -59,12 +60,14 @@ def service(tmp_path):
 def test_failed_feed_retains_old_rows_without_making_them_fresh(tmp_path,monkeypatch):
     worker,saves=service(tmp_path)
     rows,_=news.parse_feed(rss(),SOURCE,NOW)
-    worker.cache={'cnbc':{'items':rows,'status':'connected','checked_at':NOW}}
+    worker.cache={'cnbc':{'items':rows,'status':'connected','checked_at':NOW,'last_good_at':NOW-300}}
     monkeypatch.setattr(news,'fetch_source',lambda s,n:{'items':[],'status':'unavailable','error':'HTTP 403','checked_at':NOW,'rejected':0})
     worker._work()
     state=worker.snapshot(NOW)
     assert state['items'][0]['fresh'] is False
     assert state['sources'][0]['status']=='unavailable'
+    assert state['sources'][0]['last_good_at']==NOW-300
+    assert state['sources'][0]['next_at']==NOW+news.TTL
     assert state['items'][0]['published_ts']==NOW-3600
     assert saves and not worker.busy
 
@@ -114,3 +117,42 @@ def test_endpoint_is_read_only_and_background_refresh_is_bounded(monkeypatch):
     monkeypatch.setattr(desk,'live_broker_place_order',lambda *a:pytest.fail('Execution forbidden'))
     response=desk.app.test_client().get('/api/companion/news',base_url='http://127.0.0.1:5056')
     assert response.status_code==200 and response.json['ok'] and calls==['refresh']
+
+
+def test_same_release_landing_page_with_new_date_has_a_new_story_id():
+    old = news.parse_feed(rss(), SOURCE, NOW)[0][0]
+    updated = news.parse_feed(rss(date='Thu, 24 Sep 2026 05:30:00 GMT'), SOURCE, NOW)[0][0]
+    assert old['url'] == updated['url'] and old['id'] != updated['id']
+
+
+def test_retry_after_is_preserved_and_worker_does_not_retry_early(tmp_path, monkeypatch):
+    import requests
+    response = requests.Response()
+    response.status_code = 429
+    response.headers['Retry-After'] = '1800'
+    def get(*a, **k):
+        raise requests.HTTPError(response=response)
+    monkeypatch.setattr(news.requests, 'get', get)
+    result = news.fetch_source(SOURCE, NOW)
+    assert result['status'] == 'unavailable' and result['retry_at'] == NOW + 1800
+    worker, _ = service(tmp_path)
+    worker.cache = {'cnbc': result}
+    monkeypatch.setattr(news.time, 'time', lambda: NOW + 300)
+    calls = []
+    monkeypatch.setattr(news, 'fetch_source', lambda s, n: calls.append(s['id']) or
+                        {'items': [], 'checked_at': n, 'status': 'connected'})
+    worker._work()
+    assert 'cnbc' not in calls and len(calls) == len(news.SOURCES) - 1
+    assert worker.cache['cnbc']['checked_at'] == NOW
+    assert worker.snapshot(NOW + 300)['sources'][0]['retry_at'] == NOW + 1800
+
+
+def test_rejected_rows_are_not_a_connected_healthy_feed(monkeypatch):
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def raise_for_status(self): pass
+        def iter_content(self, *a): return [rss(date='invalid')]
+    monkeypatch.setattr(news.requests, 'get', lambda *a, **k: Response())
+    result = news.fetch_source(SOURCE, NOW)
+    assert result['status'] == 'unavailable' and result['rejected'] == 1

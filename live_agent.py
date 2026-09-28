@@ -22,13 +22,19 @@ from order_terms import canonical_order
 from trade_planner import number
 import auto_live_options
 import market_events
+import stock_protection
+import stop_fills
+import stop_review
+import option_lifecycle
+import option_review
+from risk_policy import effective_limits
 
 DEFAULTS = {
     # `symbols` is a saved UI hint; live AUTO-ORDERS follow research_universe()
     # (full equity-scrubbed watchlist + radar merge). Not SPY-only.
     "symbols": ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMD", "META", "TSLA"],
     "interval_sec": 120, "order_type": "limit",
-    # Uncapped sentinels (UI treats >=1e8 USD / >=1e5 trades as open). Never school $10/$2/1.
+    # Legacy extra ceilings. The account preset always supplies the effective cap.
     "max_order_usd": 1e9, "max_daily_loss_usd": 1e9, "max_orders_per_day": 100000,
     "max_research_per_day": 100, "model_budget_usd": 5.,
     "limit_offset_bps": 5., "min_confidence": .6, "max_quote_age_sec": 30,
@@ -36,15 +42,17 @@ DEFAULTS = {
     # target, a breakeven stop after the price moves this many R in favor (0 = off),
     # an optional maximum hold, and a flatten before the close (0 = off).
     "protective_exits": True, "breakeven_after_r": 1.0, "max_hold_min": 0,
-    "flatten_before_close_min": 10,
+    "flatten_before_close_min": 10, "broker_stops": False,
     # Most agent stock positions (open or still filling) in one sector; 0 = off.
     "max_positions_per_sector": 2,
 }
 # Fields added after policies were first saved; older saved policies get these defaults.
 _ADDED_FIELDS = ("protective_exits", "breakeven_after_r", "max_hold_min", "flatten_before_close_min",
-                 "max_positions_per_sector")
+                 "max_positions_per_sector", "broker_stops")
 
 SCREEN_GAP_SEC = 30  # after a screen with no PASS (no model call), the next symbol comes up this soon
+# This many different symbols in a row without history means the provider is down.
+COVERAGE_OUTAGE_STREAK = 3
 # Bad/delisted/unquotable symbols: skip for a while instead of blocking forever.
 _QUOTE_SKIP: dict[str, dict] = {}
 _QUOTE_SKIP_AFTER = 2  # consecutive quote failures before temporary deny
@@ -75,7 +83,7 @@ def _note_quote_ok(symbol: str):
 
 
 
-def research_universe(cfg, policy=None):
+def research_universe(cfg, policy=None, *, include_unavailable=False):
     """Symbols Moss may evaluate AND auto-order (ideas / radar / ranking / live).
 
     Full equity-scrubbed watchlist (FX/crypto junk dropped via equity_loop_symbols).
@@ -104,7 +112,7 @@ def research_universe(cfg, policy=None):
             s for s in (policy.get("symbols") or list(DEFAULTS["symbols"]))
             if isinstance(s, str) and s
         ))
-    return [s for s in symbols if not _quote_skip_active(s)]
+    return symbols if include_unavailable else [s for s in symbols if not _quote_skip_active(s)]
 
 
 def order_universe(cfg, policy=None):
@@ -150,6 +158,10 @@ def validate(body):
                 "max_hold_min", "flatten_before_close_min", "max_positions_per_sector"}
     if not isinstance(policy["protective_exits"], bool):
         raise ValueError("protective_exits must be true or false")
+    if type(policy["broker_stops"]) is not bool:
+        raise ValueError("broker_stops must be true or false")
+    if policy["broker_stops"] and not policy["protective_exits"]:
+        raise ValueError("Keep protective exits enabled for the broker-held stop paper test")
     for key, bounds in ranges.items():
         value = number(policy[key], key, *bounds)
         if key in integers and value != int(value):
@@ -178,6 +190,8 @@ def authorization_error(signal, cfg):
         policy = validate(saved["policy"])
     except (ValueError, KeyError, TypeError):
         return "Live agent policy is invalid"
+    if policy["broker_stops"] and (cfg.get("broker_identity") or {}).get("paper_mode") is not True:
+        return "Broker-held stops are restricted to IBKR paper qualification"
     allowed = order_universe(cfg, policy)
     if signal.get("ticker") not in allowed and not signal.get("agent_exit"):
         return "Symbol is outside the live agent's evaluated equity universe"
@@ -194,6 +208,8 @@ def quote_error(quote, max_age):
         age = (now_utc()-stamp).total_seconds()
         if quote.get("frozen") or "frozen" in source:
             return "Live agent cannot act on a frozen quote"
+        if quote.get("delayed") or quote.get("market_data_type") in (3, 4) or "delayed" in source:
+            return "Live orders require real-time prices; a recently received delayed quote is not current"
         limit = int(max_age)
         if not quote.get("fresh") or not 0 <= age <= limit or not paper_loop.is_rth(stamp):
             return "Live agent quote is stale, future-dated or outside the session"
@@ -399,7 +415,24 @@ class LiveAgent:
                  isinstance(raw.get("attempts"), dict) and isinstance(raw.get("events"), list) and
                  type(raw.get("cursor")) is int and raw["cursor"] >= 0)
         if valid:
+            coverage = raw.get("research_coverage", {})
+            valid = isinstance(coverage, dict) and len(coverage) <= 1000
+            if valid:
+                try:
+                    valid = all(isinstance(k, str) and isinstance(v, dict) and isinstance(v.get("reason"), str)
+                                and datetime.fromisoformat(v["retry_at"]).tzinfo is not None for k, v in coverage.items())
+                except (TypeError, ValueError, KeyError):
+                    valid = False
+        if valid:
             valid = isinstance(raw.get("managed", {}), dict) and isinstance(raw.get("managed_fill_totals", {}), dict)
+            valid = valid and stock_protection.state_valid(raw.get("native_stops", {}))
+            valid = valid and option_lifecycle.state_valid(raw.get("option_positions", {}))
+            history = raw.get("native_stop_history", [])
+            valid = (valid and isinstance(history, list)
+                     and stock_protection.state_valid(dict(enumerate(history))))
+            if valid:
+                refs = [r["ref"] for r in list(raw.get("native_stops", {}).values()) + history]
+                valid = len(refs) == len(set(refs))
             for row in raw["days"].values():
                 if not isinstance(row, dict) or any(type(row.get(k)) is not int or row[k] < 0 for k in ("research", "orders")):
                     valid = False
@@ -451,6 +484,9 @@ class LiveAgent:
                     "events": raw["events"][:30], "next_at": raw.get("next_at"),
                     "reviews": self.current_reviews(raw, cfg), "decision_owner": "Fox",
                     "managed": raw.get("managed") or {},
+                    "option_positions": option_lifecycle.status(raw, cfg.get("broker_identity")),
+                    "option_check_error": getattr(self, "option_check_error", None),
+                    "stop_corrections": stop_review.pending(raw, cfg.get("broker_identity")),
                     "exit_checks": copy.deepcopy(self.exit_checks),
                     "account_scope": account_scope(cfg.get("broker_identity")),
                     "eval_symbols_count": len(eval_syms),
@@ -460,6 +496,10 @@ class LiveAgent:
                     "auto_options": ao.get("auto_options"),
                     "auto_options_label": ao.get("label"),
                     "auto_options_armed": ao.get("armed"),
+                    "auto_options_entry_block": ao.get("entry_block"),
+                    "auto_options_lifecycle": ao.get("lifecycle"),
+                    "research_coverage": [dict(ticker=k, **v) for k, v in (raw.get("research_coverage") or {}).items()
+                                          if datetime.fromisoformat(v["retry_at"]) > now_utc()],
                     "eval_note": (
                         f"Live auto-orders + eval: full equity watchlist ({len(eval_syms)} symbols; junk deny-list on)"
                     )}
@@ -481,13 +521,17 @@ class LiveAgent:
         return sorted(rows, key=lambda r: ({"PASS": 0, "WATCH": 1}.get(r["verdict"], 2), -datetime.fromisoformat(r["at"]).timestamp()))[:10]
 
     def note_review(self, cfg, symbol, signal, notes):
-        from companion_evidence import decision_detail
+        from companion_evidence import decision_detail, daytime_case
         row = {"ticker": symbol, "at": now_utc().isoformat(), "scope": self.key(cfg),
                "verdict": (signal or {}).get("verdict") or notes.get("verdict") or "UNAVAILABLE",
                "reason": str((signal or {}).get("llm_thesis") or (signal or {}).get("reason") or notes.get("text") or notes.get("error") or "Assessment unavailable")[:500],
                "side": (signal or {}).get("llm_side") or "hold",
                "error": (signal or {}).get("data_error") or (signal or {}).get("llm_error") or notes.get("error"),
                "detail": decision_detail(signal or notes)}
+        decision_id = (signal or {}).get("decision_record_id")
+        if decision_id:
+            decision = next((r for r in self.desk._decision_ring.latest(250) if r.get("id") == decision_id), None)
+            row["case"] = daytime_case(decision, row["detail"])
         with self.desk._lock:
             raw = self.load()
             reviews = raw.get("reviews") if isinstance(raw.get("reviews"), list) else []
@@ -553,6 +597,7 @@ class LiveAgent:
                     remaining = max(0., float(row["shares"]) - delta)
                     if remaining < 1:
                         managed.pop(ticker, None)
+                        self._archive_released_stop(raw, ticker)
                     else:
                         row.update(shares=remaining, retry_after=None)
                 self.save(raw)
@@ -607,59 +652,138 @@ class LiveAgent:
         """Close agent positions that hit their stop/target/hold/close rule. True if an order went out."""
         import broker_router
         with self.desk._lock:
-            managed = dict(self.load().get("managed") or {})
-            if not managed or self.desk.load_ledger().get("pending_broker_orders"):
+            raw = self.load()
+            managed = copy.deepcopy(raw.get("managed") or {})
+            native_records = raw.get("native_stops") or {}
+            use_native = policy.get("broker_stops") or bool(native_records)
+            pending = bool(self.desk.load_ledger().get("pending_broker_orders"))
+            if not managed or (pending and not use_native):
                 return False
         try:
             context = broker_router.verify_execution_context()
             if not context.get("ok") or context.get("identity") != cfg.get("broker_identity"):
-                return False  # never send an exit to an account the policy was not approved for
+                return bool(use_native)  # never send an exit to an unapproved account
             positions = broker_router.get_positions()
+            # A different account/connection after the read is not evidence
+            # that the original account sold its shares.
+            after = broker_router.verify_execution_context()
+            if not after.get("ok") or after.get("identity") != context.get("identity"):
+                raise ValueError("Broker account changed during holdings check")
         except Exception:  # noqa: BLE001 - unreadable account: try again next tick
-            return False
-        if not isinstance(positions, dict) or not positions.get("ok"):
-            return False
+            for ticker in managed:
+                self._exit_check(ticker, "holdings_unverified", "Holdings could not be verified; tracked positions were kept")
+            return bool(use_native)
+        if (not isinstance(positions, dict) or positions.get("ok") is not True
+                or not isinstance(positions.get("positions"), list)
+                or ("identity" in positions and positions["identity"] != context["identity"])):
+            for ticker in managed:
+                self._exit_check(ticker, "holdings_unverified", "Holdings could not be verified; tracked positions were kept")
+            return bool(use_native)
         held = {}
-        for row in positions.get("positions") or []:
-            try:
-                qty = float(row.get("qty") or 0)
-            except (TypeError, ValueError):
-                continue
-            # A short is never "held" for a protective sell (the desk also refuses it).
-            held[str(row.get("symbol") or "").upper()] = -abs(qty) if str(row.get("side") or "").lower() == "short" else qty
+        try:
+            for row in positions["positions"]:
+                if not isinstance(row, dict) or isinstance(row.get("qty"), bool):
+                    raise ValueError("Unreadable holding")
+                qty = float(row.get("qty"))
+                symbol = str(row.get("symbol") or "").strip().upper()
+                side = str(row.get("side") or "").lower()
+                if not symbol or symbol in held or not math.isfinite(qty) or side not in ("long", "short"):
+                    raise ValueError("Incomplete or ambiguous holdings")
+                if side == "long" and qty < 0:
+                    raise ValueError("Holding side and quantity disagree")
+                held[symbol] = -abs(qty) if side == "short" else qty
+        except (TypeError, ValueError):
+            for ticker in managed:
+                self._exit_check(ticker, "holdings_unverified", "Some holdings were unreadable; tracked positions were kept")
+            return bool(use_native)
+        with self.desk._lock:
+            current = self.desk.load_config()
+            saved = current.get("live_agent") or {}
+            expected = cfg.get("live_agent") or {}
+            if (current.get("broker_identity") != cfg.get("broker_identity")
+                    or current.get("mode") != "auto_live" or current.get("session_active") is not True
+                    or saved.get("enabled") is not True or saved.get("revision") != expected.get("revision")
+                    or saved.get("run_id") != expected.get("run_id")):
+                return False
         now = now_utc()
         to_close = _minutes_to_close(now)
+        native_blocked = False
         for ticker, row in managed.items():
             if not row.get("account_scope") or row.get("account_scope") != account_scope(cfg.get("broker_identity")):
                 self._exit_check(ticker, "account_review", "Position belongs to another account or its original account is unverified")
                 continue
-            shares = int(min(float(row["shares"]), held.get(ticker, 0.0)))
-            if shares < 1:  # sold elsewhere (or never filled): stop managing it
-                self._update_managed(ticker, None)
+            native = policy.get("broker_stops") or ticker in native_records
+            # Native stop executions change managed shares through their durable
+            # accounting receipt. A holdings-only shrink would apply a fill twice.
+            shares = int(float(row["shares"])) if native else int(min(float(row["shares"]), held.get(ticker, 0.0)))
+            def check_stop(reason=None):
+                nonlocal native_blocked
+                try:
+                    outcome = stock_protection.sync(self, cfg, ticker, row, max(0, shares), reason)
+                except Exception:
+                    outcome = {"state": "review", "message": "Broker stop could not be verified; no separate sell will be sent"}
+                if outcome["state"] == "shrink":
+                    # Never reclaim shares sold outside this agent; resize the stop next check.
+                    if not self._update_managed(ticker, {"shares": outcome["held"]}, expected=row):
+                        outcome = {"state": "waiting", "message": "The tracked position changed during the stop check"}
+                self._exit_check(ticker, "broker_stop_" + outcome["state"], outcome["message"])
+                if outcome["state"] not in {"protected", "released"}:
+                    native_blocked = True
+                return outcome
+            if shares < 1:  # An outstanding stop must be resolved before forgetting its position.
+                if native and check_stop().get("allow_exit") is not True:
+                    continue
+                self._update_managed(ticker, None, expected=row)
                 continue
             if row.get("tracking_error"):
                 self._exit_check(ticker, "review", row["tracking_error"])
                 continue
             if shares < float(row["shares"]):
-                self._update_managed(ticker, {"shares": shares})
+                if not self._update_managed(ticker, {"shares": shares}, expected=row):
+                    self._exit_check(ticker, "position_changed", "A newer fill changed this position; checking again next cycle")
+                    continue
                 row = dict(row, shares=shares)  # never reclaim shares later bought outside this agent
             retry_after = row.get("retry_after")
-            if retry_after and now < datetime.fromisoformat(retry_after):
+            retry_wait = retry_after and now < datetime.fromisoformat(retry_after)
+            if retry_wait and not native:
                 self._exit_check(ticker, "retry_wait", "Previous exit was refused; waiting before checking again")
                 continue  # a recent exit attempt was refused; do not hammer the gates
             try:
                 quote = broker_router.stock_quote(ticker)
             except Exception:  # noqa: BLE001
+                if native:
+                    check_stop(None if policy.get("broker_stops") else "disable")
+                    continue
                 self._exit_check(ticker, "quote_unavailable", "Could not read a current broker quote")
                 continue
             if (not isinstance(quote, dict) or not quote.get("ok") or quote.get("delayed")
                     or quote_error(quote, policy["max_quote_age_sec"])):
+                if native:
+                    check_stop(None if policy.get("broker_stops") else "disable")
+                    continue
                 self._exit_check(ticker, "quote_unavailable", "Waiting for a fresh real-time broker quote")
                 continue  # never act on a stale or delayed price
             bid = quote.get("bid") if isinstance(quote.get("bid"), (int, float)) and quote.get("bid") > 0 else quote["price"]
             reason, updates = exit_decision(row, float(bid), now, policy, to_close)
             if updates:
-                self._update_managed(ticker, updates)
+                if not self._update_managed(ticker, updates, expected=row):
+                    self._exit_check(ticker, "position_changed", "The tracked position changed during the quote check")
+                    continue
+                row = dict(row, **updates)
+            if native:
+                stop_reason = reason if not pending and not retry_wait else None
+                if not policy.get("broker_stops"):
+                    stop_reason = "disable"
+                outcome = check_stop(stop_reason)
+                if outcome.get("allow_exit") is not True or pending or retry_wait:
+                    continue
+                if not policy.get("broker_stops"):
+                    with self.desk._lock:
+                        raw = self.load()
+                        self._archive_released_stop(raw, ticker)
+                        self.save(raw)
+                    if not policy["protective_exits"]:
+                        continue
             if not reason:
                 self._exit_check(ticker, "watching", "Current quote checked; no exit rule met")
                 continue
@@ -675,6 +799,7 @@ class LiveAgent:
                 "agent_revision": cfg["live_agent"]["revision"], "agent_run_id": cfg["live_agent"].get("run_id"),
                 "agent_identity": copy.deepcopy(cfg["broker_identity"]),
                 "agent_exit_policy": copy.deepcopy(policy),
+                "agent_position": copy.deepcopy(row),
                 "created_at": now.isoformat(), "ts": now.isoformat(),
                 "expires_at": (now + timedelta(seconds=policy["max_quote_age_sec"])).isoformat(),
             }
@@ -683,22 +808,40 @@ class LiveAgent:
             if fill:
                 self._track_entry(signal, fill, policy)
             else:
-                self._update_managed(ticker, {"retry_after": (now + timedelta(seconds=60)).isoformat()})
+                self._update_managed(ticker, {"retry_after": (now + timedelta(seconds=60)).isoformat()}, expected=row)
             self._exit_check(ticker, "exit_attempt", result.get("reject_reason") or result.get("error") or "Exit submitted; broker fill evidence remains authoritative")
             self.record("exit_" + reason, result.get("reject_reason") or result.get("error") or
                         (f"Protective {reason.replace('_', ' ')} exit sent for {shares} {ticker}"), signal, fill)
             return True
+        with self.desk._lock:
+            if use_native:
+                error = stock_protection.entry_error(self.load(), cfg)
+                if error or native_blocked:
+                    self.phase, self.message = "protection_review", error or "Broker-held protection is unverified; new research waits"
+                    return True  # Defer new research and risk while protection is uncertain.
         return False
 
-    def _update_managed(self, ticker, updates):
+    @staticmethod
+    def _archive_released_stop(raw, ticker):
+        record = (raw.get("native_stops") or {}).get(ticker)
+        if record and record.get("state") == "released":
+            raw.setdefault("native_stop_history", []).insert(0, {"ticker": ticker, **raw["native_stops"].pop(ticker)})
+            # Preserve the correction evidence; execution IDs are not disposable
+            # just because a newer position uses the same ticker.
+
+    def _update_managed(self, ticker, updates, expected=None):
         with self.desk._lock:
             raw = self.load()
             managed = raw.setdefault("managed", {})
+            if expected is not None and managed.get(ticker) != expected:
+                return False  # A newer fill/correction wins over an older read.
             if updates is None:
                 managed.pop(ticker, None)
+                self._archive_released_stop(raw, ticker)
             elif ticker in managed:
                 managed[ticker].update(updates)
             self.save(raw)
+            return True
 
     def record(self, status, message, signal=None, fill=None):
         self.phase, self.message = status, message
@@ -724,12 +867,38 @@ class LiveAgent:
         if error:
             return error
         policy = validate(cfg["live_agent"]["policy"])
+        if not reducing and str(signal.get("asset_type") or "").upper() in ("OPT", "BAG"):
+            blocker = auto_live_options.entry_block(cfg)
+            if blocker:
+                return blocker
         with self.desk._lock:
             raw = self.load()
+            option_error = option_lifecycle.gate_error(raw, cfg.get("broker_identity"), signal.get("ticker") if reducing else None)
+            if option_error:
+                return option_error
+            if not reducing and signal.get("asset_type") not in ("OPT", "BAG"):
+                if any(r["ticker"] == signal.get("ticker") and (r["remaining"] or r["awaiting_entry"]) and not option_lifecycle.resolved(r)
+                       for r in option_lifecycle.rows_for(raw, cfg.get("broker_identity"))):
+                    return "The option test owns this underlying; adding stock would make assignment tracking ambiguous"
+            if not signal.get("agent_exit"):
+                protection_error = stop_fills.gate_error(self, raw, cfg.get("broker_identity") or {}) or stock_protection.entry_error(raw, cfg)
+                if protection_error:
+                    return protection_error
+            if signal.get("agent_option_position_id"):
+                tracked = raw.get("option_positions", {}).get(signal["agent_option_position_id"])
+                if (not tracked or tracked != signal.get("agent_position") or tracked.get("hold")
+                        or tracked["account_scope"] != account_scope(cfg.get("broker_identity"))):
+                    return "Tracked option changed; wait for a fresh exit check"
+            elif signal.get("agent_exit"):
+                tracked = (raw.get("managed") or {}).get(str(signal.get("ticker") or "").upper())
+                if (not tracked or not isinstance(signal.get("agent_position"), dict)
+                        or tracked != signal["agent_position"] or tracked.get("tracking_error")
+                        or tracked.get("account_scope") != account_scope(cfg.get("broker_identity"))):
+                    return "Tracked position changed or needs review; create a fresh protective exit"
             if signal.get("id") in raw["attempts"]:
                 return "This agent decision already reserved a broker attempt; it cannot be retried"
             if (not signal.get("agent_exit")
-                    and raw["days"].get(self.key(cfg), {}).get("orders", 0) >= policy["max_orders_per_day"]):
+                    and raw["days"].get(self.key(cfg), {}).get("orders", 0) >= effective_limits(cfg)["max_orders_per_day"]):
                 return "Live agent reached its daily broker-attempt limit"
         if not reducing and (day_pnl is None or day_pnl <= -policy["max_daily_loss_usd"]):
             return "Live agent daily loss limit reached or daily P&L unavailable"
@@ -760,7 +929,7 @@ class LiveAgent:
         if signal["id"] in raw["attempts"]:
             raise ValueError("Agent decision already reserved")
         row = raw["days"].setdefault(key, {"research": 0, "orders": 0})
-        if not signal.get("agent_exit") and row["orders"] >= cfg["live_agent"]["policy"]["max_orders_per_day"]:
+        if not signal.get("agent_exit") and row["orders"] >= effective_limits(cfg)["max_orders_per_day"]:
             raise ValueError("Live agent daily broker-attempt limit reached")
         row["orders"] += 1
         raw["attempts"][signal["id"]] = {"key": key, "revision": signal["agent_revision"]}
@@ -821,6 +990,16 @@ class LiveAgent:
         saved = cfg.get("live_agent")
         if not saved:
             return
+        # Reconcile option exposure even when paused and outside market hours.
+        # This observer never submits or changes any broker order. Its failure
+        # must not skip the stock protective exits below; it blocks new risk.
+        review_errors = []
+        if cfg.get("broker_identity") and self.load().get("option_positions"):
+            try:
+                option_lifecycle.monitor(self, cfg)
+            except Exception as exc:  # noqa: BLE001
+                self.option_check_error = "Option holdings check failed ("+type(exc).__name__+"); new entries wait"
+                review_errors.append(self.option_check_error)
         if not saved.get("enabled") or cfg.get("mode") != "auto_live" or not cfg.get("session_active"):
             self.phase, self.message = "paused", "Agent paused; broker reconciliation continues"
             return
@@ -854,9 +1033,31 @@ class LiveAgent:
             self.phase, self.message = "waiting_for_market", "Waiting for the next regular US market session"
             return
         policy = validate(saved["policy"])
+        if policy["broker_stops"] and (cfg.get("broker_identity") or {}).get("paper_mode") is not True:
+            self.phase, self.message = "protection_review", "Broker-held stop testing requires an IBKR paper account"
+            return
         self._sync_managed_fills()
-        if policy["protective_exits"] and self._manage_exits(cfg, policy):
+        # Reconciliation failures leave their own entry blocks in place
+        # (stop_accounting_error / option review); stock exits still run.
+        try:
+            stop_fills.reconcile(self)
+        except Exception as exc:  # noqa: BLE001
+            review_errors.append("Stop accounting could not be verified ("+type(exc).__name__+"); new entries wait")
+        try:
+            if option_lifecycle.manage_exits(self, cfg):
+                return
+        except Exception as exc:  # noqa: BLE001
+            review_errors.append("Option exit check failed ("+type(exc).__name__+"); new entries wait")
+        if (policy["protective_exits"] or self.load().get("native_stops")) and self._manage_exits(cfg, policy):
             return  # an exit went out this tick; new research waits for the next one
+        with self.desk._lock:
+            raw = self.load()
+            protection_error = review_errors[0] if review_errors else None
+            protection_error = protection_error or stop_fills.gate_error(self, raw, cfg.get("broker_identity") or {}) or stock_protection.entry_error(raw, cfg)
+            protection_error = protection_error or option_lifecycle.gate_error(raw, cfg.get("broker_identity"))
+        if protection_error:
+            self.phase, self.message = "protection_review", protection_error
+            return
         window = _event_window(cfg)
         if window:
             self.phase, self.message = "event_window", market_events.window_message(window)
@@ -869,7 +1070,7 @@ class LiveAgent:
                 self.phase, self.message = "reconciling", "A broker order is unresolved; waiting for broker evidence"
                 return
             today = raw["days"].get(self.key(cfg), {"research": 0, "orders": 0})
-            if today["research"] >= policy["max_research_per_day"] or today["orders"] >= policy["max_orders_per_day"]:
+            if today["research"] >= policy["max_research_per_day"] or today["orders"] >= effective_limits(cfg)["max_orders_per_day"]:
                 self.phase, self.message = "daily_limit", "Daily agent research or broker-attempt limit reached"
                 return
             if raw.get("next_at") and now_utc() < datetime.fromisoformat(raw["next_at"]):
@@ -886,7 +1087,7 @@ class LiveAgent:
             return
         usage = self.desk.llm_trader.model_cost_today()
         scoped = (usage.get("scopes") or {}).get("live_agent") or {}
-        if number(scoped.get("model_usd") or 0., "Recorded AI cost", 0, 1e12) >= Decimal(str(policy["model_budget_usd"])):
+        if usage.get("error") or number(scoped.get("committed_usd", scoped.get("model_usd")) or 0., "Recorded AI cost", 0, 1e12) >= Decimal(str(policy["model_budget_usd"])):
             self.phase, self.message = "budget", "Recorded live-agent AI budget reached; research is paused"
             return
         with self.desk._lock:
@@ -902,15 +1103,28 @@ class LiveAgent:
             if raw.get("next_at") and now_utc() < datetime.fromisoformat(raw["next_at"]):
                 return
             today = raw["days"].setdefault(self.key(cfg), {"research": 0, "orders": 0})
-            if today["research"] >= policy["max_research_per_day"] or today["orders"] >= policy["max_orders_per_day"]:
+            if today["research"] >= policy["max_research_per_day"] or today["orders"] >= effective_limits(cfg)["max_orders_per_day"]:
                 self.phase, self.message = "daily_limit", "Daily agent research or broker-attempt limit reached"
                 return
-            eval_symbols = research_universe(cfg, policy)
+            eval_symbols = research_universe(cfg, policy, include_unavailable=True)
             if not eval_symbols:
                 self.phase, self.message = "blocked", "No equity symbols available to evaluate"
                 return
-            symbol = eval_symbols[raw["cursor"] % len(eval_symbols)]
-            raw["cursor"] += 1
+            coverage = raw.setdefault("research_coverage", {})
+            coverage = {k: v for k, v in coverage.items() if datetime.fromisoformat(v["retry_at"]) > now_utc()}
+            raw["research_coverage"] = coverage
+            symbol = None
+            for _ in range(len(eval_symbols)):
+                candidate = eval_symbols[raw["cursor"] % len(eval_symbols)]
+                raw["cursor"] += 1
+                if candidate not in coverage and not _quote_skip_active(candidate):
+                    symbol = candidate
+                    break
+            if symbol is None:
+                raw["next_at"] = (now_utc()+timedelta(seconds=policy["interval_sec"])).isoformat()
+                self.save(raw)
+                self.phase, self.message = "coverage_wait", "Available symbols are cooling down after data failures; broker reconciliation and exits continue"
+                return
             today["research"] += 1
             raw["next_at"] = (now_utc()+timedelta(seconds=policy["interval_sec"])).isoformat()
             self.save(raw)  # Failures/no setup/restarts also consume this cycle.
@@ -921,7 +1135,7 @@ class LiveAgent:
         notes = {}
         # Only PASS setups can become agent orders, so only they reach the paid brain.
         if callable(scope):
-            with scope("live_agent"):
+            with scope("live_agent", scope_cap=policy["model_budget_usd"]):
                 signal = self.desk.generate_scan_signal(cfg, ticker=symbol, force=False, still_authorized=authorized,
                                                         pass_only=True, notes=notes)
         else:
@@ -936,8 +1150,34 @@ class LiveAgent:
             # Providers also return None on failures; those retain the durable
             # attempt and full interval reserved before I/O.
             if notes.get("error") or notes.get("verdict") not in ("WATCH", "AVOID"):
+                if notes.get("coverage_unavailable") is True:
+                    misses = getattr(self, "_coverage_misses", [])
+                    misses = [s for s in misses if s != symbol] + [symbol]
+                    if len(misses) >= COVERAGE_OUTAGE_STREAK:
+                        # Several different symbols in a row with no history is a
+                        # provider outage, not missing coverage: undo their cooldowns
+                        # and keep the normal research interval as backoff.
+                        self._coverage_misses = []
+                        with self.desk._lock:
+                            raw = self.load()
+                            for missed in misses:
+                                raw.setdefault("research_coverage", {}).pop(missed, None)
+                            self.save(raw)
+                        self.record("blocked", "Price history is unavailable for several symbols in a row; treating it as a data-provider outage and retrying after the saved research interval")
+                        return
+                    self._coverage_misses = misses
+                    with self.desk._lock:
+                        raw = self.load()
+                        raw.setdefault("research_coverage", {})[symbol] = {
+                            "reason": "No usable history from the configured price sources",
+                            "retry_at": (now_utc()+timedelta(hours=1)).isoformat()}
+                        raw["next_at"] = (now_utc()+timedelta(seconds=min(SCREEN_GAP_SEC, policy["interval_sec"]))).isoformat()
+                        self.save(raw)
+                    self.record("coverage_wait", symbol+" has no usable price history; set aside for one hour. Checking another symbol next.")
+                    return
                 self.record("blocked", "Market data or setup assessment unavailable for "+symbol+"; retrying after the saved research interval")
                 return
+            self._coverage_misses = []  # A completed screen proves the price sources respond.
             self._refund_screen(cfg, policy)
             why = ""
             if notes.get("verdict"):
@@ -966,7 +1206,7 @@ class LiveAgent:
                 if ibq.get("delayed"):
                     # Delayed IBKR prices trail the market ~15 min. Prefer a
                     # real-time quote that passes the same gate; if none does,
-                    # keep the IBKR quote so the order path is never blocked.
+                    # the delayed quote remains visible and quote_error blocks it.
                     realtime = _realtime_signal_quote(self.desk, symbol, policy["max_quote_age_sec"])
                     if realtime:
                         signal["quote"] = realtime
@@ -998,7 +1238,7 @@ class LiveAgent:
             return
         # Optional: convert stock PASS into armed OPT/BAG when auto_options.enabled.
         auto_cfg = auto_live_options.get_config(cfg)
-        if auto_cfg.get("enabled") and signal.get("verdict") == "PASS":
+        if auto_cfg.get("enabled") and not auto_live_options.entry_block(cfg) and signal.get("verdict") == "PASS":
             try:
                 with self.desk._lock:
                     day = self.load()["days"].get(self.key(cfg), {"research": 0, "orders": 0})
@@ -1011,6 +1251,10 @@ class LiveAgent:
         result = self.desk._ingest_one_signal(signal, cfg_override=cfg)
         if isinstance(result.get("fill"), dict):
             self._track_entry(signal, result["fill"], policy)
+            if policy["broker_stops"] and signal.get("side") == "buy" and str(signal.get("asset_type") or "STK").upper() == "STK":
+                # Protect confirmed entry shares immediately, including a partial
+                # entry. Do not wait for the next research interval.
+                self._manage_exits(cfg, policy)
         with self.desk._lock:
             unresolved = any((row.get("signal") or {}).get("id") == result.get("id")
                              for row in self.desk.load_ledger().get("pending_broker_orders") or [])
@@ -1035,6 +1279,9 @@ class LiveAgent:
 
     def _maybe_convert_to_option(self, signal, cfg, auto_cfg, context):
         """Attach OPT/BAG fields using IBKR chain + options_desk strategy names. No order yet."""
+        blocker = auto_live_options.entry_block(cfg)
+        if blocker:
+            raise ValueError(blocker)
         import broker_router
         ticker = str(signal.get("ticker") or "").upper()
         px = float(signal.get("signal_price") or (signal.get("quote") or {}).get("price") or 0)
@@ -1174,9 +1421,9 @@ class LiveAgent:
 def _require_live_option_data(legs):
     """Auto options price limits and size risk from this quote, so it must be live.
 
-    Stock tickets tolerate delayed IBKR data by owner decision, but option
-    premiums move far faster than the underlying and the quote's receipt time
-    would otherwise pass the freshness window on 15-minute-old prices.
+    By owner decision (2026-09-28) stock entries also require live data;
+    option premiums move even faster, and a receipt time alone would pass the
+    freshness window on 15-minute-old prices.
     Types: 1=live, 2=frozen, 3=delayed, 4=delayed-frozen.
     """
     for leg in legs:
@@ -1194,6 +1441,8 @@ def _require_live_option_data(legs):
 def register(app, desk):
     service = LiveAgent(desk)
     bp = Blueprint("live_agent", __name__)
+    import live_research
+    consume_start_review = live_research.register(bp, desk, service)
 
     @bp.errorhandler(ValueError)
     def invalid(exc):
@@ -1230,8 +1479,10 @@ def register(app, desk):
     @bp.post("/api/live-agent/start")
     def start():
         body = request.get_json(silent=True)
-        if not isinstance(body, dict) or set(body) != {"revision", "identity", "confirm"}:
+        if (not isinstance(body, dict) or not {"revision", "identity", "confirm"} <= set(body)
+                or set(body) - {"revision", "identity", "confirm", "review_token"}):
             raise ValueError("Confirm the exact saved policy and displayed broker account")
+        reviewed = consume_start_review(body) if "review_token" in body else None
         import broker_router
         context = broker_router.verify_execution_context()
         identity = context.get("identity")
@@ -1249,12 +1500,15 @@ def register(app, desk):
             cfg = desk.load_config()
             saved = cfg.get("live_agent")
             service.load()
+            live_research.check_review(reviewed, cfg)
             if desk._CORRUPT_PATHS or desk.load_ledger().get("pending_broker_orders"):
                 raise ValueError("Resolve unreadable state or unresolved broker orders before activation")
             if not saved or saved.get("revision") != body["revision"] or cfg.get("broker_identity") != identity:
                 return jsonify(ok=False, error="Policy or account changed; reload before activation"), 409
             validate(saved["policy"])
-            if daily <= -saved["policy"]["max_daily_loss_usd"]:
+            if saved["policy"].get("broker_stops") and identity["paper_mode"] is not True:
+                raise ValueError("Broker-held stops are for IBKR paper qualification only; live activation is unavailable")
+            if daily <= -min(saved["policy"]["max_daily_loss_usd"], effective_limits(cfg, equity)["max_daily_loss_usd"]):
                 raise ValueError("Agent daily loss stop is already reached")
             saved["enabled"] = True
             saved["run_id"] = str(uuid.uuid4())
@@ -1274,5 +1528,9 @@ def register(app, desk):
         service.phase, service.message = "paused", "Paused; existing broker orders and positions remain at the broker"
         return jsonify(service.status())
 
+    stop_review.register(bp, desk)
+    option_review.register(bp, desk)
+    import option_activity
+    option_activity.register(bp, desk)
     app.register_blueprint(bp)
     return service

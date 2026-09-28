@@ -1,6 +1,25 @@
-# Single-page UI map
+# September 26 experience layer
 
-Updated 2026-09-24. The desk uses Flask/Jinja and vanilla JavaScript, with visible modules on one page. The current desert scene, logo and sidebar companions are layered on the existing trading workflow; no frontend build step is required.
+Current pages: Overview, Fox, Practice, Research, Review a trade, Settings. Internal paper/ticket URLs are unchanged. [Use, validation and remaining scope](EXPERIENCE_AND_WEEKLY_REVIEW_2026_09_26.md).
+
+| Change | Current files |
+| --- | --- |
+| Full/Focused view and browser preferences | `static/desk_experience.js`, `templates/desk/experience_head.html` |
+| Plain/Desert theme tokens and optional scenery | `static/desk_themes.css`, `static/theme_desert.css`, `templates/desk/desert_scene.html`; shared geometry remains in `nadzeel.css` |
+| Shared companion conversations and explicit notes | `companion_chat.py`, `templates/desk/companion_chat.html`, `static/companion_chat.js`, `static/companion_chat.css` |
+| Optional installed local model | `local_chat.py` |
+| Cumulative weekly review | `weekly_review.py`, existing `after_close_review.py`, `static/weekly_review.js`, `templates/desk/weekly_review.html` |
+| Brief / concentration / connection summary | `static/desk_brief.js`, `static/desk_connections.js`, corresponding shared partials |
+
+The historical maps below describe earlier layouts; use the current file ownership above and the six split page templates when editing.
+
+# Current layout continuation
+
+See [September 25 layout review](LAYOUT_REVIEW_2026_09_25.md) for the account-first overview, right companion rail, keyboard navigation and current-state status ownership. Split page templates and `page_split.css` control this layout; the historical maps below remain for context.
+
+# UI map
+
+Updated 2026-09-25. The desk uses Flask/Jinja and vanilla JavaScript, with six pages: Overview, Fox, Paper, Research, Ticket and Settings. Page composition lives in `templates/pages/`; shared components remain in `templates/desk/`. The section below records the earlier combined-page design; see [the current repair pass](FIX_ALL_2026_09_25.md) for status hierarchy and remaining qualification. The current desert scene, logo and sidebar companions are layered on the existing trading workflow; no frontend build step is required.
 
 
 ## Phase 1 information architecture (2026-09-24)

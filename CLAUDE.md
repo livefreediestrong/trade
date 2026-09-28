@@ -32,7 +32,7 @@ In Claude Code on the web, `.claude/hooks/session-start.sh` creates `.venv` with
 **Order path to a real broker:** signal or ticket → `execute_gated_broker_or_paper()` (`_BROKER_SUBMIT_LOCK`; verified broker identity must equal `cfg["broker_identity"]`; `_broker_session_gate` for every order and `_broker_risk_gate` (daily loss, trade count) for non-reducing ones; quantity/terms from `order_terms.canonical_*`) → `broker_router` (dispatches to `broker_ibkr` or `broker_alpaca` via `BROKER_PROVIDER`) → adapter re-checks positions, working orders and `_submission_risk_error` right before `placeOrder`. Unresolved submissions are recorded in `ledger["pending_broker_orders"]` first and reconciled; `recover_interrupted_approvals()` restores them at startup. Server-issued review tokens and `valid_until` deadlines bind a reviewed order to its exact terms.
 
 - `order_terms.py`: canonical equity/option/BAG terms, limit precision, `option_notional` (premium) vs `option_max_loss` (worst case, used for sizing and size caps).
-- `broker_ibkr.py`: one `ib_insync` connection on a dedicated API thread (`@_on_api_thread`); daily-P&L subscription drives `risk_ready`; Gateway launch policy lives in `ensure_gateway` (unattended callers pass `automatic=True`).
+- `broker_ibkr.py`: one `ib_async` connection on a dedicated API thread (`@_on_api_thread`); daily-P&L subscription drives `risk_ready`; Gateway launch policy lives in `ensure_gateway` (unattended callers pass `automatic=True`).
 - `live_agent.py` (Moss broker agent, `auto_live`) and `auto_live_options.py` (stock PASS → OPT/BAG conversion) feed the same gated path; `live_ticket.py` is the user-directed ticket.
 - Profit/loss intelligence: `generate_scan_signal` downgrades PASS to WATCH when the after-cost reward:risk (`_edge_after_costs`) is below `min_net_reward_risk`, and `_evidence_block` stops setups whose own scored record (`lessons.track_record`) is losing; `_broker_risk_gate` adds the give-back guard (`peak_pnl` kept by `_note_day_pnl_peak`). The live agent's protective exits (`exit_decision`, `_manage_exits`) sell only positions it opened, tracked in `data/live_agent.json["managed"]`, as `agent_exit` sell signals through the same gated path.
 
@@ -48,7 +48,7 @@ In Claude Code on the web, `.claude/hooks/session-start.sh` creates `.venv` with
 
 ## Conventions
 
-- Comments marked **"owner decision"** record deliberate product choices (e.g. delayed stock quotes never block live orders; upkeep never touches trading). Don't reverse them without being asked.
+- Comments marked **"owner decision"** record deliberate product choices (e.g. new stock risk requires real-time type-1 quotes and delayed/frozen quotes block entries, while reducing sells are exempt (owner confirmed 2026-09-28); upkeep never touches trading). Don't reverse them without being asked.
 - Fail closed: missing/unknown data (P&L, quotes, identity, timestamps) blocks new risk; reducing orders have narrow, explicit exceptions.
 - Money math uses `Decimal`; option limits are whole cents; timestamps are timezone-aware and future dates are rejected.
 - Tests that touch `app` isolate storage by monkeypatching `desk.CONFIG_PATH`/`LEDGER_PATH`/`SIGNALS_PATH`/`JOURNAL_PATH` to `tmp_path`, and mock `broker_router`/adapter functions; no test may reach a real broker.

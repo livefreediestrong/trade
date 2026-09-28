@@ -50,6 +50,7 @@ def test_optional_scheduled_failure_does_not_skip_daily_notebook(isolated, monke
         def is_set(self): return False
     monkeypatch.setattr(companion.threading, "Thread", Thread)
     monkeypatch.setattr(service.news, "refresh", fail)
+    monkeypatch.setattr(service.public_context, "refresh", lambda: None)
     monkeypatch.setattr(service.review, "tick", lambda: calls.append("review"))
     monkeypatch.setattr(service, "run", lambda **kw: calls.append("notebook"))
     service.start()

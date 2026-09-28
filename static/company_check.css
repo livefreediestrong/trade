@@ -21,3 +21,13 @@
 .live-switch-pill[data-live=true]{color:var(--red);border-color:var(--red)}.live-switch-pill[data-live=false]{color:var(--green);border-color:var(--green)}
 .live-switch-confirm{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px}.live-switch-confirm p{flex-basis:100%;margin:0}.live-switch-confirm input{min-height:40px;width:10em;text-transform:uppercase}
 .company-check-grid td:first-child,.company-check-grid td:last-child{white-space:nowrap}
+.company-check-grid .cc-insiders,.company-check-grid .cc-lobbying{grid-column:1/-1}
+.cc-insider-controls{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:16px 0}
+.cc-insider-controls label{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.cc-insider-controls select{min-height:38px;max-width:100%}
+.cc-insider-list,.cc-filing-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:12px}
+.cc-filing-list{margin-top:12px}
+.cc-insider-row{border:1px solid var(--border);border-radius:10px;padding:14px;min-width:0;overflow-wrap:anywhere}
+.cc-insider-row h4{margin:0 0 8px}.cc-insider-row p{margin:8px 0}.cc-insider-row details{margin-top:12px}
+.cc-insider-signal{font-weight:600}.cc-insider-totals{display:flex;flex-wrap:wrap;gap:12px 24px}
+@media(max-width:400px){.company-check-grid{grid-template-columns:minmax(0,1fr)}.cc-insider-controls label{max-width:100%}}

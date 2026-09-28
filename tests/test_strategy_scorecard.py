@@ -45,3 +45,19 @@ def test_route_reads_lessons_and_validates_days(monkeypatch):
     assert client.get("/api/strategy-scorecard?days=x", base_url=BASE).status_code == 400
     data = client.get("/api/strategy-scorecard?days=7", base_url=BASE).get_json()
     assert data["ok"] and data["days"] == 7 and data["rows"][0]["avg_net_bps"] == -3.0
+
+
+def test_future_invalid_naive_and_offset_out_of_period_calls_cannot_count_as_evidence():
+    cutoff = NOW - timedelta(days=30)
+    excluded = [None, call(ts="garbage"), call(ts="2026-09-25T10:00:00"),
+                call(days_ago=-1), call(ts="2026-08-26T21:00:00+02:00")]
+    included = [call(ts=cutoff.isoformat()), call(ts="2026-08-26T19:00:00-02:00"), call(ts=NOW.isoformat())]
+    result = sc.scorecard(excluded + included, now=NOW)
+    assert result["rows"][0]["scored"] == 3
+    assert sc.scorecard(excluded, now=NOW)["rows"] == []
+
+
+def test_boolean_nonfinite_results_are_not_numerical_evidence():
+    rows = [call(outcome_executable_move_bps=x) for x in [True, False, float("nan"), float("inf")]]
+    result = sc.scorecard(rows, now=NOW)["rows"][0]
+    assert result["scored"] == 0 and result["avg_net_bps"] is None

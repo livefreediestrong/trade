@@ -7,6 +7,7 @@ explain attention and uncertainty, but never creates or approves a trade.
 from __future__ import annotations
 
 import html
+import copy
 import hashlib
 import re
 import threading
@@ -24,6 +25,7 @@ from news_stream import AMBIGUOUS_TICKERS, FUTURE_TOLERANCE_SEC, MAX_FEED_BYTES,
 _lock = threading.RLock()
 _cache: dict[str, Any] = {"at": 0.0, "payload": None}
 _TTL = 60.0
+WINDOW_SEC = 24 * 3600
 _UA = "daytrade-signal-desk/1.0 (research; read-only)"
 _TICKER_RE = re.compile(r"(?<![A-Za-z0-9])\$([A-Za-z]{1,5})\b|(?<![A-Za-z0-9])([A-Z]{2,5})(?![A-Za-z0-9])")
 _POSITIVE = {"bullish", "calls", "moon", "squeeze", "breakout", "buy", "rocket", "long", "upside"}
@@ -36,6 +38,7 @@ _STOPWORDS = {
 _SUBREDDIT_RE = re.compile(r"[A-Za-z0-9_]{2,21}")
 _SYMBOL_RE = re.compile(r"[A-Z][A-Z0-9.]{0,9}")
 _source_status: dict[str, dict[str, Any]] = {}
+_stocktwits_retry: dict[str, Any] = {"until": 0.0, "error": None}
 DEFAULT_SUBREDDITS = ("wallstreetbets", "stocks", "investing", "options", "Daytrading", "Shortsqueeze")
 DEFAULT_RSS_FEEDS = (
     "https://www.reddit.com/r/wallstreetbets/.rss",
@@ -94,8 +97,8 @@ def _created_ts(value: Any, now: float) -> float | None:
 def _reddit_rows(subreddit: str, limit: int = 40) -> list[dict[str, Any]]:
     """Newest posts in one subreddit via buzz_sources' Reddit client.
 
-    Uses OAuth when REDDIT_CLIENT_ID/SECRET are set; the public JSON fallback
-    stays opt-in (REDDIT_PUBLIC_JSON=1) per Reddit's Data API terms.
+    Uses OAuth when REDDIT_CLIENT_ID/SECRET are set. The historical public JSON
+    opt-in is not an access guarantee or a workaround for Reddit approval.
     """
     source = f"reddit r/{subreddit}"
     if not _SUBREDDIT_RE.fullmatch(subreddit or ""):
@@ -126,10 +129,8 @@ def _reddit_rows(subreddit: str, limit: int = 40) -> list[dict[str, Any]]:
             "source": f"reddit_{subreddit.lower()}",
             "source_id": str(data.get("id") or data.get("name") or ""),
             "thread_id": str(data.get("id") or ""),
-            "author_hash": hashlib.sha256(
-                str(data.get("author") or "[deleted]").encode("utf-8")
-            ).hexdigest()[:16],
-            "created_at": datetime.fromtimestamp(created, timezone.utc).isoformat() if created > 0 else None,
+            "author_hash": _author_hash(data.get("author")),
+            "created_at": _iso(_created_ts(created, time.time())),
             "title": title,
             "excerpt": body[:300],
             "ticker_candidates": _tickers(text),
@@ -151,13 +152,18 @@ def _stocktwits_rows(symbols: list[str], limit: int = 12) -> list[dict[str, Any]
         batches = list(pool.map(lambda sym: _stocktwits_symbol(sym, limit), clean))
     rows = [row for batch in batches if batch for row in batch]
     failed = sum(1 for batch in batches if batch is None)
-    _note_source("stocktwits", f"Stocktwits unavailable for all {failed} symbols" if failed == len(clean) else None, len(rows))
+    with _lock:
+        unavailable = (_stocktwits_retry["error"] if time.time() < _stocktwits_retry["until"] else None)
+    _note_source("stocktwits", (unavailable or f"Stocktwits unavailable for {failed} of {len(clean)} symbols") if failed else None, len(rows))
     return rows
 
 
 def _stocktwits_symbol(symbol: str, limit: int) -> list[dict[str, Any]] | None:
     """Messages for one symbol; None when the request failed (vs [] for no messages)."""
     rows: list[dict[str, Any]] = []
+    with _lock:
+        if time.time() < _stocktwits_retry["until"]:
+            return None
     try:
         response = requests.get(
             f"https://api.stocktwits.com/api/2/streams/symbol/{symbol}.json",
@@ -165,8 +171,23 @@ def _stocktwits_symbol(symbol: str, limit: int) -> list[dict[str, Any]] | None:
             timeout=6,
         )
         if response.status_code != 200:
+            if response.status_code in (401, 403, 429):
+                delay = 3600 if response.status_code in (401, 403) else 900
+                try:
+                    retry = float(getattr(response, "headers", {}).get("Retry-After", 0))
+                    if 0 <= retry < float("inf"):
+                        delay = max(delay, retry)
+                except (TypeError, ValueError):
+                    pass
+                with _lock:
+                    _stocktwits_retry.update(until=time.time() + delay,
+                        error=f"Stocktwits access unavailable (HTTP {response.status_code}); automatic reads are backing off. Check provider access.")
             return None
-        messages = (response.json().get("messages") or [])[:limit]
+        payload = response.json()
+        messages = payload.get("messages") if isinstance(payload, dict) else None
+        if not isinstance(messages, list):
+            return None
+        messages = messages[:limit]
     except (OSError, ValueError, requests.RequestException):
         return None
     for message in messages:
@@ -176,11 +197,19 @@ def _stocktwits_symbol(symbol: str, limit: int) -> list[dict[str, Any]] | None:
         if not body:
             continue
         created = str(message.get("created_at") or "")
-        sentiment = (message.get("entities") or {}).get("sentiment") or {}
+        entities = message.get("entities") if isinstance(message.get("entities"), dict) else {}
+        sentiment = entities.get("sentiment") if isinstance(entities.get("sentiment"), dict) else {}
         label = str(sentiment.get("basic") or "").lower()
         if label not in {"bullish", "bearish"}:
             label = _sentiment(body)
         user = message.get("user") if isinstance(message.get("user"), dict) else {}
+        conversation = message.get("conversation") if isinstance(message.get("conversation"), dict) else {}
+        likes = message.get("likes")
+        likes = likes.get("total") if isinstance(likes, dict) else likes
+        try:
+            likes = max(0, int(likes or 0))
+        except (TypeError, ValueError, OverflowError):
+            likes = 0
         username = str(user.get("username") or "")
         message_id = str(message.get("id") or "")
         permalink = (f"https://stocktwits.com/{username}/message/{message_id}"
@@ -188,16 +217,14 @@ def _stocktwits_symbol(symbol: str, limit: int) -> list[dict[str, Any]] | None:
         rows.append({
             "source": "stocktwits",
             "source_id": message_id,
-            "thread_id": str(message.get("conversation", {}).get("parent_message_id") or ""),
-            "author_hash": hashlib.sha256(
-                str((message.get("user") or {}).get("id") or "[unknown]").encode("utf-8")
-            ).hexdigest()[:16],
+            "thread_id": str(conversation.get("parent_message_id") or ""),
+            "author_hash": _author_hash(user.get("id")),
             "created_at": created,
             "title": f"${symbol.upper()} Stocktwits message",
             "excerpt": body[:300],
             "ticker_candidates": [symbol.upper()],
             "sentiment": label,
-            "score": int(message.get("likes") or 0),
+            "score": likes,
             "comments": 0,
             "permalink": permalink,
         })
@@ -241,7 +268,8 @@ def _rss_feed(feed: str, limit: int) -> list[dict[str, Any]]:
             "source": "public_rss",
             "source_id": hashlib.sha256(f"{feed}|{link}|{title}".encode("utf-8")).hexdigest()[:16],
             "thread_id": "",
-            "author_hash": hashlib.sha256(feed.encode("utf-8")).hexdigest()[:16],
+            "author_hash": None,  # A feed is not an identified person.
+            "kind": "headline",
             "created_at": _iso(_ts_seconds(_clean_text(item["published"], 80))),
             "title": title,
             "excerpt": description[:300],
@@ -289,21 +317,65 @@ def _configured_feeds() -> tuple[str, ...]:
     return tuple(x.strip() for x in raw.split(",") if x.strip()) or DEFAULT_RSS_FEEDS
 
 
+def _author_hash(value: Any) -> str | None:
+    author = str(value or "").strip()
+    if not author or author.lower() in {"[deleted]", "[unknown]", "[removed]"}:
+        return None
+    return hashlib.sha256(author.encode("utf-8")).hexdigest()[:16]
+
+
+def _family(row: dict[str, Any]) -> str:
+    source = str(row.get("source") or "unknown")
+    return "reddit" if source.startswith("reddit_") else source
+
+
+def _recent_unique(rows: list[dict[str, Any]], now: float) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    excluded = {"stale": 0, "undated_or_future": 0, "duplicates": 0}
+    unique: dict[tuple, dict[str, Any]] = {}
+    # Prefer dated API posts to RSS copies of the same Reddit discussion.
+    for original in sorted(rows, key=lambda r: r.get("source") == "public_rss"):
+        row = copy.deepcopy(original)
+        stamp = _created_ts(row.get("created_at"), now)
+        if stamp is None:
+            excluded["undated_or_future"] += 1
+            continue
+        if now - stamp > WINDOW_SEC:
+            excluded["stale"] += 1
+            continue
+        row["created_ts"] = stamp
+        # Stable message IDs deduplicate messages returned for several symbols.
+        url = str(row.get("permalink") or "").split("?", 1)[0].rstrip("/")
+        key = (("url", url) if url and _family(row) != "stocktwits" else
+               (_family(row), str(row["source_id"])) if row.get("source_id") else
+               (_family(row), stamp, row.get("author_hash"), row.get("title"), row.get("excerpt")))
+        if key in unique:
+            excluded["duplicates"] += 1
+            saved = unique[key]
+            saved["ticker_candidates"] = sorted(set(saved.get("ticker_candidates") or []) | set(row.get("ticker_candidates") or []))
+        else:
+            unique[key] = row
+    return sorted(unique.values(), key=lambda r: r["created_ts"], reverse=True), excluded
+
+
 def _summarize(rows: list[dict[str, Any]], watchlist: list[str]) -> dict[str, Any]:
     allowed = {str(t).upper().lstrip("$") for t in watchlist if t}
     by_ticker: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         tickers = _tickers(f"{row.get('title', '')} {row.get('excerpt', '')}", allowed) if allowed else row.get("ticker_candidates", [])
-        if allowed and not tickers:
-            tickers = [t for t in (row.get("ticker_candidates") or []) if t in allowed]
+        if allowed:
+            tickers = sorted(set(tickers) | {t for t in (row.get("ticker_candidates") or []) if t in allowed})
         for ticker in tickers:
             by_ticker.setdefault(ticker, []).append(row)
     pulse = []
     for ticker, items in by_ticker.items():
-        bullish = sum(i.get("sentiment") == "bullish" for i in items)
-        bearish = sum(i.get("sentiment") == "bearish" for i in items)
-        authors = len({i.get("author_hash") for i in items})
-        threads = len({i.get("thread_id") or i.get("source_id") or id(i) for i in items})
+        posts = [i for i in items if i.get("source") != "public_rss"]
+        # A single text label cannot reliably assign opposing views to several tickers.
+        directional = [i for i in posts if len(set(i.get("ticker_candidates") or []) |
+                       set(_tickers(f"{i.get('title', '')} {i.get('excerpt', '')}"))) == 1]
+        bullish = sum(i.get("sentiment") == "bullish" for i in directional)
+        bearish = sum(i.get("sentiment") == "bearish" for i in directional)
+        authors = len({(_family(i), i["author_hash"]) for i in posts if i.get("author_hash")})
+        threads = len({(_family(i), i.get("thread_id") or i.get("source_id") or i.get("permalink") or id(i)) for i in posts})
         sources = sorted({str(i.get("source") or "unknown") for i in items})
         pulse.append({
             "ticker": ticker,
@@ -313,10 +385,13 @@ def _summarize(rows: list[dict[str, Any]], watchlist: list[str]) -> dict[str, An
             "unique_authors": authors,
             "bullish": bullish,
             "bearish": bearish,
-            "uncertain": len(items) - bullish - bearish,
+            "uncertain": len(posts) - bullish - bearish,
+            "post_mentions": len(posts), "headline_mentions": len(items) - len(posts),
+            "newest_at": _iso(max(i["created_ts"] for i in items)),
+            "oldest_at": _iso(min(i["created_ts"] for i in items)),
             "attention_score": round(sum(max(0, int(i.get("score") or 0)) + max(0, int(i.get("comments") or 0)) for i in items) ** 0.5, 2),
-            "independence": round(authors / len(items), 3) if items else 0,
-            "quality": "low" if authors < 2 or authors / max(len(items), 1) < 0.35 else "moderate",
+            "contributor_share": round(authors / len(posts), 3) if posts else 0,
+            "quality": "low" if authors < 2 or authors / max(len(posts), 1) < 0.35 else "moderate",
             "items": items[:5],
         })
     pulse.sort(key=lambda x: (x["mentions"], x["attention_score"]), reverse=True)
@@ -335,28 +410,26 @@ def snapshot(watchlist: list[str] | None = None, *, force: bool = False) -> dict
     key = tuple(sorted(str(t).upper() for t in watchlist))
     now = time.time()
     with _lock:
-        if not force and _cache.get("payload") and now - float(_cache.get("at") or 0) < _TTL and _cache.get("key") == key:
-            return dict(_cache["payload"])
+        if not force and _cache.get("payload") and 0 <= now - float(_cache.get("at") or 0) < _TTL and _cache.get("key") == key:
+            return copy.deepcopy(_cache["payload"])
     subreddits = tuple(
         x.strip() for x in os.environ.get("SOCIAL_SUBREDDITS", "").split(",") if x.strip()
     ) or DEFAULT_SUBREDDITS
     symbols = [str(t).upper().lstrip("$") for t in watchlist if t]
     feeds = _configured_feeds()
     # Sources are independent: fetch them together instead of back to back.
-    jobs = [lambda sub=sub: _reddit_rows(sub) for sub in subreddits]
-    jobs += [lambda: _stocktwits_rows(symbols), lambda: _rss_rows(feeds), lambda: _x_rows(symbols)]
+    jobs = [(f"reddit r/{sub}", lambda sub=sub: _reddit_rows(sub)) for sub in subreddits]
+    jobs += [("stocktwits", lambda: _stocktwits_rows(symbols)), ("rss", lambda: _rss_rows(feeds)), ("x", lambda: _x_rows(symbols))]
+    with _lock:
+        _source_status.pop("unexpected", None)  # Superseded by named provider failures.
     rows: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=6, thread_name_prefix="social-fetch") as pool:
-        for future in [pool.submit(job) for job in jobs]:
+        for name, future in [(name, pool.submit(job)) for name, job in jobs]:
             try:
                 rows.extend(future.result() or [])
             except Exception as exc:  # one source never sinks the snapshot
-                _note_source("unexpected", type(exc).__name__)
-    for row in rows:
-        row["created_ts"] = _created_ts(row.get("created_at"), now)
-    # Sort on parsed time: raw strings mix ISO and RFC 2822 ("Tue, ..." sorts above
-    # every "2026-..."), which let stale RSS rows crowd fresh posts out of the cap.
-    rows.sort(key=lambda x: x.get("created_ts") or 0.0, reverse=True)
+                _note_source(name, f"Could not read source response ({type(exc).__name__})")
+    rows, excluded = _recent_unique(rows, now)
     active = [name for name in ("reddit", "stocktwits", "rss", "x")
               if any(str(r.get("source") or "").startswith({"rss": "public_rss"}.get(name, name)) for r in rows)]
     with _lock:
@@ -370,12 +443,14 @@ def snapshot(watchlist: list[str] | None = None, *, force: bool = False) -> dict
         "subreddits": list(subreddits),
         "rss_feeds": list(_configured_feeds()),
         "scanned_at": datetime.now(timezone.utc).isoformat(),
-        "error": None if rows else "No public social rows available",
+        "error": None if rows else "No dated social posts or headlines from the last 24 hours are available.",
+        "window_hours": 24, "window_ends_at": _iso(now), "excluded": excluded,
+        "method_note": "Sampled posts, not all activity. Word cues and provider labels can miss sarcasm or negation. Multi-ticker posts are unclear. Feed headlines do not vote. Identified accounts are not verified people or independent opinions.",
         **_summarize(rows, watchlist),
     }
     with _lock:
         _cache.update(at=now, key=key, payload=payload)
-    return dict(payload)
+    return copy.deepcopy(payload)
 
 
 def public_status() -> dict[str, Any]:

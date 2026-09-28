@@ -1,0 +1,23 @@
+<dialog id="companion-chat" aria-labelledby="companion-chat-title">
+ <div class="chat-heading"><h2 id="companion-chat-title">Talk with your companions</h2><button type="button" id="chat-close" aria-label="Close companion chat">Close</button></div>
+ <p class="chat-intro">Ask for explanations, research ideas, or a review. Chat cannot place trades or change your settings.</p>
+ <div class="chat-controls">
+  <label>Talk to <select id="chat-role"><option value="both">Both companions</option><option value="fox">Fox</option><option value="changing_woman">Changing Woman</option></select></label>
+  <label>Replies <select id="chat-provider"><option value="gemini">Gemini + local explanations</option><option value="local">Local explanations only</option><option value="ollama">Local AI · Ollama</option></select></label>
+  <label>Stock, optional <input id="chat-stock" maxlength="10" placeholder="e.g. SPY" autocomplete="off" /></label>
+ </div>
+ <label id="chat-local-label" hidden>Installed local model <select id="chat-local-model"><option value="">Choose a local model</option></select><small id="chat-local-status">Local AI status has not been checked.</small></label>
+ <p id="chat-context" class="chat-meta"></p>
+ <details class="chat-library"><summary>Conversations &amp; saved notes</summary>
+  <label>Conversation <select id="chat-history"><option value="">New conversation</option></select></label>
+  <div class="chat-buttons"><button type="button" id="chat-new">New conversation</button><button type="button" id="chat-forget">Forget this conversation</button><a id="chat-export" href="/api/companion/chat/export">Export notebook</a></div>
+  <p id="chat-retention"></p>
+  <div id="chat-memories"></div>
+  <form id="chat-memory-form"><label>Note for future conversations <textarea id="chat-memory-text" maxlength="700" rows="2" placeholder="For example: explain percentages in dollars too." required></textarea></label><button type="submit" id="chat-memory-save">Save note</button><button type="button" id="chat-memory-reset">Cancel edit</button></form>
+ </details>
+ <div id="chat-turns" class="chat-turns" aria-label="Conversation"></div>
+ <p id="chat-status" role="status" aria-live="polite"></p>
+ <div class="chat-suggestions"><button type="button" data-chat-question="Explain my trading status">Explain status</button><button type="button" data-chat-question="Explain learning">How learning works</button><button type="button" data-chat-question="Explain costs">Explain costs</button></div>
+ <form id="chat-form"><label for="chat-message">Your message</label><textarea id="chat-message" maxlength="3000" rows="3" required placeholder="What should I understand about today’s research?"></textarea><div class="chat-buttons"><button id="chat-send" class="primary" type="submit">Send message</button><button id="chat-stop" type="button" disabled>Stop reply</button></div></form>
+ <small>When selected, Gemini receives recent messages, dated research summaries and saved notes. Local AI uses the installed model on this PC. Account IDs and known keys are removed. Do not put passwords in chat. One model speaking in two roles is not independent verification.</small>
+</dialog>

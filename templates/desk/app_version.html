@@ -8,10 +8,12 @@
         return response.json();
       })
       .then(({code}) => {
-        if (!/^[a-f0-9]{16}$/.test(code?.started || '')) throw new Error('Version unavailable');
-        label.textContent = 'Version · ' + code.started.slice(0, 8);
-        label.title = 'Running app build: ' + code.started +
-          (code.stale ? '. Updated files are waiting for a restart.' : '');
+        const version = code?.serving || code?.started;
+        if (!/^[a-f0-9]{16}$/.test(version || '')) throw new Error('Version unavailable');
+        label.textContent = 'Version · ' + version.slice(0, 8);
+        label.title = code.stale
+          ? 'Desk started with build ' + version + '. Updated Python files are waiting for a restart.'
+          : 'Current app files: ' + version + '. Reload an older open page to use updated browser files.';
       })
       .catch(() => { label.textContent = 'Version unavailable'; });
   })();

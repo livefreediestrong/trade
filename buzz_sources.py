@@ -388,7 +388,9 @@ def reddit_auth_status() -> dict[str, Any]:
         "message": ("Reddit is not connected. Approved API access and REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET are required." if state == "needs_credentials" else
                     f"Reddit is cooling down; automatic retry in {retry}s." if retry else
                     "Reddit connected; tokens renew automatically." if state == "connected" else
-                    _reddit_degraded_reason or "Reddit credentials loaded; awaiting the next source check."),
+                    _reddit_degraded_reason or
+                    ("Legacy public JSON is enabled, but is not approved OAuth access. Availability is not guaranteed."
+                     if state == "public_opt_in" else "Reddit credentials loaded; awaiting the next source check.")),
         "setup_url": "https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-Data-API-Wiki",
     }
 
@@ -425,11 +427,10 @@ def _to_oauth_url(path_or_url: str) -> str:
         url = REDDIT_OAUTH_BASE + s
     else:
         url = REDDIT_OAUTH_BASE + "/" + s.lstrip("/")
+    # Drop query/fragment before checking the suffix; params are passed separately.
+    url = url.split("?", 1)[0].split("#", 1)[0].rstrip("/")
     if url.endswith(".json"):
         url = url[:-5]
-    # Drop query from path if any; params passed separately
-    if "?" in url:
-        url = url.split("?", 1)[0]
     return url.rstrip("/") or REDDIT_OAUTH_BASE
 
 
@@ -602,15 +603,18 @@ def _reddit_get(path_or_url: str, *, params: dict | None = None) -> tuple[Any | 
         if time.time() < _reddit_retry_at:
             return None, reddit_auth_status()["message"]
         if not configured:
-            # Explicit legacy opt-in only. Never fall back after OAuth rejection.
-            return _get_json("https://www.reddit.com" + urlsplit(url).path + ".json", params=params, headers=_public_headers())
-        token, _mode = _ensure_reddit_token()
-        if not token:
-            return None, _oauth_last_error or reddit_auth_status()["message"]
-        headers = {"Authorization": f"bearer {token}", "User-Agent": _reddit_user_agent(), "Accept": "application/json"}
+            # Retain explicit legacy opt-in, with the same cache and cooldown.
+            # Never enable it automatically or fall back after OAuth rejection.
+            url = "https://www.reddit.com" + urlsplit(url).path + ".json"
+            headers = _public_headers()
+        else:
+            token, _mode = _ensure_reddit_token()
+            if not token:
+                return None, _oauth_last_error or reddit_auth_status()["message"]
+            headers = {"Authorization": f"bearer {token}", "User-Agent": _reddit_user_agent(), "Accept": "application/json"}
         try:
             response = requests.get(url, headers=headers, params=params, timeout=HTTP_TIMEOUT, allow_redirects=False)
-            if response.status_code == 401:
+            if configured and response.status_code == 401:
                 token, _mode = _ensure_reddit_token(force=True)
                 if token:
                     headers["Authorization"] = f"bearer {token}"

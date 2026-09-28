@@ -252,7 +252,7 @@ class PaperWorkday:
             progress["qualified_candidates"] += len(ranked)
             raw["evaluation"] = training
             usage = self.desk.llm_trader.model_cost_today()
-            cost = usage.get("model_usd")
+            cost = usage.get("committed_usd", usage.get("model_usd"))
             reason = None
             if now_utc() >= close-timedelta(minutes=p["horizon_min"]+2): reason="Collecting only: insufficient session time for the evaluation horizon"
             elif progress["model_calls"] >= p["max_model_calls"]: reason="Collecting only: daily model-call cap reached"
@@ -266,7 +266,8 @@ class PaperWorkday:
         analysis = dict(analysis, companion_context={"style": "Patient Stoic researcher. Never force a trade or promise a profit.",
                            "personality": p["personality"], "paper_only": True,
                            "training_as_of": training["trained_at"], "weights": training["weights"][:30]})
-        thesis = self.desk._research_thesis(analysis, pcfg, source="moss_paper")
+        with self.desk.llm_trader.cost_scope("moss_paper", total_cap=p["model_budget_usd"]):
+            thesis = self.desk._research_thesis(analysis, pcfg, source="moss_paper")
         if hasattr(self, "trace_inputs"):
             self.trace_inputs.append({"operation": "configured_research_model", "result": thesis,
                                       "prompt_version": thesis.get("prompt_version"), "model": thesis.get("llm_model")})

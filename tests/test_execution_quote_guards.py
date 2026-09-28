@@ -24,9 +24,9 @@ def test_close_and_unrelated_ticks_never_establish_freshness():
     assert q['price'] is None and q['fresh'] is False
 
 
-@pytest.mark.parametrize('problem',['frozen','old','crossed','spread','size','identity'])
+@pytest.mark.parametrize('problem',['frozen','delayed','old','crossed','spread','size','identity'])
 def test_final_guard_blocks_before_real_adapter_dispatch(gateway,monkeypatch,problem):
-    account=broker.get_account();identity=account['identity'];q=ticks(2 if problem=='frozen' else 1,20 if problem=='old' else 0)
+    account=broker.get_account();identity=account['identity'];q=ticks(2 if problem=='frozen' else 3 if problem=='delayed' else 1,20 if problem=='old' else 0)
     if problem=='spread':q.ticks[1].price=110
     if problem=='crossed':q.ticks[1].price=99
     if problem=='size':q.askSize=0
@@ -59,7 +59,7 @@ def test_stream_callbacks_survive_packet_tick_list_clearing(gateway, monkeypatch
     def sleep(_):
         ticker.ticks=ticks().ticks
         ticker.updateEvent.emit(ticker)
-        ticker.ticks=[]  # ib_insync clears per-packet ticks, not the accumulated receipt.
+        ticker.ticks=[]  # ib_async clears per-packet ticks, not the accumulated receipt.
     monkeypatch.setattr(gateway,'sleep',sleep)
     q=broker.stock_quote('TEST')
     assert q['ok'] and q['fresh'] and q['bid']==100 and q['ask']==100.02,q

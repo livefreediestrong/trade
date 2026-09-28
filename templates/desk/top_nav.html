@@ -2,16 +2,21 @@
 <nav class="desk-topnav" aria-label="Desk pages">
   <a class="desk-topnav-brand" href="/desk/overview" title="Overview">
     <span class="logo-medallion">{% include "desk/brand_mark.html" %}</span>
-    <span class="wordmark">nadzeel</span>
+    <span class="wordmark"><span class="theme-brand-desert">nadzeel</span><span class="theme-brand-plain">Trading desk</span></span>
   </a>
-  <div class="desk-topnav-links" role="list">
-    <a role="listitem" href="/desk/overview" class="desk-topnav-link{% if desk_page == 'overview' %} is-active{% endif %}">Overview</a>
-    <a role="listitem" href="/desk/fox" class="desk-topnav-link{% if desk_page == 'auto' %} is-active{% endif %}" title="Real broker · Fox agent">Fox</a>
-    <a role="listitem" href="/desk/paper" class="desk-topnav-link{% if desk_page == 'paper' %} is-active{% endif %}" title="Simulated practice">Paper</a>
-    <a role="listitem" href="/desk/research" class="desk-topnav-link{% if desk_page == 'research' %} is-active{% endif %}" title="Ideas, rankings, notes">Research</a>
-    <a role="listitem" href="/desk/ticket" class="desk-topnav-link{% if desk_page == 'ticket' %} is-active{% endif %}" title="Buy or sell ticket">Ticket</a>
-    <a role="listitem" href="/desk/settings" class="desk-topnav-link desk-topnav-muted{% if desk_page == 'settings' %} is-active{% endif %}">Settings</a>
+  <div class="desk-topnav-links">
+    <a href="/desk/overview" class="desk-topnav-link{% if desk_page == 'overview' %} is-active{% endif %}"{% if desk_page == 'overview' %} aria-current="page"{% endif %}>Overview</a>
+    <a href="/desk/fox" class="desk-topnav-link{% if desk_page == 'auto' %} is-active{% endif %}"{% if desk_page == 'auto' %} aria-current="page"{% endif %} title="Real broker · Fox agent">Fox</a>
+    <a href="/desk/paper" class="desk-topnav-link{% if desk_page == 'paper' %} is-active{% endif %}"{% if desk_page == 'paper' %} aria-current="page"{% endif %} title="Paper trading with simulated money">Practice</a>
+    <a href="/desk/research" class="desk-topnav-link{% if desk_page == 'research' %} is-active{% endif %}"{% if desk_page == 'research' %} aria-current="page"{% endif %} title="Ideas, rankings, notes">Research</a>
+    <a href="/desk/ticket" class="desk-topnav-link{% if desk_page == 'ticket' %} is-active{% endif %}"{% if desk_page == 'ticket' %} aria-current="page"{% endif %} title="Review an exact buy or sell order">Review a trade</a>
+    <a href="/desk/settings" class="desk-topnav-link desk-topnav-muted{% if desk_page == 'settings' %} is-active{% endif %}"{% if desk_page == 'settings' %} aria-current="page"{% endif %}>Settings</a>
   </div>
   {# Split pages repeat the hint in their banner; only the legacy full desk needs it here. #}
   {% if desk_page|default("") == "all" %}<p class="desk-topnav-hint" id="desk-page-hint">{{ page_hint|default("") }}</p>{% endif %}
 </nav>
+<div class="desk-view-tools" aria-label="Workspace view">
+ <label>View <select id="desk-view"><option value="full">Full tools &amp; research</option><option value="focused">Focused essentials</option></select></label>
+ <p id="desk-view-note">Full workspace · every tool and research section is available.</p>
+ <button type="button" data-open-companion-chat>Chat with companions</button>
+</div>

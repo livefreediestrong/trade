@@ -58,7 +58,7 @@ async function dirtyForms(){
 async function streamOrder(){
  const noop=()=>{};const calls=[];
  const c={state:{config:{},signals:{pending:[],approved:[]}},window:{dispatchEvent:noop},CustomEvent:class{},console:{warn:noop},setTimeout,clearTimeout,
- fullStateSeen:true,oppEmptyTimer:null,pollErrToasts:0,POLL_ERR_TOAST_CAP:3,loopEvents:[],loopFeedSeq:0,
+ fullStateSeen:false,oppEmptyTimer:null,pollErrToasts:0,POLL_ERR_TOAST_CAP:3,loopEvents:[],loopFeedSeq:0,
  api:()=>new Promise((resolve,reject)=>calls.push({resolve,reject})),noteFresh:noop,warnCorruptFiles:noop,toast:noop,workspaceView:x=>x};
  const renderCode=slice('  function render(data) {','  function appendChatBubble');
  const liteCode=slice('  let _liteSig = "";','  function renderPace');
@@ -67,13 +67,28 @@ async function streamOrder(){
  const first=vm.runInContext('refresh()',c),coalesced=vm.runInContext('refresh()',c);assert.equal(calls.length,1);
  c.incoming={ok:true,session_active:false,config:{mode:'live_manual'},signals:{pending:[],approved:[{id:'new-fill'}]},signal_history_delta:true};
  vm.runInContext('applyStateLite(incoming)',c);
- calls[0].resolve({config:{mode:'live_manual'},signals:{pending:[{id:'new-fill'}],approved:[]}});await Promise.all([first,coalesced]);
+ calls[0].resolve({config:{mode:'auto_live',watchlist:['AAPL']},llm:{configured:true,model:'first-model'},signals:{pending:[{id:'new-fill'}],approved:[]}});await Promise.all([first,coalesced]);
  assert.equal(c.state.signals.approved[0].id,'new-fill');
+ assert.equal(c.fullStateSeen,true,'stream activity must not starve the initial full load');
+ assert.equal(c.state.llm.model,'first-model');assert.equal(c.state.config.watchlist[0],'AAPL');
+ assert.equal(c.state.config.mode,'live_manual','newer broker mode survives the older full response');
  c.incoming={...c.incoming,signals:{pending:[]},loop:{seq:22}};vm.runInContext('applyStateLite(incoming)',c);assert.equal(c.state.signals.approved[0].id,'new-fill');
  const next=vm.runInContext('refresh()',c);assert.equal(calls.length,2);calls[1].resolve({config:{mode:'manual'},signals:{pending:[],approved:[{id:'newer-fill'}]}});await next;
  assert.equal(c.state.signals.approved[0].id,'newer-fill');
  const failed=vm.runInContext('refresh()',c);calls[2].reject(Error('offline'));await failed;
  const retry=vm.runInContext('refresh()',c);calls[3].resolve({config:{},signals:{pending:[],approved:[]}});await retry;assert.equal(c.state.signals.approved.length,0);
+ const busy=vm.runInContext('refresh()',c);
+ c.incoming={ok:true,config:{mode:'manual'},signals:{pending:[],approved:[{id:'latest-fill'}]},paper_ledger:{cash:80,positions:[{ticker:'AAPL',shares:2}]}};
+ vm.runInContext('applyStateLite(incoming)',c);
+ calls[4].resolve({config:{mode:'auto_live',watchlist:['MSFT']},llm:{configured:true,model:'updated-model'},ledger:{cash:100,positions:[],fills:[]},signals:{pending:[{id:'latest-fill'}],approved:[]}});await busy;
+ assert.equal(c.state.llm.model,'updated-model','full-only metadata also refreshes after startup');
+ assert.equal(c.state.config.watchlist[0],'MSFT');assert.equal(c.state.config.mode,'manual');
+ assert.equal(c.state.ledger.cash,80);assert.equal(c.state.ledger.positions[0].shares,2);
+ assert.equal(c.state.signals.approved[0].id,'latest-fill');
+ const partial=vm.runInContext('refresh()',c);
+ c.incoming={ok:true,open_position:{count:2,truncated:true,items:[{ticker:'AAPL',shares:3}]}};vm.runInContext('applyStateLite(incoming)',c);
+ calls[5].resolve({config:{},ledger:{positions:[{ticker:'AAPL',shares:2},{ticker:'MSFT',shares:4}]},signals:{pending:[],approved:[]}});await partial;
+ assert.equal(c.state.ledger.positions.length,2,'truncated stream rows cannot remove full-book positions');assert.equal(c.state.ledger.positions[0].shares,3);
 }
 async function focusReturn(){
  const selectors=['#approve-modal','#broker-order-type','#broker-order-limit','#broker-order-terms-status','#btn-approve-confirm','#signal-list'];

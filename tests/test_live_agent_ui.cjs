@@ -81,7 +81,7 @@ function harness(){
  const failure=harness();await failure.reply(0,failure.state());failure.click('live-agent-budget-check');failure.requests[1].reject(Error('Provider unavailable'));await flush();
  assert.match(failure.node('live-agent-budget-list').children[0].textContent,/Provider unavailable/);
  assert.equal(failure.node('live-agent-budget-check').disabled,false);
- const options=harness(),ao={enabled:true,strategies:['put_credit','short_put'],max_contracts:3,allow_naked_short:false,dte_min:21,dte_max:70,max_quote_age_sec:8,prefer_otm_pct:2,spread_width_pct:4,every_n_stock_cycles:3};
+ const options=harness(),ao={enabled:true,strategies:['put_credit','short_put'],max_contracts:3,allow_naked_short:false,dte_min:21,dte_max:70,max_quote_age_sec:8,prefer_otm_pct:2,spread_width_pct:4,every_n_stock_cycles:3,automatic_exits:true,exit_loss_pct:30,exit_profit_pct:60,exit_before_expiry_sessions:2,exit_max_spread_pct:15};
  await options.reply(0,options.state({auto_options:ao}));options.node('la-interval_sec').value='180';options.edit();
  await options.poll();await options.reply(1,options.state({auto_options:{...ao,dte_min:7},revision:'other-window'}));
  options.save();const saved=JSON.parse(options.requests[2].options.body);
@@ -96,6 +96,23 @@ function harness(){
  assert.doesNotMatch(monitor.node('live-agent-managed').textContent,/Protecting/);
  assert.match(monitor.node('live-agent-position-list').children[0].children[2].textContent,/Connection required/);
  monitor.advance(26000);await monitor.poll();assert.equal(monitor.node('bx-agent-chip').textContent,'Status unavailable');
- console.log('Live agent UI: no automatic activation, exact account confirmation, duplicate suppression, dirty drafts, stale status, account changes and uncertain-request handling passed.');
+ const stops=harness();await stops.reply(0,stops.state());assert.equal(stops.node('la-broker_stops').checked,false);
+ stops.node('la-broker_stops').checked=true;stops.edit();await stops.poll();await stops.reply(1,stops.state());
+ assert.equal(stops.node('la-broker_stops').checked,true); // Status polling preserves the unsaved opt-in.
+ stops.save();const stopSave=JSON.parse(stops.requests[2].options.body);
+ assert.equal(stopSave.policy.broker_stops,true);assert.equal(stops.requests[2].url,'/api/live-agent/policy');
+ assert.equal(stops.requests.filter(r=>r.url.endsWith('/start')).length,0);
+ const draft=harness();await draft.reply(0,draft.state({enabled:true,mode:'auto_live',session_active:true}));
+ draft.click('risk-draft-paper');
+ assert.equal(draft.requests.length,1);assert.equal(draft.node('la-max_order_usd').value,100);
+ assert.equal(draft.node('la-max_daily_loss_usd').value,200);assert.equal(draft.node('la-ao-automatic_exits').checked,true);
+ await draft.poll();await draft.reply(1,draft.state({enabled:true}));
+ assert.equal(draft.node('la-max_order_usd').value,100); // Poll never saves or replaces the draft.
+ draft.click('risk-draft-small');assert.equal(draft.requests.length,2);
+ assert.equal(draft.node('la-max_order_usd').value,10);assert.equal(draft.node('la-ao-enabled').checked,false);
+ assert.equal(draft.node('la-ao-automatic_exits').checked,false);
+ assert.match(draft.node('live-agent-result').textContent,/Nothing saved, started or paused/);
+ assert.equal(draft.requests.filter(r=>r.options?.method==='POST').length,0);
+ console.log('Live agent UI: no automatic activation, exact account confirmation, duplicate suppression, dirty drafts, stale status, paper-stop opt-in and uncertain-request handling passed.');
  console.log('Budget check: real quotes, zero/positive whole-share sizing, stale/future/mock rejection, draft races, errors and bounded read-only requests passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

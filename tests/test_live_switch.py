@@ -1,4 +1,4 @@
-"""Live ON/OFF: OFF always removes risk; ON only reaches approve-each-order through the shared gate."""
+"""Live ON/OFF: OFF stops submissions; ON only reaches approve-each-order through the shared gate."""
 import copy
 
 import pytest
@@ -65,3 +65,16 @@ def test_real_money_uses_the_real_token_and_plain_wording():
     view = live_switch.view({"mode": "live_manual"}, {"configured": True, "paper_mode": False})
     assert view["real_money"] and "real-money account" in view["plain"]
     assert "no orders" in live_switch.view({"mode": "manual"}, {})["plain"]
+
+
+def test_off_retains_read_only_broker_book_without_enabling_orders(switch, monkeypatch):
+    client, _ = switch
+    post(client, {"live": False})
+    cfg = copy.deepcopy(desk.load_config())
+    book = {'ok': True, 'risk_ready': False, 'positions': [{'symbol': 'AAPL', 'qty': 2}], 'day_pnl_usd': None}
+    monkeypatch.setattr(desk, '_broker_is_configured', lambda: True)
+    monkeypatch.setattr(desk, '_broker_book_cached', lambda: book)
+    monkeypatch.setattr(desk, 'save_config', lambda *a: pytest.fail('Read-only account view must not save configuration'))
+    result = desk._money_snapshot(cfg)
+    assert result['broker_book'] == book
+    assert desk.load_config()['mode'] == 'manual' and desk.load_config() == cfg

@@ -82,6 +82,106 @@ def assert_blocked(result):
     assert result.get("account", {}).get("day_pnl") is None
 
 
+@pytest.mark.parametrize("value", [None, float("nan"), float("inf"), 1.7976931348623157e308])
+def test_unusable_callback_does_not_reset_recovery_backoff(stream, value, monkeypatch):
+    stream.account()
+    monkeypatch.setattr(broker, "_SOFT_RECONNECT_AFTER", stream.clock[0] + 600)
+    monkeypatch.setattr(broker, "_ib", lambda: pytest.fail("Unexpected broker connection"))
+    broker._PNL_WATCH.update(soft_reconnect_count=4, pending_soft_reconnect=True,
+                             pending_reason="silent", last_error_code=2100,
+                             last_scheduled_refresh_at=25.)
+    stream.callback(value)
+    assert_blocked(stream.account())
+    assert broker._PNL_WATCH["soft_reconnect_count"] == 4
+    assert broker._PNL_WATCH["pending_soft_reconnect"] is True
+    assert broker._PNL_WATCH["pending_reason"] == "silent"
+    assert broker._PNL_WATCH["last_error_code"] == 2100
+    assert broker._PNL_WATCH["last_scheduled_refresh_at"] == 25.
+
+
+@pytest.mark.parametrize("value", [0., -12.5])
+def test_usable_callback_completes_recovery(stream, value):
+    stream.account()
+    broker._PNL_WATCH.update(soft_reconnect_count=4, pending_soft_reconnect=True,
+                             pending_reason="silent", last_error_code=2100)
+    stream.callback(value)
+    result = stream.account()
+    assert result["risk_ready"] and result["account"]["day_pnl"] == value
+    assert broker._PNL_WATCH["soft_reconnect_count"] == 0
+    assert broker._PNL_WATCH["pending_soft_reconnect"] is False
+    assert broker._PNL_WATCH["pending_reason"] is None
+    assert broker._PNL_WATCH["last_error_code"] is None
+
+
+def test_silent_subscription_survives_reconnect_cooldown(stream, monkeypatch):
+    stream.account()
+    original = broker._PNL[(id(stream.fake), "TEST")]["value"]
+    monkeypatch.setattr(broker, "_SOFT_RECONNECT_AFTER", stream.clock[0] + 600)
+    monkeypatch.setattr(broker, "_arm_soft_reconnect", lambda *a: pytest.fail("Reconnect during cooldown"))
+    for _ in range(3):
+        stream.clock[0] += 61
+        result = stream.account()
+        assert_blocked(result)
+        assert result["pnl_diagnostics"]["api_responsive"] is True
+        assert broker._PNL[(id(stream.fake), "TEST")]["value"] is original
+        assert stream.canceled == []
+    # A delayed real callback on that same request can still restore readiness.
+    stream.callback(-8.)
+    assert stream.account()["account"]["day_pnl"] == -8.
+
+
+def test_silent_subscription_can_retry_when_cooldown_expires(stream, monkeypatch):
+    stream.account()
+    original = broker._PNL[(id(stream.fake), "TEST")]["value"]
+    monkeypatch.setattr(broker, "_SOFT_RECONNECT_AFTER", stream.clock[0] + 600)
+    stream.clock[0] += 600
+    result = stream.account()
+    assert_blocked(result)
+    assert stream.canceled == ["TEST"]
+    assert result["pnl_diagnostics"]["retries"] == 1
+    assert broker._PNL[(id(stream.fake), "TEST")]["value"] is not original
+
+
+def test_silent_pnl_still_checks_api_without_manufacturing_a_value(stream):
+    result = stream.account()
+    assert_blocked(result)
+    assert result["pnl_diagnostics"]["api_responsive"] is True
+    assert result["pnl_diagnostics"]["api_response_age_seconds"] == 0
+    assert result["pnl_diagnostics"]["callbacks"] == 0
+
+
+def test_failed_api_probe_is_bounded_and_does_not_reuse_last_success(stream):
+    stream.account()
+    stream.callback(-10.)
+    assert stream.account()["risk_ready"]
+    attempts = []
+    def timeout():
+        attempts.append(True)
+        raise TimeoutError("private broker wire text")
+    stream.fake.reqCurrentTime = timeout
+    stream.clock[0] += 16
+    for _ in range(4):
+        result = stream.account()
+        assert_blocked(result)
+        assert result["pnl_diagnostics"]["api_probe_error"] == "TimeoutError"
+        assert result["pnl_diagnostics"]["api_response_age_seconds"] is None
+        assert "private broker" not in str(result)
+    assert len(attempts) == 1
+    stream.clock[0] += 16
+    stream.fake.reqCurrentTime = lambda: datetime.now(timezone.utc)
+    assert stream.account()["account"]["day_pnl"] == -10.
+
+
+def test_probe_callback_during_missing_pnl_does_not_bypass_outage(stream):
+    def loss():
+        stream.callback(0.)
+        broker._server_error(-1, 1100, "lost")
+        return datetime.now(timezone.utc)
+    stream.fake.reqCurrentTime = loss
+    assert_blocked(stream.account())
+    assert not broker._PNL_UPDATED
+
+
 def test_unchanged_negative_pnl_survives_three_minutes_without_retry(stream):
     assert_blocked(stream.account())
     stream.callback(-12.50)
