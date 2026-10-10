@@ -24,6 +24,8 @@ def live(execution, monkeypatch, tmp_path):
     identity = dict(cfg["broker_identity"], broker="ibkr", client_id=37, paper_mode=True)
     policy = dict(agent.DEFAULTS, symbols=["TEST", "OTHER"], max_order_usd=250.)
     # Eval rotates the watchlist; order allow-list stays policy.symbols.
+    # Order-flow tests; commissions are covered in test_commissions.py.
+    cfg.update(commission_min_usd=0.0, commission_per_share_usd=0.0, sell_regulatory_fee_usd=0.0)
     cfg.update(mode="auto_live", paper_research_enabled=False, broker_identity=identity,
                watchlist=["TEST", "OTHER"], watchlist_focus="all",
                live_agent={"policy": policy, "revision": "policy-1", "run_id": "run-1", "enabled": True})
@@ -47,7 +49,9 @@ def live(execution, monkeypatch, tmp_path):
         now = datetime.now(timezone.utc)
         return {"id": "decision-"+str(len(calls)), "ticker": ticker, "side": "buy", "suggested_shares": 10,
                 "signal_price": 100., "confidence": .8, "verdict": "PASS", "lateness_label": "early",
-                "ts": now.isoformat(), "quote": ds.quote_snapshot(100, now, "ibkr_live"), "llm_model": "real-model"}
+                "ts": now.isoformat(), "quote": ds.quote_snapshot(100, now, "ibkr_live"), "llm_model": "real-model",
+                # Real screened ideas carry these; the final cost check needs them.
+                "stop": 99.2, "target": 101.6}
     monkeypatch.setattr(desk, "generate_scan_signal", generate)
     return NS(cfg=cfg, policy=policy, identity=identity, sent=sent, service=service, calls=calls, generate=generate)
 
@@ -224,6 +228,8 @@ def test_failed_and_empty_scans_consume_one_interval(live, monkeypatch, fails):
     monkeypatch.setattr(desk, "generate_scan_signal", scan)
     live.service.tick(); live.service.tick(); agent.LiveAgent(desk).tick()
     assert live.calls == ["TEST"] and not live.sent
+    # An empty response is not evidence of a completed WATCH/AVOID screen.
+    # Only an explicit completed verdict is eligible for a refunded fast retry.
     assert live.service.status()["today"]["research"] == 1
 
 
@@ -266,9 +272,23 @@ def test_start_requires_genuine_daily_pnl(live, monkeypatch):
 
 def test_research_cap_and_model_call_revocation(live, monkeypatch):
     cfg = desk.load_config(); cfg["live_agent"]["policy"]["max_research_per_day"] = 1; desk.save_config(cfg)
-    monkeypatch.setattr(desk, "generate_scan_signal", lambda *a, **k: None)
     live.service.tick(); run_again(live)
-    assert live.service.phase == "daily_limit" and not live.sent
+    assert live.service.phase == "daily_limit" and len(live.sent) == 1
+
+
+def test_screen_without_pass_is_free_and_quick(live, monkeypatch):
+    seen = []
+    def scan(cfg, **kw):
+        seen.append(kw)
+        kw["notes"].update(verdict="WATCH", text="Entry blocked: execution quality is poor.")
+    monkeypatch.setattr(desk, "generate_scan_signal", scan)
+    live.service.tick()
+    assert seen[0]["pass_only"] is True
+    assert live.service.phase == "no_setup" and "WATCH: Entry blocked" in live.service.message
+    raw = live.service.load()
+    assert raw["days"][live.service.key(desk.load_config())]["research"] == 0
+    wait = (datetime.fromisoformat(raw["next_at"]) - agent.now_utc()).total_seconds()
+    assert 0 < wait <= agent.SCREEN_GAP_SEC
 
 
 def test_short_cover_and_no_new_short_entry(live, monkeypatch):
@@ -340,20 +360,22 @@ def test_delayed_ibkr_quote_prefers_fresh_realtime_quote(live, monkeypatch):
     assert len(live.sent) == 1 and live.sent[0]["limit"] == 100.05
 
 
-def test_delayed_ibkr_quote_is_kept_when_no_realtime_quote(live, monkeypatch):
+def test_delayed_ibkr_quote_blocks_when_no_realtime_quote(live, monkeypatch):
     now = datetime.now(timezone.utc)
     monkeypatch.setitem(router.__dict__, "stock_quote", lambda s: {
         "ok": True, "fresh": True, "price": 100., "delayed": True, "market_data_type": 3,
         "source": "IBKR delayed mkt data", "market_time": now.isoformat(), "age_sec": 0})
     monkeypatch.setattr(desk, "_realtime_quote_or_none", lambda _ds, s: None)
     live.service.tick()
-    assert len(live.sent) == 1  # delayed data never blocks live ordering
+    assert not live.sent and 'real-time' in live.service.message
 
 
 def test_auto_option_limit_uses_option_premium_not_stock_price(live, monkeypatch):
     cfg = desk.load_config()
-    cfg["live_agent"]["auto_options"] = dict(agent.auto_live_options.defaults(), enabled=True)
+    cfg["live_agent"]["auto_options"] = dict(agent.auto_live_options.defaults(), enabled=True, automatic_exits=True)
     desk.save_config(cfg)
+    monkeypatch.setitem(router.__dict__, 'option_lifecycle_snapshot', lambda identity: dict(
+        ok=True, identity=copy.deepcopy(identity), checked_at=datetime.now(timezone.utc).isoformat(),positions=[],orders=[]))
     def convert(self, signal, cfg, auto_cfg, context):
         now = datetime.now(timezone.utc)
         signal.update(asset_type="OPT", option_strategy="long_call", option_intent="BTO", right="C",

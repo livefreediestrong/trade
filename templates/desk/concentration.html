@@ -1,0 +1,13 @@
+<section id="portfolio-concentration" class="panel" aria-label="Position concentration">
+ <h2>How concentrated are my holdings?</h2>
+ <p>US stock holdings as a share of total account value, using available broker price marks. Long and short values are counted by size; borrowed exposure can exceed 100%. Price timestamps are not independently verified.</p>
+ <label>Highlight a holding above <input id="concentration-limit" type="number" min="1" max="100" step="1" value="25" /> %</label>
+ <div id="concentration-rows"><p>Reading account values…</p></div>
+ <small>This is a display threshold, not a trading limit. Options, foreign-currency holdings and sector weights are not included. Purchase cost is never substituted for a missing current value.</small>
+ <details id="concentration-funds-details">
+  <summary>Cash and buying power: what is available?</summary>
+  <p>These are separate IBKR balances in US dollars. Total cash can include money that has not settled. Settled cash reflects completed settlement after the broker's adjustments. Buying power and available funds use different broker calculations; they are not extra cash to add to your balance.</p>
+  <div id="concentration-funds"><p>Reading balance details…</p></div>
+  <p>These figures do not confirm cash available for a particular new order. Working orders, fees, currency settlement and trading permissions still need checking. A negative value is shown as reported. No order or trading setting changes when you open this panel.</p>
+ </details>
+</section>

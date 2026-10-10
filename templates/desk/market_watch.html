@@ -1,0 +1,43 @@
+<link rel="stylesheet" href="/static/market_watch.css?v=community-20260928-1">
+<section class="panel workbench-wide" id="market-watch" aria-labelledby="market-watch-title">
+ <div class="panel-head"><div><p class="eyebrow">Market watch · headlines, X, Reddit and what the internet is watching</p><h2 id="market-watch-title">Market watch &amp; trend scanner</h2></div><span class="pill" id="mw-health">Checking sources</span></div>
+ <p id="mw-status" role="status">Loading market headlines, social posts and trending tickers.</p>
+ <div class="mw-actions"><button type="button" class="btn ghost" id="mw-refresh">Refresh now</button></div>
+ <section class="desk-module"><h3 class="module-title">Trending across the internet</h3>
+  <p class="hint-line">Ranked by how many independent places show a ticker right now: WSB discussion threads (live), other Reddit, Stocktwits, Yahoo Finance trending, Google search trends, Google News market headlines and X. Attention, not quality or direction.</p>
+  <div class="table-wrap"><table><thead><tr><th>Ticker</th><th>Breadth</th><th>Where it is trending</th></tr></thead><tbody id="mw-trends"></tbody></table></div>
+  <div id="mw-topics" class="mw-topics"></div>
+ </section>
+ <section class="desk-module"><h3 class="module-title">Market headlines · Google News</h3><div id="mw-headlines" class="headline-list"></div><div id="mw-custom" class="headline-list" hidden></div></section>
+ <section class="desk-module"><h3 class="module-title">X stock watcher</h3><p id="mw-x-status" class="hint-line"></p><div id="mw-x" class="headline-list"></div></section>
+ <section class="desk-module"><h3 class="module-title">WSB discussion threads · live</h3><p id="mw-wsb-status" class="hint-line"></p><div id="mw-wsb-threads" class="mw-links"></div><div class="table-wrap"><table><thead><tr><th>Ticker</th><th>Last 15 min</th><th>Last hour</th><th>Trend</th><th>People</th><th>Lean</th></tr></thead><tbody id="mw-wsb"></tbody></table></div><p class="hint-line" id="mw-wsb-note"></p></section>
+ <section class="desk-module"><h3 class="module-title">Community attention &amp; price checks</h3>
+  <p class="hint-line">Posts and headlines sampled over the last 24 hours. Open a ticker's evidence to see what was said and check a dated provider price.</p>
+  <p id="mw-social-status" class="hint-line" role="status"></p>
+  <div class="table-wrap"><table><thead><tr><th>Ticker &amp; evidence</th><th>Posts / headlines</th><th>Accounts seen</th><th>Post tone</th></tr></thead><tbody id="mw-social"></tbody></table></div>
+  <p id="mw-social-method" class="hint-line"></p>
+  <form id="mw-price-form" class="mw-price-form">
+   <label for="mw-price-symbol">Check a US stock price, even when community posts are unavailable</label>
+   <div class="mw-actions"><input id="mw-price-symbol" name="symbol" type="text" placeholder="AAPL" maxlength="7" pattern="[A-Za-z]{1,5}(\.[A-Za-z])?" required autocomplete="off"><button type="submit" class="btn ghost" id="mw-price-check">Check provider price</button></div>
+  </form>
+  <p id="mw-price-result" class="hint-line" role="status">No price requested.</p>
+  <p class="hint-line">This counts sampled mentions, not holdings or investment returns. The WSB portfolio dashboard and Discord channel are not connected data feeds. Reddit JSON listings do not expose that app's private portfolio data; approved API or publisher access is still needed.</p>
+ </section>
+ <section class="desk-module" id="mw-community-section">
+  <h3 class="module-title">WSB attention &amp; outlook</h3>
+  <p class="hint-line">Two outside summaries of WallStreetBets. Attention means discussion; outlook means the provider's reading of that discussion.</p>
+  <p id="mw-community-note" class="hint-line"></p>
+  <div class="mw-community-grid">
+   <article class="mw-community-card"><h4>What people are discussing</h4><p id="mw-apewisdom-status" class="hint-line" role="status">Waiting for ApeWisdom.</p>
+    <div class="table-wrap mw-aggregate"><table><thead><tr><th>Stock</th><th>Mentions</th><th>Previous day</th></tr></thead><tbody id="mw-apewisdom"></tbody></table></div>
+   </article>
+   <article class="mw-community-card"><h4>How the discussion sounds</h4><p id="mw-tradestie-status" class="hint-line" role="status">Waiting for Tradestie.</p>
+    <div class="table-wrap mw-aggregate"><table><thead><tr><th>Stock</th><th>Provider outlook</th><th>Comments</th></tr></thead><tbody id="mw-tradestie"></tbody></table></div>
+   </article>
+  </div>
+  <p class="hint-line">Counts belong to separate provider samples and are not added together. Both use WSB, so agreement is not independent confirmation. These are not verified holdings or a complete record of discussion.</p>
+ </section>
+ <section class="desk-module"><h3 class="module-title">Watchlist on Google Finance</h3><div id="mw-watchlist" class="mw-links"></div></section>
+ <section class="desk-module"><h3 class="module-title">Source status</h3><p id="mw-massive-status" class="hint-line"></p><div class="table-wrap"><table><thead><tr><th>Source</th><th>Status</th></tr></thead><tbody id="mw-sources"></tbody></table></div></section>
+ <p class="hint-line">Headlines and posts are untrusted third-party text. Several sources can echo one story, and pumps trend too. Missing items do not mean no news. X needs your own X_BEARER_TOKEN and is budgeted per day; Reddit needs REDDIT_CLIENT_ID/SECRET. Google Finance links open Google's page; no Google data is scraped.</p>
+</section>

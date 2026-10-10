@@ -8,7 +8,7 @@
  async function request(data){
   const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),15000);
   try{
-   const response=await fetch('/api/markets/scanner'+(data?'':'?'+new URLSearchParams([...filters,['page',String(page)]])),{signal:controller.signal,...(data?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}:{})});
+   const response=await fetch('/api/markets/scanner'+(data?'':'?'+new URLSearchParams([...filters,['page',String(page)],...(document.documentElement?.dataset?.detail==='focused'?[['size','10']]:[])])),{signal:controller.signal,...(data?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}:{})});
    const value=await response.json();if(!response.ok||!value.ok)throw Error(value.error||'Market scan unavailable');return value;
   }catch(e){if(e.name==='AbortError')throw Error('Scanner response timed out. Refresh status before repeating a control action');throw e;}
   finally{clearTimeout(timeout);}
@@ -39,6 +39,8 @@
   $('sale-market-prev').disabled=page<=1;$('sale-market-next').disabled=page*d.page_size>=d.matched;
   const current=rows.find(r=>r.symbol===selected);if(current&&!issues)inspect(current);
  }
+ // Simple view shows the top 10; Everything shows 40 per page.
+ if(typeof MutationObserver==="function"&&document.documentElement)new MutationObserver(()=>{page=1;sequence++;refresh();}).observe(document.documentElement,{attributes:true,attributeFilter:["data-detail"]});
  async function refresh(){
   if(loading||!active||document.hidden)return;loading=true;const version=sequence;
   try{const d=await request();if(active&&!document.hidden&&version===sequence)render(d);}catch(e){$('sale-market-message').textContent=e.message+' · Saved results may be out of date.';}finally{loading=false;if(version!==sequence&&active&&!document.hidden)refresh();}

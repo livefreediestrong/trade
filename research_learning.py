@@ -13,12 +13,17 @@ def train(events, now=None):
     now = now or datetime.now(timezone.utc)
     groups, evidence, seen = {}, [], set()
     for event in events:
+        if not isinstance(event, dict):
+            continue
         key = str(event.get("id") or "")
+        if not key or key in seen:
+            continue
+        seen.add(key)  # Latest record wins, including a withdrawn/invalid score.
         side = event.get("intended_side") or event.get("decision") or event.get("side")
         net = finite(event.get("outcome_executable_move_bps"))
         start, end = timestamp(event.get("ts")), timestamp(event.get("outcome_ts"))
         horizon = finite(event.get("horizon_min"))
-        if (not key or key in seen or side not in ("buy", "sell") or net is None or
+        if (side not in ("buy", "sell") or net is None or
             event.get("outcome_status") != "scored" or event.get("scoring_version") != "horizon-net-v2" or
             event.get("mock") or event.get("brain_mode") == "mock" or event.get("routed") or
             event.get("error") or event.get("execution_block") or not event.get("input_hash") or
@@ -30,7 +35,6 @@ def train(events, now=None):
         tolerance = 120 if recorded_tolerance is None else min(120, max(0, recorded_tolerance))
         if abs(end - start - horizon * 60) > tolerance:
             continue
-        seen.add(key)
         scope = (str(event.get("ticker") or ""), event["llm_model"], event["prompt_version"],
                  str(event.get("workspace") or "research"), horizon, side, str(event.get("verdict") or "unknown"))
         bucket = groups.setdefault(scope, [])

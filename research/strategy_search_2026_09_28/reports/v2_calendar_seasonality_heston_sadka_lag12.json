@@ -1,0 +1,133 @@
+{
+ "name": "v2_calendar_seasonality_heston_sadka_lag12",
+ "trades": 1986,
+ "m_tests": 10,
+ "pass_rules": "Under fidelity_0_commission: (1) per-trade mean > 0 with a month-clustered one-sided lower bound > 0 at alpha = 0.05 / M (Bonferroni over M candidates); (2) mean per trade > 0 in the HOLDOUT (entries on/after 2023-01-01); (3) positive mean in >= 60% of calendar years with trades; (4) the 5-slot portfolio's Sharpe beats BOTH SPY buy-and-hold and the equal-weight buy-and-hold of the same universe over the same period.",
+ "median_hold_calendar_days": 31.0,
+ "trades_per_year": 224.8,
+ "gross_mean_bps": 266.9,
+ "fidelity_0_commission": {
+  "mean_bps": 256.9,
+  "win_rate": 0.492,
+  "lower_bound_bps": -49.7,
+  "months": 107,
+  "years_positive": "7/10",
+  "per_year_mean_bps": {
+   "2017": 241.4,
+   "2018": 149.5,
+   "2019": -78.1,
+   "2020": 1139.0,
+   "2021": -217.1,
+   "2022": -20.1,
+   "2023": 56.1,
+   "2024": 821.4,
+   "2025": 207.0,
+   "2026": 225.4
+  },
+  "holdout_trades": 906,
+  "holdout_mean_bps": 340.2,
+  "portfolio_5_slots": {
+   "start": "2017-09-29",
+   "end": "2026-09-28",
+   "cagr": 0.1282,
+   "sharpe": 0.5,
+   "max_drawdown": -0.8475,
+   "trades_taken": 535,
+   "slots": 5
+  }
+ },
+ "ibkr_110_account": {
+  "mean_bps": 56.9,
+  "win_rate": 0.439,
+  "lower_bound_bps": -249.7,
+  "months": 107,
+  "years_positive": "5/10",
+  "per_year_mean_bps": {
+   "2017": 41.4,
+   "2018": -50.5,
+   "2019": -278.1,
+   "2020": 939.0,
+   "2021": -417.1,
+   "2022": -220.1,
+   "2023": -143.9,
+   "2024": 621.4,
+   "2025": 7.0,
+   "2026": 25.4
+  },
+  "holdout_trades": 906,
+  "holdout_mean_bps": 140.2,
+  "portfolio_5_slots": {
+   "start": "2017-09-29",
+   "end": "2026-09-28",
+   "cagr": -0.1118,
+   "sharpe": 0.149,
+   "max_drawdown": -0.9308,
+   "trades_taken": 535,
+   "slots": 5
+  }
+ },
+ "benchmarks": {
+  "spy_buy_hold": {
+   "start": "2017-09-29",
+   "end": "2026-09-28",
+   "cagr": 0.1492,
+   "sharpe": 0.838,
+   "max_drawdown": -0.3372
+  },
+  "equal_weight_buy_hold": {
+   "start": "2017-09-29",
+   "end": "2026-09-28",
+   "cagr": 0.1948,
+   "sharpe": 0.805,
+   "max_drawdown": -0.366
+  }
+ },
+ "passed": false,
+ "reasons": [
+  "per-trade lower bound -49.7 bps is not above 0 (Bonferroni M=10)",
+  "portfolio Sharpe 0.5 does not beat SPY 0.838 and equal-weight 0.805"
+ ],
+ "runtime_sec": 0.5,
+ "first_trades": [
+  {
+   "ticker": "RCAT",
+   "entry_date": "2017-09-29",
+   "entry_px": 48.0,
+   "exit_date": "2017-10-31",
+   "exit_px": 36.0,
+   "rank": 1
+  },
+  {
+   "ticker": "NFLX",
+   "entry_date": "2017-09-29",
+   "entry_px": 18.135000228881836,
+   "exit_date": "2017-10-31",
+   "exit_px": 19.64299964904785,
+   "rank": 2
+  },
+  {
+   "ticker": "MSTR",
+   "entry_date": "2017-09-29",
+   "entry_px": 12.770999908447266,
+   "exit_date": "2017-10-31",
+   "exit_px": 13.22599983215332,
+   "rank": 3
+  },
+  {
+   "ticker": "GS",
+   "entry_date": "2017-09-29",
+   "entry_px": 195.29718017578125,
+   "exit_date": "2017-10-31",
+   "exit_px": 199.65284729003906,
+   "rank": 4
+  },
+  {
+   "ticker": "QMCO",
+   "entry_date": "2017-09-29",
+   "entry_px": 122.4000015258789,
+   "exit_date": "2017-10-31",
+   "exit_px": 106.0,
+   "rank": 5
+  }
+ ]
+}

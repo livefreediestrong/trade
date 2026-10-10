@@ -1,11 +1,4 @@
 /* nadzeeɫ design kit v4 / Desktop App v3. Edit these tokens; existing DOM contracts stay intact. */
-@font-face{font-family:'Bodoni Moda';src:url('/static/fonts/bodoni-moda.ttf') format('truetype');font-weight:500;font-display:swap}
-@font-face{font-family:'JetBrains Mono';src:url('/static/fonts/jetbrains-mono.ttf') format('truetype');font-weight:400;font-display:swap}
-:root{--bg:#101121;--panel:#1b1c30;--panel2:#26273e;--border:#494455;--text:#f1e6d2;--muted:#c3b7b4;--accent:#e6a391;--green:#9cc9b6;--red:#e58a7a;--amber:#eccc91;--radius:16px;--mono:'JetBrains Mono',Consolas,monospace;--serif:'Bodoni Moda',Georgia,serif;--sky1:#0e0f22;--sky2:#131533;--sky3:#181b42;--sky4:#1e224e;--sky5:#252957;--sky6:#2c2f5c;--mesa-far:#34324d;--mesa-near:#171928}
-:root[data-theme=light]{--bg:#eee4d5;--panel:#f8f0e5;--panel2:#eadbcf;--text:#2b2431;--muted:#665364;--border:#b5a0a7;--accent:#883e32;--green:#285847;--red:#9e3a26;--amber:#7f5017}
-:root[data-sky=dawn]{--sky1:#2b2d55;--sky2:#454a7c;--sky3:#7f84b2;--sky4:#c995a4;--sky5:#e6a391;--sky6:#f2c77a;--mesa-far:#714a64;--mesa-near:#332c43}
-:root[data-sky=day]{--sky1:#2a64a0;--sky2:#3f7db8;--sky3:#6e9fcb;--sky4:#9ec0db;--sky5:#cbdce2;--sky6:#ebdcc0;--mesa-far:#99706a;--mesa-near:#59454c}
-:root[data-sky=dusk]{--sky1:#26264f;--sky2:#43406f;--sky3:#7a5b84;--sky4:#b86f7c;--sky5:#e39a86;--sky6:#e8b55a;--mesa-far:#68465d;--mesa-near:#302638}
 html{scroll-padding-top:24px;scroll-behavior:smooth}body.unified-desk{max-width:none;margin:0;padding:0 32px 70px 268px;line-height:1.6;background:var(--bg)}
 .desert-scene{position:fixed;inset:0;z-index:-1;pointer-events:none;overflow:hidden}.sky-bands{position:absolute;inset:0;background:linear-gradient(to bottom,var(--sky1) 0 20%,var(--sky2) 20% 37%,var(--sky3) 37% 54%,var(--sky4) 54% 69%,var(--sky5) 69% 83%,var(--sky6) 83%);opacity:.36}.desert-scene .mesa-landscape{position:absolute;bottom:0;width:100%;height:38vh;opacity:.6}.mesa-far{fill:var(--mesa-far)}.mesa-near{fill:var(--mesa-near)}
 .page-nav{position:fixed;inset:0 auto 0 0;width:232px;display:flex;flex-direction:column;align-items:stretch;gap:3px;padding:27px 16px 20px;background:color-mix(in srgb,var(--bg) 94%,transparent);border:0;border-right:1px solid var(--border);z-index:20;overflow-y:auto;border-radius:0;backdrop-filter:blur(18px)}

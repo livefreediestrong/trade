@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 import time
-from collections import Counter, defaultdict
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 

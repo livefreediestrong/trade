@@ -1,0 +1,133 @@
+{
+ "name": "v2_xsmom_clenow_sotm_5slot",
+ "trades": 241,
+ "m_tests": 10,
+ "pass_rules": "Under fidelity_0_commission: (1) per-trade mean > 0 with a month-clustered one-sided lower bound > 0 at alpha = 0.05 / M (Bonferroni over M candidates); (2) mean per trade > 0 in the HOLDOUT (entries on/after 2023-01-01); (3) positive mean in >= 60% of calendar years with trades; (4) the 5-slot portfolio's Sharpe beats BOTH SPY buy-and-hold and the equal-weight buy-and-hold of the same universe over the same period.",
+ "median_hold_calendar_days": 56.0,
+ "trades_per_year": 26.3,
+ "gross_mean_bps": 487.4,
+ "fidelity_0_commission": {
+  "mean_bps": 477.4,
+  "win_rate": 0.456,
+  "lower_bound_bps": -190.5,
+  "months": 93,
+  "years_positive": "7/10",
+  "per_year_mean_bps": {
+   "2017": 341.4,
+   "2018": -13.6,
+   "2019": 664.9,
+   "2020": 845.5,
+   "2021": 76.5,
+   "2022": -1064.5,
+   "2023": 553.4,
+   "2024": 1417.2,
+   "2025": 1421.5,
+   "2026": -441.9
+  },
+  "holdout_trades": 106,
+  "holdout_mean_bps": 800.7,
+  "portfolio_5_slots": {
+   "start": "2017-07-19",
+   "end": "2026-09-28",
+   "cagr": 0.1963,
+   "sharpe": 0.736,
+   "max_drawdown": -0.5411,
+   "trades_taken": 241,
+   "slots": 5
+  }
+ },
+ "ibkr_110_account": {
+  "mean_bps": 277.4,
+  "win_rate": 0.407,
+  "lower_bound_bps": -390.5,
+  "months": 93,
+  "years_positive": "6/10",
+  "per_year_mean_bps": {
+   "2017": 141.4,
+   "2018": -213.6,
+   "2019": 464.9,
+   "2020": 645.5,
+   "2021": -123.5,
+   "2022": -1264.5,
+   "2023": 353.4,
+   "2024": 1217.2,
+   "2025": 1221.5,
+   "2026": -641.9
+  },
+  "holdout_trades": 106,
+  "holdout_mean_bps": 600.7,
+  "portfolio_5_slots": {
+   "start": "2017-07-19",
+   "end": "2026-09-28",
+   "cagr": 0.0865,
+   "sharpe": 0.429,
+   "max_drawdown": -0.5904,
+   "trades_taken": 241,
+   "slots": 5
+  }
+ },
+ "benchmarks": {
+  "spy_buy_hold": {
+   "start": "2017-07-19",
+   "end": "2026-09-28",
+   "cagr": 0.1485,
+   "sharpe": 0.841,
+   "max_drawdown": -0.3372
+  },
+  "equal_weight_buy_hold": {
+   "start": "2017-07-19",
+   "end": "2026-09-28",
+   "cagr": 0.1994,
+   "sharpe": 0.694,
+   "max_drawdown": -0.501
+  }
+ },
+ "passed": false,
+ "reasons": [
+  "per-trade lower bound -190.5 bps is not above 0 (Bonferroni M=10)",
+  "portfolio Sharpe 0.736 does not beat SPY 0.841 and equal-weight 0.694"
+ ],
+ "runtime_sec": 1.1,
+ "first_trades": [
+  {
+   "ticker": "BABA",
+   "entry_date": "2017-07-19",
+   "entry_px": 145.99489212789052,
+   "exit_date": "2017-12-06",
+   "exit_px": 162.45388793945312,
+   "rank": 2
+  },
+  {
+   "ticker": "RWEOY",
+   "entry_date": "2017-07-19",
+   "entry_px": 15.364055418359106,
+   "exit_date": "2017-11-22",
+   "exit_px": 17.976168392302917,
+   "rank": 3
+  },
+  {
+   "ticker": "PYPL",
+   "entry_date": "2017-07-19",
+   "entry_px": 57.66690307075131,
+   "exit_date": "2018-02-14",
+   "exit_px": 73.36187620876953,
+   "rank": 4
+  },
+  {
+   "ticker": "NVO",
+   "entry_date": "2017-07-19",
+   "entry_px": 17.127028598128412,
+   "exit_date": "2017-12-06",
+   "exit_px": 21.37475173669135,
+   "rank": 5
+  },
+  {
+   "ticker": "TSLA",
+   "entry_date": "2017-07-19",
+   "entry_px": 21.881999969482422,
+   "exit_date": "2017-08-09",
+   "exit_px": 24.066667556762695,
+   "rank": 6
+  }
+ ]
+}

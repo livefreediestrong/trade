@@ -6,7 +6,7 @@ Generated with the OpenAI imagegen skill in built-in tool mode. No CLI/API-key f
 
 - static/companion-breeze-v1.png: 1774 by 887, four columns by two rows; Fox row one, Changing Woman row two. Transparent corner verified and sheet visually inspected. Percentage background positioning supports fractional cell dimensions.
 - Built-in local source: %USERPROFILE%/.codex/generated_images/01a0cc9e-77a6-7620-b8e5-53ffe0fbc4ec/exec-76d827ae-d4a0-4243-9bc9-535299d86762.png (not included; the active atlas above is included).
-- Local reference: static/companion-perches-v1.png, an earlier generated seated/hanging exploration sheet.
+- Local reference: docs/assets/companion-perches-v1.png, an earlier generated seated/hanging exploration sheet.
 - Runtime uses a short sequence of the four breeze frames, then rests on frame one.
 
 ## Exact final prompt

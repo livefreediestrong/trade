@@ -1,6 +1,10 @@
 # Options paper desk, research universe and compact help
 
-Implemented 2026-09-23 with Flask/Jinja and vanilla JavaScript. Options broker execution does not exist in this module. No live execution flag or permission is changed by these features.
+Staged September 26 addition: [Fox's broker-paper option exit test](OPTIONS_LIFECYCLE_2026_09_26.md) is separate from this local options simulator. It adds opt-in premium/expiry closes and changed-holdings review, with existing live controls preserved. It is not installed or qualified on actual broker orders. The local simulator workflow described below remains manual.
+
+Historical paper-module scope, implemented 2026-09-23 with Flask/Jinja and vanilla JavaScript. The current application additionally has reviewed OPT/BAG broker tickets and optional automatic entry conversion in `auto_live_options.py`; it still has no qualified automatic options exit/assignment lifecycle. See [the current repair pass](FIX_ALL_2026_09_25.md). Options broker execution does not exist in this module. No live execution flag or permission is changed by these features.
+
+September 26 broker exit corrections: a new covered call cannot use shares already claimed by a working stock sell or stop, and a stock sale cannot remove shares reserved for short/working calls. A single-leg STC is refused when another short option or working sell of the same underlying and right may depend on that long leg. Review the combined position; do not treat every single-contract close as portfolio risk reduction. These are conservative adapter checks, not automatic hedge matching, assignment handling or permission to trade. Whole-spread closing retains its existing exact-leg and quantity checks. See [exit-safety evidence](EXIT_SAFETY_CONTINUATION_2026_09_26.md).
 
 ## Broader stock and ETF discovery
 

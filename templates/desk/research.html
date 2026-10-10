@@ -1,7 +1,9 @@
 <section id="desk-research" class="desk-section research-section" aria-labelledby="desk-research-title">
-<div class="section-heading"><h2 id="desk-research-title">Research</h2><p>Recorded by Moss · inspect details and run optional investigations here</p></div>
+<div class="section-heading"><h2 id="desk-research-title">Research</h2><p>Recorded by Changing Woman · inspect details and run optional investigations here</p></div>
 {% if config.get('RESEARCH_STUDIO_AVAILABLE') %}{% include "desk/scanner_link.html" %}{% endif %}
 <div class="section-grid">
+{% if config.get('COMPANION_AVAILABLE') %}{% include "desk/after_close.html" %}{% include "desk/weekly_review.html" %}{% endif %}
+{% include "desk/market_watch.html" %}
 {% if config.get('COMPANION_AVAILABLE') %}{% include "desk/news_sources.html" %}{% endif %}
 {% if config.get('MARKETS_AVAILABLE') %}{% include "desk/market_operations.html" %}{% endif %}
 {% if config.get('COMPANION_AVAILABLE') %}{% include "desk/notebook.html" %}{% endif %}
@@ -13,8 +15,8 @@
         <span class="panel-ico" aria-hidden="true">☰</span>
         <span class="simple-only">What&rsquo;s moving</span>
         <span class="adv-only">News</span>
-        <span class="title-ctx simple-only">(watchlist headlines — display only)</span>
-        <span class="title-ctx adv-only">(watchlist headlines — research only)</span>
+        <span class="title-ctx simple-only">(watchlist headlines)</span>
+        <span class="title-ctx adv-only">(watchlist headlines)</span>
       </h2>
       <div class="news-tools adv-only">
         <label class="sr-only" for="news-filter">Filter by symbol</label>
@@ -66,21 +68,21 @@
     <div class="panel-head">
       <h2>Heat <span class="title-ctx">(tickers Reddit is mentioning right now)</span></h2>
     </div>
-    <p class="hint-line quiet-hint">Shows names getting buzz attention. Research only — it does not change your watchlist or place trades.</p>
+    <p class="hint-line quiet-hint">Shows names getting buzz attention. It does not change your watchlist.</p>
     <div id="heat-lane" class="heat-lane" aria-label="Buzz heat lane"></div>
   </section>
 <section class="panel buzz-panel adv-only" id="buzz-panel">
     <div class="panel-head">
-      <h2>Ticker buzz <span class="title-ctx">(Reddit mention counts — research only)</span></h2>
+      <h2>Ticker buzz <span class="title-ctx">(Reddit mention counts)</span></h2>
       <button type="button" class="btn ghost sm" id="btn-buzz-refresh" title="Refresh Reddit mention counts now">Refresh</button>
     </div>
-    <p class="hint-line quiet-hint">Counts how often tickers show up on Reddit (WallStreetBets threads and hot posts). Uses a Reddit login when configured; otherwise public feeds may fail. Paper research only — not a trade signal.</p>
+    <p class="hint-line quiet-hint">Counts mentions in Reddit posts and classic discussion comments. Requires this app’s approved Reddit API access; tokens renew and temporary failures retry automatically. Research context only. <a href="https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-Data-API-Wiki" target="_blank" rel="noopener noreferrer">Connection setup</a></p>
     <div class="buzz-meta" id="buzz-meta" title="When buzz data was last refreshed">Last refresh: -</div>
     <div class="buzz-errors muted-line" id="buzz-errors"></div>
     <div class="buzz-live-chat" id="buzz-live-chat">
       <div class="live-chat-head">
         <strong>WSB Live Chat</strong>
-        <span class="live-chat-note muted" id="buzz-live-chat-note">Live Chat needs Reddit login — connect later.</span>
+        <span class="live-chat-note muted" id="buzz-live-chat-note">Community Live Chat is not connected by this reader.</span>
       </div>
       <div class="live-chat-tickers" id="buzz-live-chat-tickers"></div>
       <section class="desk-module live-chat-paste-wrap">
@@ -93,15 +95,9 @@
     <div class="buzz-list" id="buzz-list" aria-live="polite"></div>
   </section>
 <section class="desk-module panel chat-panel adv-only" id="chat-panel">
-    <h3 class="module-title" tabindex="-1">Ask Gemini <span class="title-ctx">(chat about a ticker — research only)</span></h3>
-    <div class="chat-body">
-      <div class="chat-log" id="chat-log"></div>
-      <div class="chat-form">
-        <input type="text" id="chat-ticker" placeholder="Ticker (optional)" maxlength="12" />
-        <input type="text" id="chat-input" placeholder="Ask about a stock or idea..." />
-        <button type="button" class="btn primary" id="btn-chat-send">Send</button>
-      </div>
-    </div>
+    <h3 class="module-title" tabindex="-1">Ask your companions</h3>
+    <p>Talk with Fox, Changing Woman, or both. Conversations and saved notes are available across the desk.</p>
+    <button type="button" data-open-companion-chat>Open companion chat</button>
   </section>
 <div id="churn-strip" class="churn-strip hidden adv-only" aria-live="polite"></div>
 </div></section>

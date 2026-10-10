@@ -1,4 +1,21 @@
-# Automation debugging — September 24, 2026
+# Automation debugging — September 24–25, 2026
+
+## September 25 reliability pass
+
+Failure injection reproduced stalled work flags, scheduler starvation and incorrect retry accounting. Repairs retain the existing configuration, budgets and order authorization path:
+
+- Live-agent research runs on one guarded worker. Reconciliation can continue while research is waiting on a provider. The cycle lock is claimed before launching, and no replacement is launched while that worker is alive. A pause or unresolved order arriving during research still blocks submission.
+- Only completed WATCH/AVOID screens receive the free 30-second rotation. Provider failures and unexplained empty responses retain their reserved research attempt and full configured interval, including across restarts.
+- Notebook, paper research, headlines, buzz, backtest, directory scanner, paper loop and optional dashboard context release their busy/running claims if worker launch fails. Existing notebook/headline/paper cooldowns remain in force. User-triggered backtests/scans can be retried explicitly.
+- Optional news or review failures no longer skip the daily notebook. Per-job scheduler errors are visible and clear after a healthy check.
+- Paper outcome, due-exit and report checks each get a chance to run. Any maintenance failure holds new research cycles until recovery; already-held paper positions can still be checked for due exits.
+- A failed journal write cannot terminate the main scheduler or strand the live-agent cycle lock.
+- Paper status distinguishes actual research from waiting for its next eligible cycle, displays the next time, and exposes maintenance errors. Companion activity reflects those errors as well.
+- The shared companion controller updates only panels present on the current page. Missing notebook, workday, journal or plan panels no longer abort rendering or make a healthy paper status appear stale. Events still reach both autonomous companions on every page.
+
+`tests/test_automation_reliability.py` exercises actual scanner-to-agent failure accounting, thread-launch failures/recovery, a deliberately blocked live-research worker with continued reconciliation, pause/pending-order arrival during research, and a real local-paper ledger exit despite a failed outcome checker. All use isolated storage and intercepted external I/O. These are software checks, not live broker execution or profitability evidence.
+
+## September 24 scheduler pass
 
 Eight reproduced defects were repaired in the existing schedulers. Nine initial regression cases failed before the changes. No live order, cancellation, arming action or trading configuration change was used to reproduce them.
 

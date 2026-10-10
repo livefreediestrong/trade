@@ -6,6 +6,7 @@ pandas>=2.0.0
 numpy>=1.24.0
 requests>=2.31.0
 python-dotenv>=1.0.0
-tzdata>=2024.1  # Windows has no system tz database (zoneinfo needs it)
+tzdata==2025.3  # Qualified with ib_async 2.1.0's tzdata<2026 constraint
 anthropic>=1.8  # Claude brain / head-to-head (optional; needs ANTHROPIC_API_KEY)
-ib-insync>=0.9.86  # Optional Interactive Brokers Gateway adapter
+ib_async==2.1.0  # Maintained Gateway adapter; qualify broker behavior before upgrading
+aeventkit==2.1.0  # Pin the adapter's event dispatcher to the tested release

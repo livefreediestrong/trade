@@ -1,0 +1,23 @@
+<details id="option-activity">
+ <summary>Review an option activity statement</summary>
+ <p class="hint-line keep-visible">Read a CSV export from IBKR to see reported assignments, exercises, expirations and related stock deliveries. The file stays on this computer. Importing evidence cannot change your positions, live P&amp;L, trading controls or unresolved review holds.</p>
+ <details><summary>Which file should I export?</summary>
+  <p>In IBKR's Activity Flex Queries, export only the <strong>Options, Exercises, Assignments and Expirations</strong> section as a detailed CSV for the selected account. Include the real Account ID, not an alias. Use dates such as 2026-09-26.</p>
+  <p>Required columns: Account ID, Asset Class, Currency, Conid, Symbol, Date, Transaction Type, Quantity and Trade ID. Include Realized P/L, Comm/Tax, Trade Price, Proceeds, Basis and Underlying Symbol when available. Missing money amounts stay unknown.</p>
+  <p>Use a single section with a header row, up to 3,000 rows and 1 MB. Summary rows, model allocations, other instruments, zero-quantity/cancelled records and multi-section statements need separate review. The importer supports standard OPT/STK activity labels; an unrecognized format is rejected.</p>
+  <a href="https://www.ibkrguides.com/reportingreference/reportguide/options_exercises_expirations_fq.htm" target="_blank" rel="noopener noreferrer">IBKR's activity-field guide</a>
+ </details>
+ <label>Local IBKR CSV file<input id="option-activity-file" type="file" accept=".csv,text/csv" /></label>
+ <div class="inline-actions">
+  <button id="option-activity-preview" type="button" disabled>Read file for review</button>
+  <button id="option-activity-refresh" type="button">Refresh saved evidence</button>
+ </div>
+ <p id="option-activity-message" role="status" class="hint-line keep-visible">No file has been selected.</p>
+ <p id="option-activity-summary" class="hint-line keep-visible"></p>
+ <p id="option-activity-totals" class="hint-line keep-visible"></p>
+ <div id="option-activity-confirm" hidden>
+  <label class="chk"><input id="option-activity-ack" type="checkbox" /> I reviewed this file and its account. These reported amounts are incomplete evidence, not a reconciliation of live holdings.</label>
+  <button id="option-activity-save" type="button" disabled>Save evidence locally</button>
+ </div>
+ <ul id="option-activity-rows" aria-label="Reported option and stock activity"></ul>
+</details>

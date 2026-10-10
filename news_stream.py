@@ -12,6 +12,7 @@ import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,17 @@ _EVENT_PATTERNS = {
     "macro": r"\b(fed|fomc|cpi|inflation|jobs report|tariff|rates?)\b",
 }
 _HIGH_IMPACT_EVENTS = {"earnings", "guidance", "corporate_action", "regulatory", "capital"}
+# Feeds larger than this are refused rather than parsed (a news RSS page is ~50-200 KB).
+MAX_FEED_BYTES = 2_000_000
+# Headlines dated further in the future than this are clock errors, not fresh news.
+FUTURE_TOLERANCE_SEC = 300.0
+# Short or dictionary-word tickers match unrelated text in a plain "F" stock search;
+# those are searched by exchange-qualified mentions instead.
+AMBIGUOUS_TICKERS = {
+    "A", "AI", "ALL", "ARE", "BE", "CAN", "CAR", "DAY", "EAT", "EYE", "FAST", "FUN", "GO", "HAS",
+    "IT", "KEY", "LIFE", "LOVE", "MAN", "NEW", "NOW", "ON", "ONE", "OPEN", "OUT", "PLAY", "REAL",
+    "RUN", "SEE", "SO", "TRUE", "TWO", "U", "WELL", "WORK", "YOU",
+}
 
 
 def _load_env() -> None:
@@ -62,6 +74,21 @@ def _load_env() -> None:
 
 
 _load_env()
+
+
+def short_error(text: Any) -> str | None:
+    """Readable one-line source error: no URLs, pool dumps or stack text."""
+    if not text:
+        return None
+    raw = str(text)
+    low = raw.lower()
+    if "timeout" in low or "timed out" in low:
+        return "timed out"
+    if any(k in low for k in ("connectionerror", "proxyerror", "max retries", "name resolution", "connection refused")):
+        return "could not connect"
+    raw = re.sub(r"\s+for\s+https?://\S+", "", raw)
+    raw = re.sub(r"https?://\S+", "", raw)
+    return " ".join(raw.split())[:160] or None
 
 
 def benzinga_key() -> str:
@@ -131,6 +158,12 @@ def _ts_seconds(value: Any) -> float | None:
     """Convert provider timestamps to epoch seconds without trusting bad input."""
     if value is None or value == "":
         return None
+    if isinstance(value, str) and re.fullmatch(r"\s*\d{14}\s*", value):
+        # GDELT "YYYYMMDDHHMMSS"; as a number it would read as a year-2612 epoch.
+        try:
+            return datetime.strptime(value.strip(), "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            return None
     try:
         number = float(value)
         if number > 1e12:
@@ -141,6 +174,17 @@ def _ts_seconds(value: Any) -> float | None:
     text = str(value).strip()
     if not text:
         return None
+    if re.match(r"^[A-Za-z]{3},", text) or re.search(r"\d{1,2} [A-Za-z]{3} \d{4} \d", text):
+        # RSS pubDate (RFC 2822), e.g. Google News "Tue, 22 Sep 2026 15:00:00 GMT".
+        try:
+            parsed = parsedate_to_datetime(text)
+        except (TypeError, ValueError, IndexError):
+            return None
+        if parsed is None:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
     if re.fullmatch(r"\d{14}", text):
         try:
             return datetime.strptime(text, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp()
@@ -155,34 +199,61 @@ def _ts_seconds(value: Any) -> float | None:
         return None
 
 
+def google_news_query(symbol: str) -> str:
+    """Search text for one ticker; ambiguous tickers use exchange-qualified mentions."""
+    sym = symbol.upper().strip()
+    if len(sym) <= 2 or sym in AMBIGUOUS_TICKERS:
+        return " OR ".join(f'"{exchange}: {sym}"' for exchange in ("NYSE", "NASDAQ", "NYSEARCA"))
+    return f'"{sym}" stock'
+
+
+def parse_google_news_rss(content: bytes, *, limit: int = 20) -> list[dict[str, Any]]:
+    """Parse a Google News RSS page into attributed rows.
+
+    Google News titles end in " - Publisher" and name the real publisher in
+    <source>; both are normalized so the same story from Yahoo/Finnhub dedupes.
+    """
+    if not content or len(content) > MAX_FEED_BYTES:
+        return []
+    root = ET.fromstring(content)
+    rows = []
+    for item in root.findall(".//item"):
+        title = re.sub(r"\s+", " ", item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        published = (item.findtext("pubDate") or "").strip()
+        source_el = item.find("source")
+        publisher = re.sub(r"\s+", " ", source_el.text or "").strip() if source_el is not None else ""
+        if publisher and title.endswith(f" - {publisher}"):
+            title = title[: -len(publisher) - 3].rstrip()
+        if not title or not link.startswith(("https://", "http://")):
+            continue
+        rows.append({
+            "title": title,
+            "publisher": publisher or "Google News",
+            "publisher_url": (source_el.get("url") if source_el is not None else None) or None,
+            "link": link,
+            "ts": published,
+            "source": "google_news",
+        })
+        if len(rows) >= limit:
+            break
+    return rows
+
+
 def _google_news(symbol: str, limit: int = 5) -> list[dict[str, Any]]:
     """Public RSS search; useful as a broad discovery source, not a truth feed."""
     try:
         response = requests.get(
             "https://news.google.com/rss/search",
-            params={"q": f'"{symbol.upper()}" stock', "hl": "en-US", "gl": "US", "ceid": "US:en"},
+            params={"q": google_news_query(symbol), "hl": "en-US", "gl": "US", "ceid": "US:en"},
             headers={"Accept": "application/rss+xml, application/xml", "User-Agent": "TomahawkDesk/1.0"},
             timeout=8,
         )
         if response.status_code != 200:
             return []
-        root = ET.fromstring(response.content)
-        rows = []
-        for item in root.findall(".//item")[:limit]:
-            title = (item.findtext("title") or "").strip()
-            link = (item.findtext("link") or "").strip()
-            published = (item.findtext("pubDate") or "").strip()
-            if title:
-                rows.append(
-                    {
-                        "title": title,
-                        "publisher": "Google News",
-                        "link": link,
-                        "ts": published,
-                        "source": "google_news",
-                        "ticker": symbol.upper(),
-                    }
-                )
+        rows = parse_google_news_rss(response.content, limit=limit)
+        for row in rows:
+            row["ticker"] = symbol.upper()
         return rows
     except (ET.ParseError, requests.RequestException, ValueError, TypeError):
         return []
@@ -236,6 +307,10 @@ def enrich_headline(item: dict[str, Any], *, now: float | None = None) -> dict[s
     title = str(row.get("title") or row.get("headline") or "").strip()
     ts = _ts_seconds(row.get("ts") or row.get("published_at"))
     now_value = float(now if now is not None else time.time())
+    if ts is not None and ts > now_value + FUTURE_TOLERANCE_SEC:
+        # A future date would otherwise rank as the freshest possible story.
+        row["timestamp_rejected"] = "future"
+        ts = None
     age = max(0.0, now_value - ts) if ts is not None else None
     source = str(row.get("source") or "news").lower()
     lowered = title.lower()
@@ -398,6 +473,28 @@ def watchlist_news(
         _cache["key"] = cache_key
         _cache["payload"] = payload
     return dict(payload)
+
+
+def material_headlines(symbols: list[str], *, max_age_sec: float = 7200, now: float | None = None) -> list[dict[str, Any]]:
+    """High-impact headlines for these symbols from the last watchlist refresh; no network call."""
+    now = time.time() if now is None else now
+    wanted = {str(s).upper() for s in symbols or []}
+    out = []
+    with _lock:
+        by_ticker = dict((_cache.get("payload") or {}).get("by_ticker") or {})
+    for sym, rows in by_ticker.items():
+        if sym not in wanted:
+            continue
+        for row in rows or []:
+            published = _ts_seconds(row.get("published_ts") or row.get("ts"))
+            link = str(row.get("link") or row.get("url") or "")
+            if (row.get("materiality") != "high" or published is None or not 0 <= now - published <= max_age_sec
+                    or row.get("timestamp_rejected")):
+                continue
+            out.append({"ticker": sym, "title": str(row.get("title") or "")[:300], "source": row.get("source"),
+                        "headline_key": row.get("headline_key"), "published_ts": published,
+                        "url": link if link.startswith(("https://", "http://")) else None})
+    return out
 
 
 def cached_evidence(symbol: str, *, now: float | None = None) -> dict[str, Any]:

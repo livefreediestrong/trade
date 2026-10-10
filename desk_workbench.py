@@ -261,7 +261,8 @@ def register(app, desk):
     def evaluation():
         with desk._lock:
             rows = copy.deepcopy(events())
-        return jsonify(ok=True, groups=calibration(rows), version=VERSION,
+        import policy_evidence
+        return jsonify(ok=True, groups=calibration(rows), policy_validation=policy_evidence.evaluate(rows), version=VERSION,
                        note="Self-reported confidence is not a calibrated probability. Unknown horizons and missing outcomes stay explicit.")
 
     @bp.route("/api/workbench/watchlists", methods=["GET", "POST"])

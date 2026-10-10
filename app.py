@@ -22,6 +22,7 @@ import io
 import ipaddress
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -49,10 +50,16 @@ import social_intelligence
 import market_capture
 import desk_alerts
 import macro_calendar
+import market_events
+import wsb_monitor
 import edgar_client
 import options_flow
 import order_terms
+import code_version
 from risk_policy import RISK_PRESETS
+
+# Fingerprint the source this process loaded, before anything can change on disk.
+code_version.mark_started()
 
 APP_DIR = Path(__file__).resolve().parent
 # TOMAHAWK_DATA_DIR overrides (tests use a temp dir so they never touch real data)
@@ -68,7 +75,7 @@ LESSONS_PATH = DATA_DIR / "lessons.json"
 BACKTEST_PATH = DATA_DIR / "backtest.json"
 
 BANNER = (
-    "Tomahawk — live trading and separate paper research. "
+    "nadzeel — live trading and separate paper research. "
     "Check the verified broker account before approving an order."
 )
 
@@ -277,6 +284,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "fee_bps": 1.0,
     "risk_per_trade_pct": 0.25,
     "atr_stop_multiple": 1.0,
+    # Trade intelligence gates (all trades). A PASS must keep this reward:risk after
+    # round-trip fees, slippage and spread; 0 disables.
+    "min_net_reward_risk": 1.2,
+    # Block execution of a setup whose own scored after-cost record is below breakeven.
+    "evidence_gate_enabled": True,
+    "evidence_min_samples": 12,
+    # Pause new broker risk after giving back this % of the day's peak gain; 0 disables.
+    "giveback_stop_pct": 50.0,
+    # Scheduled high-impact events (FOMC, Fed Chair, CPI/jobs, presidential addresses, your own):
+    # the broker agent opens nothing new this many minutes before/after; exits continue.
+    "event_guard_enabled": True,
+    "event_guard_before_min": 15,
+    "event_guard_after_min": 15,
+    "custom_market_events": [],
+    # WSB crowding on a new buy idea: "half" size, "skip", "note" only, or "off". Never adds risk.
+    "wsb_crowding_action": "half",
+    "wsb_crowd_min_mentions": 25,
 }
 
 _lock = threading.RLock()
@@ -591,6 +615,12 @@ _NUMERIC_CFG_LIMITS: dict[str, tuple[float, float]] = {
     "promotion_max_drawdown_pct": (0.0, 100.0),
     "promotion_window_days": (1.0, 3650.0),
     "macro_size_mult": (0.1, 1.0),
+    "min_net_reward_risk": (0.0, 10.0),
+    "evidence_min_samples": (3.0, 10000.0),
+    "giveback_stop_pct": (0.0, 100.0),
+    "event_guard_before_min": (0.0, 240.0),
+    "event_guard_after_min": (0.0, 240.0),
+    "wsb_crowd_min_mentions": (5.0, 10000.0),
 }
 
 
@@ -728,7 +758,7 @@ def paper_research_config(cfg: dict[str, Any]) -> dict[str, Any]:
     result = dict(cfg, mode="auto_paper" if cfg.get("paper_auto_approve") else "manual",
                 session_active=bool(cfg.get("paper_research_enabled")),
                 risk_preset=cfg.get("paper_risk_preset", "mid"),
-                daily_profit_target_usd=None, max_session_loss_usd=None,
+                daily_profit_target_usd=cfg.get("paper_profit_target_usd"), max_session_loss_usd=None,
                 kill_switch=dict(DEFAULT_CONFIG["kill_switch"]), _paper_research=True)
     import moss_policy
     p = moss_policy.settings(cfg)
@@ -788,6 +818,8 @@ def _pending_scan_blocks(signal: dict[str, Any], cfg: dict[str, Any]) -> bool:
 
 def signal_execution_block(signal: dict[str, Any], *, broker: bool = False) -> str | None:
     """Research may be retained without becoming an executable instruction."""
+    if signal.get("data_error") or signal.get("llm_error") == "stale_or_unverified_market_data":
+        return "Market data unavailable: wait for a fresh quote and decision"
     if signal.get("llm_error"):
         return "Brain error: wait for a new decision"
     if signal.get("execution_block"):
@@ -817,7 +849,7 @@ def _signal_ui_projection(signal: dict[str, Any], cfg: dict | None = None) -> di
         "id", "ticker", "side", "status", "ts", "created_at", "expires_at",
         "confidence", "signal_price", "suggested_shares", "reason", "verdict",
         "lateness_label", "entry_quality", "earnings", "rel_vol", "research_flags",
-        "research_flag", "llm_side", "llm_error", "llm_thesis", "citations",
+        "research_flag", "llm_side", "llm_error", "data_error", "llm_thesis", "citations",
         "screener_citations", "gap_pct", "reject_reason", "size_mult_suggested",
         "llm_model", "llm_confidence", "llm_risks", "brain_mode", "routed", "router_reason", "quote",
         "workspace", "source_signal_id", "mode_at_create", "decision_record_id", "execution_block", "manual_order", "origin",
@@ -1053,6 +1085,9 @@ def _cap_shares_for_broker(
             sig["signal_price"] = px
     if not px or px <= 0:
         return 0, 0.0, "no_real_quote"
+    reviewed_limit = _finite_float((sig.get("review_order") or {}).get("limit"))
+    if sig.get("side") == "buy" and reviewed_limit and reviewed_limit > px:
+        px = reviewed_limit  # The cash ceiling must cover the most this limit order can pay.
     shares = max(0, int(sig.get("suggested_shares") or 0))
     if shares <= 0:
         return 0, 0.0, "zero_shares"
@@ -1221,6 +1256,20 @@ def _broker_position_qty(ticker: str) -> tuple[float, str | None]:
 
 _BROKER_BOOK_CACHE: dict[str, Any] = {"at": 0.0, "val": None}
 _BROKER_BOOK_TTL = 15.0
+_BROKER_BOOK_REFRESH_LOCK = threading.Lock()
+_BROKER_BOOK_CACHE_LOCK = threading.Lock()
+
+
+def _invalidate_broker_book_cache() -> None:
+    with _BROKER_BOOK_CACHE_LOCK:
+        _BROKER_BOOK_CACHE.update(at=0.0, val=None, key=None,
+                                 generation=_BROKER_BOOK_CACHE.get("generation", 0)+1)
+
+
+def _broker_book_key(broker) -> tuple:
+    status = broker.public_status()
+    return (status.get("broker"), status.get("endpoint"), status.get("connected"),
+            status.get("paper_mode"), json.dumps(load_config().get("broker_identity"), sort_keys=True))
 
 
 def _broker_book_cached() -> dict[str, Any] | None:
@@ -1233,20 +1282,60 @@ def _broker_book_cached() -> dict[str, Any] | None:
 
     if not _broker_is_configured():
         return None
-    now = _t.monotonic()
     import broker_router as broker
-    status = broker.public_status()
-    cache_key = (status.get("broker"), status.get("endpoint"), status.get("connected"),
-                 status.get("paper_mode"), json.dumps(load_config().get("broker_identity"), sort_keys=True))
-    if _BROKER_BOOK_CACHE.get("key") == cache_key and _BROKER_BOOK_CACHE["val"] is not None and now - _BROKER_BOOK_CACHE["at"] < _BROKER_BOOK_TTL:
-        return _BROKER_BOOK_CACHE["val"]
+    # "refreshing" marks a busy placeholder, not an observed broker failure.
+    unavailable = {"ok": False, "refreshing": True, "risk_ready": False, "account_id": None,
+                   "day_pnl_usd": None, "error": "An account refresh is in progress. Current balances and holdings are unavailable until it finishes."}
+    cache_key = _broker_book_key(broker)
+    def cached():
+        with _BROKER_BOOK_CACHE_LOCK:
+            if (_BROKER_BOOK_CACHE.get("key") == cache_key and _BROKER_BOOK_CACHE["val"] is not None
+                    and 0 <= _t.monotonic()-_BROKER_BOOK_CACHE["at"] < _BROKER_BOOK_TTL):
+                return copy.deepcopy(_BROKER_BOOK_CACHE["val"])
+        return None
+    value = cached()
+    if value is not None:
+        return value
+    # One slow read may wait on the broker. Concurrent page requests never pile
+    # up behind it or present an expired result as current account evidence.
+    if not _BROKER_BOOK_REFRESH_LOCK.acquire(blocking=False):
+        return unavailable
+    try:
+        value = cached()
+        if value is not None:
+            return value
+        with _BROKER_BOOK_CACHE_LOCK:
+            generation = _BROKER_BOOK_CACHE.get("generation", 0)
+        started = _t.monotonic()
+        val = _read_broker_book()
+        # A changed endpoint/account or explicit refresh invalidates late results.
+        with _lock:
+            if cache_key != _broker_book_key(broker):
+                return {**unavailable, "error": "The broker connection or selected account changed during the refresh. Waiting for a new account read."}
+            with _BROKER_BOOK_CACHE_LOCK:
+                if generation != _BROKER_BOOK_CACHE.get("generation", 0):
+                    return {**unavailable, "error": "This account read was superseded by a newer refresh. Waiting for its result."}
+                note_peak = val.pop("_note_peak", False)
+                _BROKER_BOOK_CACHE.update(at=started, val=copy.deepcopy(val), key=cache_key)
+            if val.get("risk_ready") is True and note_peak:
+                _note_day_pnl_peak(val["day_pnl_usd"])
+        return val
+    finally:
+        _BROKER_BOOK_REFRESH_LOCK.release()
+
+
+def _read_broker_book() -> dict[str, Any]:
+    """One account/position read for the UI; execution uses its own fresh gates."""
     try:
         import broker_router as alpaca
 
         acct = alpaca.get_account()
+        if not isinstance(acct, dict) or not acct.get("ok"):
+            return {"ok": False, "risk_ready": False, "account_id": None, "day_pnl_usd": None,
+                    "error": str((acct.get("error") or "Account data is unavailable") if isinstance(acct, dict) else "Invalid account response")[:120]}
         pos = alpaca.get_positions()
     except Exception as exc:  # noqa: BLE001
-        val = {"ok": False, "error": str(exc)[:120], "account_id": None}
+        val = {"ok": False, "risk_ready": False, "day_pnl_usd": None, "error": str(exc)[:120], "account_id": None}
     else:
         a = (acct or {}).get("account") or {}
         rows = []
@@ -1258,6 +1347,8 @@ def _broker_book_cached() -> dict[str, Any] | None:
                     last = avg  # cost-basis fallback when broker mark not streamed yet
                 rows.append({
                     "ticker": str(p.get("symbol") or "").upper(),
+                    "asset_type": p.get("asset_type") or ("STK" if p.get("asset_class") == "us_equity" else p.get("asset_class")),
+                    "currency": p.get("currency") or ("USD" if p.get("asset_class") == "us_equity" else None),
                     "side": str(p.get("side") or "long").lower(),
                     "shares": abs(float(p.get("qty") or 0)),
                     "avg_price": avg,
@@ -1275,18 +1366,24 @@ def _broker_book_cached() -> dict[str, Any] | None:
             "ok": bool(acct.get("ok")) and bool(pos.get("ok")),
             "paper_mode": alpaca.paper_mode(),
             "equity": _safe_money(a.get("equity")),
+            "currency": a.get("currency"),
             "cash": _safe_money(a.get("cash")),
             "buying_power": _safe_money(a.get("buying_power")),
+            "settled_cash": _safe_money(a.get("settled_cash")),
+            "available_funds": _safe_money(a.get("available_funds")),
+            "excess_liquidity": _safe_money(a.get("excess_liquidity")),
+            "funds_observation": copy.deepcopy(a.get("funds_observation")),
             "day_pnl_usd": day_pnl,
             "risk_ready": acct.get("risk_ready", day_pnl is not None),
             "risk_error": acct.get("risk_error"),
             "account_window_pnl": a.get("account_window_pnl"),
             "pnl_diagnostics": acct.get("pnl_diagnostics"),
             "positions": rows,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
             "account_id": acct.get("account_id") or a.get("id"),
             "error": None if (acct.get("ok") and pos.get("ok")) else acct.get("error") or pos.get("error") or "Couldn't reach configured broker",
         }
-    _BROKER_BOOK_CACHE.update(at=now, val=val, key=cache_key)
+        val["_note_peak"] = acct.get("ok") and acct.get("risk_ready") is True and a.get("day_pnl") is not None and day_pnl is not None
     return val
 
 
@@ -1309,7 +1406,9 @@ def _money_snapshot(cfg: dict[str, Any]) -> dict[str, Any]:
         "fees_today_usd": round(float((ledger.get("daily") or {}).get(_today_str(), {}).get("fees") or 0), 2),
         "broker_trades_today": _broker_trades_today(ledger),
     }
-    if cfg.get("mode") in ("auto_live", "live_manual") or _broker_trades_today(ledger):
+    # Turning order submission off must not hide broker holdings or account health.
+    # This cached read does not authorize an order or change the saved mode.
+    if _broker_is_configured():
         out["broker_book"] = _broker_book_cached()
     out["live_goal"] = _live_goal_view(cfg, out.get("broker_book"))
     # Strategy rails snapshot for display strip (never authorizes orders).
@@ -1317,6 +1416,9 @@ def _money_snapshot(cfg: dict[str, Any]) -> dict[str, Any]:
     pol = (la or {}).get("policy") if isinstance((la or {}).get("policy"), dict) else {}
     ks = cfg.get("kill_switch") if isinstance(cfg.get("kill_switch"), dict) else {}
     book = out.get("broker_book") if isinstance(out.get("broker_book"), dict) else {}
+    from risk_policy import effective_limits
+    limits = effective_limits(cfg, book.get("equity") if book.get("ok") and book.get("risk_ready") else None)
+    out["live_risk_limits"] = limits
     trades_today = int(out.get("broker_trades_today") or 0)
     max_trades = None
     if la and pol.get("max_orders_per_day") is not None:
@@ -1364,11 +1466,12 @@ def _money_snapshot(cfg: dict[str, Any]) -> dict[str, Any]:
             if la
             else ("Universe: not set")
         ),
-        "max_order_usd": _finite_float(pol.get("max_order_usd") if la else ks.get("max_position_size_usd")),
-        "max_daily_loss_usd": _finite_float(pol.get("max_daily_loss_usd") if la else ks.get("max_daily_loss_usd")),
-        "max_orders_per_day": max_trades,
+        "max_order_usd": limits["max_order_usd"],
+        "max_daily_loss_usd": limits["max_daily_loss_usd"],
+        "max_orders_per_day": limits["max_orders_per_day"],
+        "effective_limits": limits,
         "orders_used": trades_today,
-        "orders_left": (max(0, max_trades - trades_today) if max_trades is not None else None),
+        "orders_left": max(0, limits["max_orders_per_day"] - trades_today),
         "min_confidence": _finite_float(pol.get("min_confidence")) if la else None,
         "risk_ready": bool(book.get("risk_ready")) if book else False,
         "risk_error": book.get("risk_error") if book else None,
@@ -1560,7 +1663,7 @@ def _preserve_broker_state(previous: dict[str, Any], replacement: dict[str, Any]
             replacement[key] = value
 
 
-def _apply_broker_update(sig, broker, confirm, source):
+def _apply_broker_update(sig, broker, confirm, source, *, resting_stop=False):
     """Persist cumulative execution, pending remainder and count together.
 
     Caller holds _BROKER_SUBMIT_LOCK. Updating an existing fill never counts it
@@ -1596,9 +1699,23 @@ def _apply_broker_update(sig, broker, confirm, source):
         if ((quantity > 0 and price > 0 and (prior is None or quantity >= float(prior.get("shares") or 0) or corrected))
                 or (prior is not None and corrected and quantity == 0)):
             fill = _broker_fill_record(sig, broker, source, confirm)
+            if sig.get("source") == "live_agent" and sig.get("asset_type") in ("OPT", "BAG"):
+                fill.update(option_lifecycle=True, asset_type=sig["asset_type"], multiplier=100,
+                            notional=round(float(fill["shares"]) * float(fill["price"]) * 100, 2),
+                            slip_usd=round(float(fill.get("slip_usd") or 0) * 100, 4),
+                            fee_usd=confirm.get("fee_usd"), fees_reported=confirm.get("fees_reported") is True,
+                            fees_by_currency=copy.deepcopy(confirm.get("fees_by_currency") or {}))
+            if resting_stop:
+                fill.update(native_stop_ref=sig["id"], fee_usd=confirm.get("fee_usd"),
+                            fees_reported=confirm.get("fees_reported") is True,
+                            fees_by_currency=copy.deepcopy(confirm.get("fees_by_currency") or {}),
+                            execution_ids=list(confirm.get("execution_ids") or []),
+                            ts=confirm["filled_at"])
             if corrected and quantity == 0:
                 fill.update(shares=0, price=0, notional=0, confirmed=True, price_estimated=False,
-                            price_source="broker_execution_bust", broker_fill_state="voided", fee_usd=0)
+                            price_source="broker_execution_bust", broker_fill_state="voided")
+                if not resting_stop:
+                    fill["fee_usd"] = 0
             if prior:
                 fill["id"], fill["ts"] = prior["id"], prior["ts"]
                 fills[fills.index(prior)] = fill
@@ -1606,7 +1723,8 @@ def _apply_broker_update(sig, broker, confirm, source):
                 fills.insert(0, fill)
             counted = ledger.setdefault("broker_counted_orders", {})
             if order_id not in counted and prior is None:
-                day = _today_str()
+                day = (datetime.fromisoformat(confirm["filled_at"]).astimezone(paper_loop_mod.NY_TZ).date().isoformat()
+                       if resting_stop else _today_str())
                 counted[order_id] = day
                 stats = ledger.setdefault("broker_daily", {}).setdefault(day, {"trades": 0})
                 stats["trades"] = int(stats.get("trades") or 0) + 1
@@ -1632,7 +1750,7 @@ def _apply_broker_update(sig, broker, confirm, source):
                      or (intent_id and x.get("intent_id") == intent_id)), None)
         if terminal:
             ledger["pending_broker_orders"] = [x for x in pending if x is not item]
-        else:
+        elif not resting_stop:
             if item is None:
                 item = {"order_id": order_id, "created_at": _now_iso()}
                 pending.append(item)
@@ -1641,6 +1759,7 @@ def _apply_broker_update(sig, broker, confirm, source):
                 item["intent_id"] = intent_id
         # Keep unresolved fill records even when trimming completed history.
         active = {str(x.get("order_id")) for x in ledger["pending_broker_orders"]}
+        active.update(str(f.get("order_id")) for f in fills if f.get("native_stop_ref") or f.get("option_lifecycle"))
         ledger["broker_fills"] = [f for i, f in enumerate(fills) if i < 200 or str(f.get("order_id")) in active]
         save_ledger(ledger)
         sig["live_response"] = copy.deepcopy(broker)
@@ -1656,6 +1775,13 @@ def _apply_broker_update(sig, broker, confirm, source):
                 signals[i] = dict(sig)
                 break
         save_signals(signals)
+        if sig.get("source") == "live_agent" and sig.get("asset_type") in ("OPT", "BAG"):
+            import option_lifecycle
+            try:
+                option_lifecycle.sync_ledger(_live_agent)
+            except Exception as exc:  # noqa: BLE001
+                # The fill is already saved; the agent's monitor retries and holds new risk.
+                append_journal("option_lifecycle_sync_error", {"signal_id": sig.get("id"), "error": type(exc).__name__})
     return fill, terminal
 
 
@@ -1677,8 +1803,14 @@ def _reconcile_execution_corrections() -> None:
             if not identity or identity.get("broker") != "ibkr":
                 return
             signals = {s.get("id"): s for s in load_signals()}
+            if _live_agent.path.exists():
+                for position in _live_agent.load().get("option_positions", {}).values():
+                    for sid, saved_signal in position.get("broker_records", {}).items():
+                        signals.setdefault(sid, saved_signal)
             retained = {}
             for fill in load_ledger().get("broker_fills") or []:
+                if fill.get("native_stop_ref"):
+                    continue  # The stop reconciler owns fees, quantities and correction review together.
                 sig = signals.get(fill.get("signal_id"))
                 response = (sig or {}).get("live_response") or {}
                 if (not sig or (response.get("order") or {}).get("broker_identity") != identity
@@ -1758,6 +1890,8 @@ def _reconcile_pending_broker_orders() -> None:
             if terminal:
                 append_journal("broker_order_reconciled", {"order_id": item["order_id"], "fill": fill})
     _reconcile_execution_corrections()
+    import stop_fills
+    stop_fills.reconcile(_live_agent)
 
 
 def _broker_day_pnl() -> tuple[float | None, float | None, str | None]:
@@ -1789,7 +1923,25 @@ def _broker_day_pnl() -> tuple[float | None, float | None, str | None]:
         if last is None or last <= 0:
             return None, equity, "Broker daily P&L unavailable — new risk is blocked"
         day_pnl = equity - last
+    _note_day_pnl_peak(day_pnl)
     return day_pnl, equity, None
+
+
+def _settled_cash() -> tuple[float | None, str | None]:
+    """IBKR settled cash for automatic buys in a cash account (unsettled proceeds risk a
+    good-faith violation). Other brokers: (None, None) = not applicable."""
+    if (os.environ.get("BROKER_PROVIDER", "alpaca") or "").strip().lower() != "ibkr":
+        return None, None
+    try:
+        import broker_router as alpaca
+
+        acct = alpaca.get_account()
+    except Exception as exc:  # noqa: BLE001
+        return None, f"Settled cash unreadable: {str(exc)[:120]}"
+    settled = _finite_float(((acct or {}).get("account") or {}).get("settled_cash"))
+    if not (acct or {}).get("ok") or settled is None:
+        return None, "IBKR did not report settled cash; automatic buys wait until it does"
+    return settled, None
 
 
 def _broker_session_gate(cfg: dict[str, Any], notional: float, *, reducing: bool = False) -> tuple[bool, str]:
@@ -1818,7 +1970,7 @@ def _broker_risk_gate(
     max_trades = int(preset["max_trades_per_day"])
     ks = cfg.get("kill_switch") or {}
     if ks.get("armed") and ks.get("max_trades_per_day") is not None:
-        max_trades = int(ks["max_trades_per_day"])
+        max_trades = min(max_trades, int(ks["max_trades_per_day"]))
     if _finite_float(day_pnl) is None or _finite_float(equity) is None or equity <= 0:
         return False, "Broker equity or daily P&L unavailable — new risk is blocked"
     total = _broker_trades_today(ledger)
@@ -1840,7 +1992,30 @@ def _broker_risk_gate(
     target = _finite_float(cfg.get("daily_profit_target_usd"))
     if target is not None and target > 0 and day_pnl >= target:
         return False, f"Your broker account reached today's profit target (${target:,.2f}); new risk is paused"
+    giveback = _finite_float(cfg.get("giveback_stop_pct"), 0.0) or 0.0
+    peak = _finite_float(((ledger.get("broker_daily") or {}).get(_today_str()) or {}).get("peak_pnl"))
+    # Only a meaningful peak (a quarter of the daily loss limit) arms the guard.
+    meaningful = equity * float(preset["max_daily_loss_pct"]) / 100.0 * 0.25
+    if giveback > 0 and peak is not None and peak > 0 and peak >= meaningful and day_pnl <= peak * (1 - giveback / 100.0):
+        return False, (f"Protecting today's gains: P&L fell from a ${peak:,.2f} peak to ${day_pnl:,.2f} "
+                       f"(more than {giveback:g}% given back); new risk is paused")
     return True, "ok"
+
+
+def _note_day_pnl_peak(day_pnl: float) -> None:
+    """Remember today's best broker P&L for the give-back guard (writes only on a new high)."""
+    try:
+        with _lock:
+            if _CORRUPT_PATHS:
+                return
+            ledger = load_ledger()
+            day = ledger.setdefault("broker_daily", {}).setdefault(_today_str(), {"trades": 0})
+            peak = _finite_float(day.get("peak_pnl"))
+            if peak is None or day_pnl > peak:
+                day["peak_pnl"] = round(float(day_pnl), 2)
+                save_ledger(ledger)
+    except Exception:  # noqa: BLE001 - bookkeeping never blocks an account read
+        pass
 
 
 def _broker_working_reservations(ticker: str, px: float) -> tuple[dict[str, float], str | None]:
@@ -1915,7 +2090,11 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
         return {"ok": False, "error": error, "abstain": True, "book": None, "broker": None, "gated": True}
 
     manual = sig.get("manual_order")
-    agent_order = sig.get("source") == "live_agent" or (cfg.get("mode") == "auto_live" and cfg.get("live_agent") is not None)
+    agent_order = sig.get("source") == "live_agent" or cfg.get("mode") == "auto_live"
+    if agent_order:
+        error = live_agent.authorization_error(sig, cfg)
+        if error:
+            return blocked(error)
     if manual and (cfg.get("mode") != "live_manual" or not sig.get("review_identity")
                    or sig.get("review_order") != manual.get("order")):
         return blocked("Direct tickets require their exact manual order review")
@@ -1933,8 +2112,23 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                 return blocked("Broker account differs from the reviewed account; open a fresh review")
         # Unknown prior outcomes must be reconciled before another order is sent.
         with _lock:
-            if load_ledger().get("pending_broker_orders"):
-                return blocked("A broker order is still unresolved; wait for reconciliation before another order")
+            pending_orders = load_ledger().get("pending_broker_orders") or []
+            if pending_orders:
+                ticker = str(sig.get("ticker") or "").upper()
+                same_stock = any(str((p.get("signal") or {}).get("ticker") or "").upper() == ticker for p in pending_orders)
+                # A stuck order elsewhere must not freeze a protective sell of an agent
+                # position; any other order still waits for reconciliation.
+                protective_exit = (agent_order and sig.get("agent_exit") and str(sig.get("side") or "").lower() == "sell"
+                                   and not sig.get("agent_option_position_id"))
+                if same_stock or not protective_exit:
+                    return blocked("A broker order is still unresolved; wait for reconciliation before another order")
+            if provider == "ibkr" and _live_agent.path.exists():
+                import stock_protection
+                import stop_fills
+                stop_state = _live_agent.load()
+                stop_error = stop_fills.gate_error(_live_agent, stop_state, identity or {}) or stock_protection.pending_error(stop_state, identity or {})
+                if stop_error:
+                    return blocked(stop_error)
         px = fetch_last_price(str(sig.get("ticker") or ""))
         if not px or not _finite_float(px) or px <= 0:
             return blocked("no_real_quote")
@@ -2008,9 +2202,18 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
             reviewed_order = sig.get("review_order")
             contracts = int((reviewed_order or {}).get("contracts") or (reviewed_order or {}).get("shares") or sig.get("suggested_shares") or 0)
             premium = float((reviewed_order or {}).get("limit") or sig.get("signal_price") or 0)
-            from order_terms import option_notional
+            from order_terms import option_max_loss, option_notional
             try:
                 notional = option_notional(contracts, premium, 100)
+                # Opening shorts and credit spreads risk far more than the
+                # premium; size caps must see the worst-case loss.
+                terms = dict((manual or {}).get("order") or {})
+                terms.update(reviewed_order or {})
+                for key in ("option_strategy", "right", "strike", "long_strike", "short_strike", "covered", "asset_type"):
+                    if terms.get(key) is None and sig.get(key) is not None:
+                        terms[key] = sig.get(key)
+                terms.update(contracts=contracts, option_intent=opt_intent or terms.get("option_intent"))
+                risk_notional = notional if reducing else option_max_loss(terms, premium)
             except ValueError as exc:
                 return blocked(str(exc))
             shares = contracts  # quantity field carried as contracts
@@ -2019,7 +2222,12 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                 if reviewed_order and shares != int(reviewed_order.get("contracts") or reviewed_order.get("shares") or 0):
                     return blocked("Risk limits changed the reviewed quantity; open a fresh review")
                 sig["suggested_shares"] = shares
-                ok, reason = _broker_session_gate(cfg, notional, reducing=reducing)
+                if not reducing:
+                    from risk_policy import option_entry_error
+                    size_error = option_entry_error(cfg, equity, risk_notional, agent=agent_order)
+                    if size_error:
+                        return blocked(size_error)
+                ok, reason = _broker_session_gate(cfg, risk_notional, reducing=reducing)
                 if ok and not reducing:
                     ok, reason = _broker_risk_gate(cfg, ledger, day_pnl, equity)
                 if not ok:
@@ -2045,7 +2253,7 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                      "covered": (reviewed_order or {}).get("covered") or sig.get("covered"),
                      "contract_identity": copy.deepcopy(sig.get("review_contract")),
                      "position_intent": opt_intent,
-                     "option_notional": notional}
+                     "option_notional": notional, "option_max_loss": risk_notional}
             if reviewed_order:
                 order.update({k: v for k, v in reviewed_order.items() if k not in order})
             # Jump to submission by replacing the stock path with OPT order already built.
@@ -2066,6 +2274,9 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
             error = _live_agent.trade_error(sig, cfg, day_pnl, reducing)
             if error:
                 return blocked(error)
+          settled_cash, settled_error = (None, None) if (reducing or not agent_order) else _settled_cash()
+          if settled_error:
+            return blocked(settled_error)
           reserved, open_error = _broker_working_reservations(str(sig.get("ticker") or ""), px)
           if open_error:
             return blocked(open_error)
@@ -2115,6 +2326,13 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
             elif agent_order:
                 order["position_intent"] = "sell" if side == "sell" else "cover" if held < 0 else "buy"
                 order["agent_policy"] = {"revision": sig["agent_revision"], "run_id": sig["agent_run_id"]}
+        option_snapshot = None
+        if agent_order and is_opt and (auto_live_options.get_config(cfg)["automatic_exits"] or sig.get("agent_option_position_id")):
+            import option_lifecycle
+            try:
+                option_snapshot = option_lifecycle.snapshot(identity)
+            except (ValueError, TypeError, KeyError) as exc:
+                return blocked(str(exc))
         with _BROKER_EXEC_LOCK:
             with _lock:
                 current = load_config()
@@ -2135,9 +2353,24 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                         return blocked("Risk limits changed the reviewed quantity; open a fresh review")
                     sig["suggested_shares"] = shares
                     order["shares"] = shares
+                    if agent_order:
+                        edge_error = _final_agent_edge_error(sig, current, shares, px)
+                        if edge_error:
+                            return blocked(edge_error)
+                        if settled_cash is not None and notional + reserved["buy_exposure"] > settled_cash:
+                            return blocked(f"This buy (${notional:,.2f}) plus working buys (${reserved['buy_exposure']:,.2f}) "
+                                           f"is more than settled cash (${settled_cash:,.2f}). Automatic buys only use "
+                                           "settled cash, so unsettled sale proceeds never cause a good-faith violation.")
                 # Re-run broker-only gates against the latest limits/session immediately
                 # before persisting intent; config POST uses this same outer lock.
-                ok, reason = _broker_session_gate(current, notional, reducing=reducing)
+                # Options are capped on worst-case loss, not premium (same as the first gate).
+                gate_notional = risk_notional if is_opt else notional
+                if is_opt and not reducing:
+                    from risk_policy import option_entry_error
+                    size_error = option_entry_error(current, equity, risk_notional, agent=agent_order)
+                    if size_error:
+                        return blocked(size_error)
+                ok, reason = _broker_session_gate(current, gate_notional, reducing=reducing)
                 if ok and not reducing:
                     ok, reason = _broker_risk_gate(current, ledger, day_pnl, equity)
                 if not ok:
@@ -2147,9 +2380,28 @@ def execute_gated_broker_or_paper(sig, cfg, *, source: str, via: str) -> dict[st
                 except (ValueError, TypeError, KeyError) as exc:
                     return blocked(str(exc))
                 order["risk_authorization"] = {"day_pnl": day_pnl, "equity": equity, "reducing": reducing}
-                if agent_order:
-                    _live_agent.reserve(sig, current)
-                intent = _persist_broker_intent(sig, order, provider)
+                prepared = False
+                if option_snapshot is not None:
+                    try:
+                        option_lifecycle.prepare(_live_agent, current, sig, option_snapshot)
+                        prepared = True
+                        held_options, stock_qty = option_lifecycle.holdings(option_snapshot, sig["ticker"])
+                        order["option_lifecycle_guard"] = dict(identity=copy.deepcopy(identity), stock_qty=stock_qty,
+                            options={str(k): p["qty"] for k, p in held_options.items() if p["qty"]})
+                    except (ValueError, TypeError, KeyError) as exc:
+                        if prepared:
+                            option_lifecycle.discard_prepared(_live_agent, sig)
+                        return blocked(str(exc))
+                try:
+                    if agent_order:
+                        _live_agent.reserve(sig, current)
+                    intent = _persist_broker_intent(sig, order, provider)
+                except Exception:
+                    # No durable broker intent: a prepared option row must not
+                    # block every later option entry as a phantom position.
+                    if prepared:
+                        option_lifecycle.discard_prepared(_live_agent, sig)
+                    raise
             try:
                 response = live_broker_place_order(order)
             except Exception as exc:
@@ -2369,7 +2621,157 @@ def _confidence_for_verdict(verdict: str, lateness_label: str | None) -> float:
         ("AVOID", "chasing"): (0.10, 0.20),
     }
     lo, hi = ranges.get((v, label), (0.40, 0.55))
-    return round(random.uniform(lo, hi), 2)
+    # Deterministic: confidence gates real orders (live agent min_confidence), so the
+    # same setup must always score the same. It was random within the band before.
+    return round((lo + hi) / 2, 2)
+
+
+def _stop_target_distances(price: float, intraday: dict | None, cfg: dict[str, Any],
+                           preset: dict[str, Any]) -> tuple[float, float]:
+    """Stop and target distances per share: ATR-based when known, else 0.8% of price."""
+    atr_usd = _finite_float((intraday or {}).get("atr_usd"))
+    atr_multiple = _finite_float(cfg.get("atr_stop_multiple"), 1.0) or 1.0
+    base = atr_usd * atr_multiple if atr_usd and atr_usd > 0 else price * 0.008
+    # Never round a cheap stock's stop to $0.00 (which disabled the cost check).
+    stop_dist = max(0.01, round(base * float(preset["stop_r"]), 2))
+    return stop_dist, round(stop_dist * float(preset["target_r"]), 2)
+
+
+def _order_commission_usd(cfg: dict[str, Any], shares: float, price: float, side: str) -> float:
+    """One order's broker charges. Defaults follow IBKR Pro Fixed US stocks:
+    $0.005/share, $1.00 minimum per order, capped at 1% of trade value, plus
+    sell-side regulatory fees. Percent-of-price fee_bps cannot represent this.
+    """
+    per_share = _finite_float(cfg.get("commission_per_share_usd"), 0.005) or 0.0
+    minimum = _finite_float(cfg.get("commission_min_usd"), 1.0) or 0.0
+    cap_pct = _finite_float(cfg.get("commission_max_pct"), 1.0) or 0.0
+    notional = max(0.0, shares * price)
+    fee = max(per_share * shares, minimum)
+    if cap_pct > 0:
+        fee = min(fee, notional * cap_pct / 100.0)
+    if side == "sell":
+        fee += _finite_float(cfg.get("sell_regulatory_fee_usd"), 0.02) or 0.0
+    return fee
+
+
+def _round_trip_commission_per_share(cfg: dict[str, Any], shares: float, price: float) -> float:
+    shares = max(1.0, float(shares or 1))
+    return (_order_commission_usd(cfg, shares, price, "buy")
+            + _order_commission_usd(cfg, shares, price, "sell")) / shares
+
+
+def _final_agent_edge_error(sig: dict[str, Any], cfg: dict[str, Any], shares: int, price: float) -> str | None:
+    """Automatic entries: re-check reward:risk after costs at the final share count.
+
+    Screening assumed a share count; the account cap decides the real one, and
+    per-order commissions grow per share as the order shrinks.
+    """
+    min_rr = _finite_float(cfg.get("min_net_reward_risk"), 0.0) or 0.0
+    stop, target = _finite_float(sig.get("stop")), _finite_float(sig.get("target"))
+    if not stop or not target or not price or not (stop < price < target):
+        return "Automatic entry needs a stop below and a target above the current price"
+    edge = _edge_after_costs(price, price - stop, target - price, cfg, None, sig.get("quote"), shares=shares)
+    rr = edge["net_reward_risk"]
+    if rr is None or (min_rr > 0 and rr < min_rr) or rr <= 0:
+        return (f"After IBKR commissions for {shares} share{'s' if shares != 1 else ''} "
+                f"(${edge['commission_per_share_usd']:.2f}/share round trip), this trade's reward is "
+                f"{rr if rr is not None else 0:.2f}x its risk; the minimum is {max(min_rr, 0.01):g}x. No order was sent.")
+    return None
+
+
+def _edge_share_count(price: float, cfg: dict[str, Any], preset: dict[str, Any],
+                      order_usd: float | None = None) -> int:
+    """Shares the cost check should assume: the live per-order dollar limit when
+    given (the agent's case), else the paper-sized position."""
+    budget = _finite_float(order_usd)
+    if not budget:
+        equity = _finite_float(load_ledger().get("equity"), _finite_float(cfg.get("paper_equity"), 100_000.0))
+        budget = (equity or 0.0) * float(preset["max_position_pct"]) / 100.0
+    return max(1, int(budget / max(price, 0.01)))
+
+
+def _edge_after_costs(price: float, stop_dist: float, target_dist: float, cfg: dict[str, Any],
+                      intraday: dict | None = None, quote: dict | None = None,
+                      shares: float | None = None) -> dict[str, Any]:
+    """Round-trip friction per share and the reward:risk that survives it.
+
+    Costs: per-order commissions at the actual share count (1 share when unknown,
+    the most expensive case), fees and slippage (fee_bps, slip_bps each way) and
+    one full bid/ask spread (quote when present, else the spread/ATR estimate).
+    """
+    bps = 2 * ((_finite_float(cfg.get("fee_bps"), 0.0) or 0.0) + (_finite_float(cfg.get("slip_bps"), 0.0) or 0.0))
+    commission = _round_trip_commission_per_share(cfg, shares or 1, price)
+    q = quote if isinstance(quote, dict) else {}
+    bid, ask = _finite_float(q.get("bid")), _finite_float(q.get("ask"))
+    spread = None
+    if bid and ask and ask >= bid > 0:
+        spread = ask - bid
+    else:
+        spread_atr = _finite_float((intraday or {}).get("spread_atr"))
+        atr_usd = _finite_float((intraday or {}).get("atr_usd"))
+        if spread_atr is not None and atr_usd:
+            spread = max(0.0, spread_atr * atr_usd)
+    cost = price * bps / 1e4 + (spread or 0.0) + commission
+    net_risk = stop_dist + cost
+    if stop_dist <= 0 or net_risk <= 0:
+        return {"round_trip_cost_usd": round(cost, 4), "commission_per_share_usd": round(commission, 4),
+                "net_reward_risk": None, "breakeven_win_rate": None}
+    net_rr = (target_dist - cost) / net_risk
+    return {
+        "round_trip_cost_usd": round(cost, 4),
+        "commission_per_share_usd": round(commission, 4),
+        "net_reward_risk": round(net_rr, 3),
+        # Win rate at which a stop-or-target trade breaks even after costs.
+        "breakeven_win_rate": round(1 / (1 + net_rr), 3) if net_rr > 0 else 1.0,
+    }
+
+
+def _evidence_block(sig: dict[str, Any], cfg: dict[str, Any]) -> str | None:
+    """Refuse execution when this setup's own scored after-cost record is losing."""
+    if not cfg.get("evidence_gate_enabled", True):
+        return None
+    side = str(sig.get("side") or "").lower()
+    if side not in ("buy", "sell"):
+        return None
+    try:
+        rec = lessons.track_record(LESSONS_PATH, ticker=str(sig.get("ticker") or ""), verdict=sig.get("verdict"),
+                                   lateness=sig.get("lateness_label"), scope=_research_scope(cfg))
+    except Exception as exc:  # noqa: BLE001 - a missing file reads as empty; an unreadable one fails closed
+        return f"evidence_unavailable: the scored track record could not be read ({type(exc).__name__}); no order sent"
+    stats = (rec.get("side_stats") or {}).get(side) or {}
+    samples = int(stats.get("samples") or 0)
+    rate, move = stats.get("helped_rate"), stats.get("avg_move_bps")
+    need = int(_finite_float(cfg.get("evidence_min_samples"), 12.0) or 12)
+    breakeven = _finite_float(sig.get("breakeven_win_rate")) or 0.5
+    if samples >= need and rate is not None and move is not None and rate < breakeven and move <= 0:
+        return (f"setup_losing_record: this {rec.get('setup')} {side} setup won {rate:.0%} of {samples} "
+                f"scored trades after costs (breakeven {breakeven:.0%}), average {move:+.1f} bps")
+    return None
+
+
+def _apply_wsb_caution(sig: dict[str, Any], cfg: dict[str, Any]) -> None:
+    """A buy idea on a ticker crowded on WSB gets the configured caution. Only ever reduces risk."""
+    action = cfg.get("wsb_crowding_action", "half")
+    if action == "off" or str(sig.get("side") or "").lower() != "buy":
+        return
+    try:
+        crowd = wsb_monitor.crowding(str(sig.get("ticker") or ""), cfg)
+    except Exception:  # noqa: BLE001 - WSB problems never block or size a trade
+        return
+    if not crowd.get("crowded"):
+        return
+    sig["wsb_crowding"] = crowd
+    sig["research_flags"] = list(sig.get("research_flags") or []) + ["wsb_crowded"]
+    note = crowd.get("reason") or "Crowded on WSB"
+    if action == "skip":
+        sig["execution_block"] = sig.get("execution_block") or f"wsb_crowded: {note}; skipped by your WSB setting"
+    elif action == "half":
+        shares = _finite_float(sig.get("suggested_shares"), 0.0) or 0.0
+        sig["suggested_shares"] = int(shares // 2) if shares >= 1 else shares / 2
+        sig["advisory_size_mult"] = min(_finite_float(sig.get("advisory_size_mult"), 1.0) or 1.0, 0.5)
+        if sig["suggested_shares"] < 1 and shares >= 1:
+            sig["execution_block"] = sig.get("execution_block") or f"wsb_crowded: {note}; half size is under one share"
+    sig["reason"] = (str(sig.get("reason") or "") + f" · {note} ({action}).").strip(" ·")
 
 
 def _suggested_size_cut(lateness_label: str | None) -> float:
@@ -2446,13 +2848,8 @@ def _analysis_to_signal(
 
     intraday = analysis.get("intraday") or {}
     atr_usd = _finite_float(intraday.get("atr_usd"))
-    atr_multiple = _finite_float(cfg.get("atr_stop_multiple"), 1.0) or 1.0
-    stop_dist = round(
-        (atr_usd * atr_multiple if atr_usd and atr_usd > 0 else price * 0.008)
-        * preset["stop_r"],
-        2,
-    )
-    target_dist = round(stop_dist * preset["target_r"], 2)
+    stop_dist, target_dist = _stop_target_distances(price, intraday, cfg, preset)
+    edge = _edge_after_costs(price, stop_dist, target_dist, cfg, intraday, analysis.get("quote"), shares=shares)
     stop = round(price - stop_dist, 2)
     target = round(price + target_dist, 2)
 
@@ -2493,6 +2890,7 @@ def _analysis_to_signal(
         "target": target,
         "stop_r": preset["stop_r"],
         "target_r": preset["target_r"],
+        **edge,
         "atr_usd": atr_usd,
         "spread_atr": _finite_float(intraday.get("spread_atr")),
         "vwap_dist_atr": _finite_float(intraday.get("vwap_dist_atr")),
@@ -2513,6 +2911,8 @@ def _analysis_to_signal(
         "session_is_today": (vol or {}).get("session_is_today"),
         "research_flags": research_flags,
         "reject_reason": None,
+        # Display and the agent's per-sector cap only; an unknown sector never blocks.
+        "sector": (analysis.get("sector_name") if analysis.get("sector_name") not in (None, "", "Unknown") else None),
     }
 
 
@@ -2609,7 +3009,8 @@ def _enrich_signal_with_llm(sig: dict[str, Any], analysis: dict, cfg: dict) -> d
     """Attach Gemini thesis fields; blend side/confidence/reason with playbook."""
     if isinstance(analysis.get("quote"), dict) and not analysis["quote"].get("fresh"):
         sig.update(side="hold", confidence=0, abstain=True, llm_side="hold",
-                   llm_error="stale_or_unverified_market_data", llm_thesis="Waiting for a fresh market quote.")
+                   data_error="stale_or_unverified_market_data", llm_error=None,
+                   llm_thesis="Waiting for a fresh market quote; the brain has not been called.")
         sig["citations"] = _screener_citations(analysis)
         return sig
     if not cfg.get("llm_enabled", True) or not cfg.get("llm_on_scan", True):
@@ -2644,7 +3045,7 @@ def _enrich_signal_with_llm(sig: dict[str, Any], analysis: dict, cfg: dict) -> d
     sig["brain_mode"] = thesis.get("brain_mode") or llm_trader.resolve_brain_mode(cfg)
     sig["routed"] = thesis.get("routed")
     sig["router_reason"] = thesis.get("router_reason")
-    for key in ("decision_record_id", "shadow", "advisory", "execution_block", "advisory_size_mult"):
+    for key in ("decision_record_id", "learning_context", "shadow", "advisory", "execution_block", "advisory_size_mult"):
         sig[key] = thesis.get(key)
     multiplier = thesis.get("advisory_size_mult", 1.0)
     if multiplier is not None and multiplier < 1:
@@ -2677,7 +3078,11 @@ def _enrich_signal_with_llm(sig: dict[str, Any], analysis: dict, cfg: dict) -> d
         price = float(sig.get("signal_price") or 0)
         stop_r = float(sig.get("stop_r") or 1)
         target_r = float(sig.get("target_r") or 2)
-        stop_dist = round(price * 0.008 * stop_r, 2)
+        # Keep the screener's (ATR-based) stop distance; sizing already used it.
+        prior_stop = _finite_float(sig.get("stop"))
+        stop_dist = round(abs(price - prior_stop), 2) if prior_stop is not None and price else 0.0
+        if stop_dist <= 0:
+            stop_dist = round(price * 0.008 * stop_r, 2)
         target_dist = round(stop_dist * target_r, 2)
         if llm_side == "sell":
             sig["stop"] = round(price + stop_dist, 2)
@@ -2719,8 +3124,18 @@ def generate_scan_signal(
     force: bool = False,
     ticker: str | None = None,
     still_authorized: Callable[[], bool] | None = None,
+    pass_only: bool = False,
+    notes: dict | None = None,
+    max_share_price: float | None = None,
 ) -> dict | None:
-    """Scan watchlist with volume-screener rules; emit first eligible buy signal."""
+    """Scan watchlist with volume-screener rules; emit first eligible buy signal.
+
+    ``pass_only`` (the live agent): return only PASS setups, so no model call is
+    spent on a WATCH/AVOID idea the caller can never trade. ``notes`` receives the
+    best non-PASS verdict and its text for the caller's status line.
+    ``max_share_price``: a PASS whose one share costs more than this can never be
+    ordered, so it becomes WATCH before any paid model call.
+    """
     from screener_logic import analyze_ticker
 
     cfg = cfg or load_config()
@@ -2816,12 +3231,44 @@ def generate_scan_signal(
             ]
             verdict = "WATCH"
 
+        min_rr = _finite_float(cfg.get("min_net_reward_risk"), 0.0) or 0.0
+        price_now = _finite_float(analysis.get("price"))
+        if verdict == "PASS" and min_rr > 0 and price_now and price_now > 0:
+            sd, td = _stop_target_distances(price_now, intraday, cfg, preset)
+            edge = _edge_after_costs(price_now, sd, td, cfg, intraday, analysis.get("quote"),
+                                     shares=_edge_share_count(price_now, cfg, preset, max_share_price))
+            if edge["net_reward_risk"] is None or edge["net_reward_risk"] < min_rr:
+                analysis = dict(analysis)
+                analysis["verdict"] = "WATCH"
+                analysis["verdict_text"] = (analysis.get("verdict_text") or "Setup found.") + ((
+                    f" Entry blocked: after round-trip costs (${edge['round_trip_cost_usd']:.2f}/share, including "
+                    f"${edge['commission_per_share_usd']:.2f}/share of commissions) the reward is only "
+                    f"{edge['net_reward_risk']:.2f}x the risk (minimum {min_rr:g}x).")
+                    if edge["net_reward_risk"] is not None else
+                    " Entry blocked: the stop distance is unavailable, so the cost check cannot pass.")
+                analysis["research_flags"] = list(analysis.get("research_flags") or []) + ["thin_edge_after_costs"]
+                verdict = "WATCH"
+
+        cap = _finite_float(max_share_price)
+        if verdict == "PASS" and cap and price_now and price_now > cap:
+            analysis = dict(analysis)
+            analysis["verdict"] = "WATCH"
+            analysis["verdict_text"] = (analysis.get("verdict_text") or "Setup found.") + (
+                f" Entry blocked: one share costs ${price_now:,.2f}, above this account's ${cap:,.2f} per-order limit.")
+            analysis["research_flags"] = list(analysis.get("research_flags") or []) + ["unaffordable_share"]
+            verdict = "WATCH"
+
         if verdict == "PASS":
             sig = _analysis_to_signal(analysis, cfg, preset, force=force)
             if sig:
                 if still_authorized is not None and not still_authorized():
                     return None
                 sig = _enrich_signal_with_llm(sig, analysis, cfg)
+                block = _evidence_block(sig, cfg)
+                if block and not sig.get("execution_block"):
+                    sig["execution_block"] = block
+                    sig["research_flags"] = list(sig.get("research_flags") or []) + ["setup_losing_record"]
+                _apply_wsb_caution(sig, cfg)
                 append_journal(
                     "scan_hit",
                     {"ticker": sym, "verdict": verdict, "lateness": lateness, "force": force},
@@ -2840,6 +3287,11 @@ def generate_scan_signal(
                 best_rank = rank
                 best_watch = analysis
 
+    if best_watch is not None and pass_only:
+        if notes is not None:
+            notes.update(ticker=best_watch.get("ticker"), verdict=best_watch.get("verdict"),
+                         text=best_watch.get("verdict_text"), price=_finite_float(best_watch.get("price")))
+        return None
     if best_watch is not None:
         if still_authorized is not None and not still_authorized():
             return None
@@ -2873,6 +3325,9 @@ def generate_scan_signal(
 
     if errors:
         append_journal("scan_errors", {"errors": errors[:10]})
+        if notes is not None:
+            notes["error"] = "Market data was unavailable; no completed setup assessment"
+            notes["coverage_unavailable"] = all("No data for" in str(error) for error in errors)
     return None
 
 
@@ -3172,6 +3627,18 @@ def _missing_marks(ledger: dict[str, Any], marks: dict[str, float]) -> list[str]
     )
 
 
+def _decision_day(ev: dict[str, Any]) -> str | None:
+    raw = ev.get("ts") or ev.get("timestamp")
+    try:
+        when = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    tz = getattr(paper_loop_mod, "NY_TZ", None)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return (when.astimezone(tz) if tz else when).strftime("%Y-%m-%d")
+
+
 def _day_scoreboard(ledger: dict[str, Any], cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     """P0.2 day equity curve + scoreboard. Calls helped = horizon outcomes (not fill W/L)."""
     board = session_track.build_day_scoreboard(
@@ -3185,7 +3652,17 @@ def _day_scoreboard(ledger: dict[str, Any], cfg: dict[str, Any] | None = None) -
     try:
         helped = hurt = flat = 0
         rows = _decision_ring.latest(200)
+        today = _today_str()
         for ev in rows or []:
+            # Each scored call once: skip the "outcome" copy row, holds (no trade to win or
+            # lose) and earlier days.
+            if ev.get("event") == "outcome":
+                continue
+            side = str(ev.get("outcome_intended_side") or ev.get("side") or ev.get("decision") or "").lower()
+            if side not in ("buy", "sell"):
+                continue
+            if _decision_day(ev) != today:
+                continue
             label = ev.get("outcome") or ev.get("outcome_label")
             if label == "helped":
                 helped += 1
@@ -3573,7 +4050,6 @@ def _ledger_equity_mtm(ledger: dict[str, Any], mark_by_ticker: dict[str, float] 
         if sh <= 0:
             continue
         t = str(p.get("ticker") or "").upper()
-        avg = float(p.get("avg_price") or 0)
         if t not in marks:
             continue
         mark = float(marks[t])
@@ -3694,20 +4170,20 @@ def paper_fill(
                     return {"ok":False,"error":"No Moss paper holding to close"}
                 notional = round(shares_req * fill_px, 2)
         if (cfg.get("moss_paper") or {}).get("enabled") and source == "auto_paper" and side == "buy" and not signal.get("moss_policy_version"):
-            return {"ok":False,"error":"Moss owns automatic paper entries; request a qualified Moss decision"}
+            return {"ok":False,"error":"Paper research owns automatic paper entries; wait for a qualified paper-research decision"}
         if signal.get("moss_policy_version") and side == "buy":
             import moss_paper, moss_policy
             confidence = _finite_float(signal.get("confidence"), 0) or 0
             minimum = max(float(llm_trader.min_decision_confidence(cfg)), float(get_preset(cfg.get("risk_preset")).get("min_confidence") or 0))
             if confidence < minimum:
-                return {"ok":False,"error":"Moss paper confidence is below the configured minimum"}
+                return {"ok":False,"error":"Paper research confidence is below the configured minimum"}
             reason = moss_paper.entry_error(signal, cfg, ledger, _QUOTE_SNAPSHOTS.get(ticker), datetime.now(timezone.utc))
             if reason:
                 return {"ok":False,"error":reason}
             p = moss_policy.settings(cfg)
             total_exposure = notional + sum(float(pos.get("shares") or 0)*float(risk_marks.get(pos.get("ticker")) or 0) for pos in ledger.get("positions",[]))
             if total_exposure > max(0, _ledger_equity_mtm(ledger, risk_marks))*p["max_total_exposure_pct"]/100:
-                return {"ok":False,"error":"Moss total paper exposure limit"}
+                return {"ok":False,"error":"Paper research total exposure limit reached"}
             if notional*(1+_cfg_fee_bps(cfg)/10000) > min(p["max_order_usd"],float(signal.get("moss_budget") or 0))+.001:
                 return {"ok":False,"error":"Price moved beyond the approved paper budget; collect a new decision"}
         positions_snap = ledger.get("positions") or []
@@ -3910,7 +4386,6 @@ def paper_fill(
             "paper_fill_reverse",
         ):
             try:
-                pos_side = "long" if side == "buy" else "long"  # sells only close longs
                 # After buy: attach to long; after sell cover short rarely remains — attach to leftover long only
                 open_side = None
                 entry_ref = fill_px
@@ -4156,7 +4631,11 @@ def _ingest_one_signal(sig: dict[str, Any], *, research_only: bool = False,
     if mode == "auto_live":
         # Gate first; broker-only on success; broker fail = rejected (no paper fallback).
         # Never dual-book (broker submit + paper_fill) for the same fill.
-        if not cfg.get("session_active"):
+        # A stopped session still lets Fox's protective stock exits through; the
+        # agent authorization and every broker gate below still apply to them.
+        protective_exit = (sig.get("source") == "live_agent" and sig.get("agent_exit")
+                           and not sig.get("agent_option_position_id"))
+        if not cfg.get("session_active") and not protective_exit:
             with _lock:
                 sig["status"] = "rejected"
                 sig["reject_reason"] = "session_not_active"
@@ -4766,6 +5245,8 @@ def _with_lessons(analysis: dict, cfg: dict | None = None) -> dict:
         "setup": rec.get("setup"),
         "sample_count": rec.get("setup_count", 0),
         "side_stats": rec.get("side_stats", {}),
+        "recalled_at": datetime.now(timezone.utc).isoformat(),
+        "evidence_rows": rec.get("evidence_rows", []),
         "instruction": "Use this as prior evidence, not as a guarantee. Abstain when the matching side has persistent negative results.",
     }
     return out
@@ -4785,12 +5266,15 @@ class _ClaudeShadow:
 
     def __init__(self, analysis: dict, horizon_min: int):
         self._out: dict[str, Any] | None = None
+        self._cost_scope = llm_trader.current_cost_scope() or "desk"
+        self._cost_limits = dict(getattr(llm_trader._COST_SCOPE, "limits", {}))
         self._t = threading.Thread(target=self._run, args=(analysis, horizon_min), daemon=True, name="claude-shadow")
         self._t.start()
 
     def _run(self, analysis: dict, horizon_min: int) -> None:
         try:
-            self._out = claude_brain.decide(analysis, horizon_min=horizon_min)
+            with llm_trader.cost_scope(self._cost_scope, **self._cost_limits):
+                self._out = claude_brain.decide(analysis, horizon_min=horizon_min)
         except Exception as exc:  # noqa: BLE001
             self._out = {"side": "flat", "error": f"claude_shadow:{type(exc).__name__}"}
 
@@ -4897,17 +5381,11 @@ def _loop_trade_thesis(analysis: dict, cfg: dict) -> dict[str, Any]:
 
 def _research_thesis(analysis: dict, cfg: dict, *, source: str) -> dict[str, Any]:
     """Shared research/audit record; execution remains in the workspace adapters."""
-    if source in ("moss_paper", "moss_notebook"):
-        import research_library
-        analysis = copy.deepcopy(analysis)
-        context = dict(analysis.get("companion_context") or {})
-        context["reference_library"] = research_library.context(DATA_DIR, "volume pullback execution spread uncertainty")
-        analysis["companion_context"] = context
-        if source == "moss_paper":
-            import research_studio
-            protocol = research_studio.active_protocol(__import__("sys").modules[__name__])
-        else:
-            protocol = None
+    import live_research
+    analysis = live_research.with_references(analysis, DATA_DIR)
+    if source == "moss_paper":
+        import research_studio
+        protocol = research_studio.active_protocol(__import__("sys").modules[__name__])
     else:
         protocol = None
     started = _now_iso()
@@ -4927,6 +5405,12 @@ def _research_thesis(analysis: dict, cfg: dict, *, source: str) -> dict[str, Any
     llm_cfg = _llm_cfg_for_calls(cfg)
     analysis = _with_lessons(analysis, cfg)
     analysis = dict(analysis, research_evidence=news_stream.cached_evidence(analysis.get("ticker") or ""))
+    analysis['companion_context']['decision_checks'] = live_research.decision_context(analysis, cfg)
+    # Freeze the actual policy and inputs before either model receives them.
+    import policy_evidence
+    facts = json.loads(llm_trader._analysis_context_blob(analysis))
+    started = _now_iso()
+    policy_receipt = policy_evidence.capture(cfg, facts, started, code_version.status()["started"])
     desk = dict(cfg)
     desk["api_key"] = llm_cfg.get("api_key")
     # Keep Gemini model name off resolve_brain_mode fallback (brain_mode is authoritative)
@@ -4966,6 +5450,7 @@ def _research_thesis(analysis: dict, cfg: dict, *, source: str) -> dict[str, Any
             "brain_mode": brain,
         }
     main = dict(main)
+    main["learning_context"] = copy.deepcopy(analysis.get("learning_context"))
     main.update(prompt_version=llm_trader.PROMPT_VERSION, shadow=None, advisory=None)
     if not main.get("error"):
         side = str(main.get("side") or "flat")
@@ -4992,7 +5477,6 @@ def _research_thesis(analysis: dict, cfg: dict, *, source: str) -> dict[str, Any
     if main.get("execution_block"):
         main["abstain"] = True
 
-    facts = json.loads(llm_trader._analysis_context_blob(analysis))
     scope = _research_scope(cfg)
     quote = analysis.get("quote") or {}
     ev = {"event": "decision", "ts": started, "ticker": analysis.get("ticker"),
@@ -5008,7 +5492,9 @@ def _research_thesis(analysis: dict, cfg: dict, *, source: str) -> dict[str, Any
           "verdict": analysis.get("verdict"), "lateness_label": (analysis.get("entry_quality") or {}).get("label"),
           "mid": quote.get("price") or analysis.get("price"), "quote": copy.deepcopy(quote),
           "slip_bps": float(cfg.get("slip_bps", 5) or 0), "fee_bps": _cfg_fee_bps(cfg),
+          "learning_context": main.get("learning_context"),
           "inputs": facts, "input_hash": hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest(),
+          "policy_receipt": policy_receipt, "decision_available_at": _now_iso(),
           "outcome_tolerance_sec": 120, "paper_only": True, "filled": False}
     if quote.get("fresh") and not main.get("error"):
         if protocol:
@@ -5191,7 +5677,7 @@ def _scheduled_scan_config(cfg: dict[str, Any]) -> dict[str, Any] | None:
     """Choose one authorized research owner without borrowing the live session."""
     moss_owns_paper = bool((cfg.get("moss_paper") or {}).get("enabled"))
     if cfg.get("session_active") and cfg.get("mode") in ("live_manual", "auto_live"):
-        if cfg.get("live_agent") is not None:
+        if cfg.get("mode") == "auto_live" or cfg.get("live_agent") is not None:
             return None  # The live agent is the sole scheduled broker owner, even when paused.
         selected = cfg
     elif cfg.get("session_active") and cfg.get("mode") in ("manual", "auto_paper"):
@@ -5216,7 +5702,9 @@ def _bg_loop() -> None:
     while not _bg_stop.wait(timeout=5):
         try:
             _reconcile_pending_broker_orders()
-            _live_agent.tick()
+            # A slow provider/model call must not delay the next reconciliation.
+            # The agent reserves its single-worker lock before launching.
+            _live_agent.schedule_tick()
             cfg = None
             should = False
             with _lock:
@@ -5269,10 +5757,14 @@ def _bg_loop() -> None:
                         sig.update(workspace="paper", paper_research=True)
                     ingest_signal(sig, expected_config=cfg)
         except Exception as exc:  # noqa: BLE001
-            append_journal("bg_error", {"error": str(exc)})
+            try:
+                append_journal("bg_error", {"error": str(exc)})
+            except Exception:
+                app.logger.exception("Background cycle failed and its journal could not be written")
 
 
 _bg_thread: threading.Thread | None = None
+_worker_start_lock = threading.RLock()
 
 _INSTANCE_LOCK_PATH = Path(os.environ.get("TOMAHAWK_INSTANCE_LOCK", str(DATA_DIR / "tomahawk.pid")))
 _INSTANCE_LOCK_FD: int | None = None
@@ -5336,7 +5828,7 @@ def acquire_instance_lock() -> None:
                     os.close(_INSTANCE_LOCK_FD)
                     _INSTANCE_LOCK_FD = None
         raise RuntimeError(
-            f"Another Tomahawk instance appears to be running ({_INSTANCE_LOCK_PATH}). "
+            f"Another nadzeel desk appears to be running ({_INSTANCE_LOCK_PATH}). "
             "Remove the lock only after confirming the previous process stopped."
         ) from exc
 
@@ -5352,11 +5844,16 @@ def release_instance_lock() -> None:
             pass
 
 
-def start_bg() -> None:
+def _start_scan_worker() -> None:
     global _bg_thread
-    if not (_bg_thread and _bg_thread.is_alive()):
-        _bg_thread = threading.Thread(target=_bg_loop, name="signal-scan", daemon=True)
-        _bg_thread.start()
+    with _worker_start_lock:
+        if not _bg_stop.is_set() and not (_bg_thread and _bg_thread.is_alive()):
+            _bg_thread = threading.Thread(target=_bg_loop, name="signal-scan", daemon=True)
+            _bg_thread.start()
+
+
+def start_bg() -> None:
+    _start_scan_worker()
     ensure_paper_loop_started()
 
 
@@ -5871,9 +6368,15 @@ def _latest_desk_call(cfg: dict, signals: list, loop: dict) -> dict | None:
 def _startup_status() -> dict:
     try:
         status = json.loads((DATA_DIR / "launcher-status.json").read_text(encoding="utf-8-sig"))
-        return {k: status.get(k) for k in ("checked_at", "gateway", "message")}
+        out = {k: status.get(k) for k in ("checked_at", "gateway", "message")}
     except (OSError, ValueError, AttributeError):
-        return {}
+        out = {}
+    try:
+        code = code_version.status()
+        out.update(code_stale=code["stale"], code_message=code["message"])
+    except Exception:  # noqa: BLE001 - never block state on a file scan
+        pass
+    return out
 
 
 def _build_state_lite() -> dict[str, Any]:
@@ -6174,12 +6677,17 @@ def _state_aux_snapshot(cfg: dict[str, Any], watchlist: list[str], focus: str | 
         if not fresh and not _STATE_AUX.get("refreshing"):
             _STATE_AUX["key"] = key
             _STATE_AUX["refreshing"] = True
-            threading.Thread(
-                target=_refresh_state_aux_safe,
-                args=(dict(cfg), list(watchlist), focus),
-                daemon=True,
-                name="state-aux-refresh",
-            ).start()
+            try:
+                threading.Thread(
+                    target=_refresh_state_aux_safe,
+                    args=(dict(cfg), list(watchlist), focus),
+                    daemon=True,
+                    name="state-aux-refresh",
+                ).start()
+            except Exception:
+                # Optional context cannot take /api/state down or retain a
+                # phantom worker. Preserve the cache and let the next poll retry.
+                _STATE_AUX["refreshing"] = False
         cached = (_STATE_AUX.get("data") or {}) if _STATE_AUX.get("data_key") == key else {}
     return dict(cached)
 
@@ -6189,8 +6697,8 @@ def index():
     return _desk_page(
         "overview",
         "live",
-        "Overview",
-        "Start here — market pulse and account snapshot. Auto, Paper, and Research are separate pages.",
+        "Home",
+        "Start here: your money at IBKR and Fidelity, and what to do next.",
     )
 
 
@@ -6213,8 +6721,8 @@ def desk_root():
     return _desk_page(
         "overview",
         "live",
-        "Overview",
-        "Start here — market pulse and account snapshot. Auto, Paper, and Research are separate pages.",
+        "Home",
+        "Start here: your money at IBKR and Fidelity, and what to do next.",
     )
 
 
@@ -6223,18 +6731,19 @@ def desk_overview():
     return _desk_page(
         "overview",
         "live",
-        "Overview",
-        "Start here — market pulse and account snapshot. Auto, Paper, and Research are separate pages.",
+        "Home",
+        "Start here: your money at IBKR and Fidelity, and what to do next.",
     )
 
 
 @app.route("/desk/auto")
+@app.route("/desk/fox")
 def desk_auto():
     return _desk_page(
         "auto",
         "live",
-        "Auto trading",
-        "Real broker account — Moss agent, ready meter, and live ticket. Not paper practice.",
+        "Real account",
+        "Your IBKR account in one place: the live trading switch, buy or sell, automatic trading (Fox), positions and orders.",
     )
 
 
@@ -6243,8 +6752,8 @@ def desk_paper():
     return _desk_page(
         "paper",
         "paper",
-        "Paper practice",
-        "Simulated funds only — practice without touching your live broker account.",
+        "Practice",
+        "Simulated money only. Nothing here touches a real account.",
     )
 
 
@@ -6254,18 +6763,15 @@ def desk_research():
         "research",
         "live",
         "Research",
-        "Ideas, rankings, scanner, and Moss notes. Research does not place live orders by itself.",
+        "Ideas, company checks and the market scanner. Nothing on this page places an order.",
     )
 
 
 @app.route("/desk/ticket")
 def desk_ticket():
-    return _desk_page(
-        "ticket",
-        "live",
-        "Live ticket",
-        "Buy or sell ticket and your broker positions / orders.",
-    )
+    """The ticket now lives on the Real account page (one copy of positions, orders and the switch)."""
+    from flask import redirect
+    return redirect("/desk/fox#beginner-ticket-wrap", code=302)
 
 
 @app.route("/desk/settings")
@@ -6274,7 +6780,7 @@ def desk_settings():
         "settings",
         "live",
         "Settings",
-        "Watchlist, brains, and journal. Live execution switches stay labeled separately.",
+        "Watchlist, alerts, research brains and the journal. Nothing here turns on live trading.",
     )
 
 
@@ -6287,7 +6793,7 @@ def desk_all_legacy():
         desk_page="all",
         desk_workspace="live",
         page_title="Full desk (legacy)",
-        page_hint="Legacy single-page layout. Prefer Overview / Auto / Paper / Research.",
+        page_hint="Legacy single-page layout. Prefer the Home, Real account, Practice, Research and Settings pages.",
     )
 
 # --- END PAGE_SPLIT_DESK_ROUTES ---
@@ -6475,8 +6981,16 @@ def api_broker_ensure_gateway():
         return jsonify(ok=False, error="IBKR adapter missing ensure_gateway"), 500
     body = request.get_json(silent=True) or {}
     launch = True if not isinstance(body, dict) else bool(body.get("launch_if_down", True))
+    # The desk button is an owner action; the upkeep watchdog sends automatic=true.
+    automatic = isinstance(body, dict) and body.get("automatic") is True
+    if automatic and launch:
+        cfg = load_config()
+        if not (cfg.get("session_active") and cfg.get("mode") in ("live_manual", "auto_live")):
+            # Outside a live session a closed Gateway was most likely closed on purpose.
+            return jsonify(ok=False, launched=False, automatic_launch_held=True,
+                           note="No live session is running; Gateway is not reopened automatically.")
     try:
-        result = ensure(launch_if_down=launch)
+        result = ensure(launch_if_down=launch, automatic=automatic)
     except Exception as exc:
         return jsonify(ok=False, error=str(exc)[:200], gateway_restarted=False), 500
     return jsonify(result if isinstance(result, dict) else {"ok": False, "error": "unexpected ensure result"})
@@ -6499,7 +7013,7 @@ def api_broker_pnl_refresh():
     except Exception as exc:
         return jsonify(ok=False, error=str(exc)[:200], risk_ready=False, account={}, refresh={"gateway_restarted": False}), 500
     # Bust cached broker book so /api/state reflects the refresh immediately.
-    _BROKER_BOOK_CACHE.update(at=0.0, val=None, key=None)
+    _invalidate_broker_book_cache()
     return jsonify(result if isinstance(result, dict) else {"ok": False, "error": "unexpected refresh result"})
 
 @app.route("/api/config", methods=["GET", "POST"])
@@ -6551,6 +7065,11 @@ def api_paper_research():
 
 def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
     """POST /api/config body handler (caller holds _lock; BadNumber → 400)."""
+    # Reject an unavailable brain before other fields can cause side effects.
+    if "brain_mode" in body or "model" in body:
+        error = llm_trader.brain_selection_error(body.get("brain_mode", body.get("model")))
+        if error:
+            return jsonify(ok=False, error=error, code="brain_unavailable"), 409
     if True:
         do_drain = False
         do_radar_refresh = False
@@ -6706,10 +7225,27 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
             "promotion_min_expectancy_usd", "promotion_min_profit_factor",
             "promotion_max_drawdown_pct",
             "promotion_window_days",
+            "min_net_reward_risk", "evidence_min_samples", "giveback_stop_pct",
+            "event_guard_before_min", "event_guard_after_min", "wsb_crowd_min_mentions",
         ):
             if key in body:
                 lo, hi = _NUMERIC_CFG_LIMITS[key]
                 cfg[key] = _num(body[key], key, lo=lo, hi=hi)
+        for key in ("evidence_min_samples", "event_guard_before_min", "event_guard_after_min", "wsb_crowd_min_mentions"):
+            if key in body:
+                cfg[key] = int(cfg[key])
+        for key in ("evidence_gate_enabled", "event_guard_enabled"):
+            if key in body:
+                cfg[key] = body[key] is True
+        if "wsb_crowding_action" in body:
+            if body["wsb_crowding_action"] not in ("off", "note", "half", "skip"):
+                return jsonify({"ok": False, "error": "wsb_crowding_action must be off, note, half or skip"}), 400
+            cfg["wsb_crowding_action"] = body["wsb_crowding_action"]
+        if "custom_market_events" in body:
+            try:
+                cfg["custom_market_events"] = market_events.validate_custom_events(body["custom_market_events"])
+            except ValueError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
 
         if "heat_enabled" in body:
             cfg["heat_enabled"] = bool(body["heat_enabled"])
@@ -6762,9 +7298,6 @@ def _api_config_post(cfg: dict[str, Any], body: dict[str, Any]):
                 return jsonify({"ok": False, "error": "brain_mode must be gemini|mock|jev|claude"}), 400
             if mode == "claude" and not claude_brain.is_configured():
                 return jsonify({"ok": False, "error": "Add ANTHROPIC_API_KEY to .env (and restart) to use Claude"}), 400
-            if mode == "jev" and not llm_trader.typesafe_api_key():
-                # Allow selecting jev; runtime falls back to mock if key missing
-                pass
             cfg["brain_mode"] = mode
             append_journal("brain_mode_set", {"brain_mode": mode})
         if "decision_horizon_min" in body:
@@ -8432,13 +8965,24 @@ def api_llm_chat():
     if _rate_limited("llm_chat", 12):
         return jsonify({"ok": False, "error": "rate limit exceeded; try again shortly"}), 429
     body = request.get_json(force=True, silent=True) or {}
+    if not isinstance(body, dict) or not isinstance(body.get("message", ""), str) or not isinstance(body.get("ticker", ""), str):
+        return jsonify(ok=False, error="Message and optional ticker must be text"), 400
     message = (body.get("message") or "").strip()
     ticker = (body.get("ticker") or "").strip().upper() or None
     if not message:
         return jsonify({"ok": False, "error": "message required"}), 400
 
+    if len(message) > 3000 or (ticker and not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", ticker)):
+        return jsonify(ok=False, error="Use a message up to 3,000 characters and a valid stock symbol"), 400
+
     with _lock:
         cfg = load_config()
+
+    # Without a saved Fox policy, use the policy default instead of disabling chat.
+    cap = ((cfg.get("live_agent") or {}).get("policy") or {}).get("model_budget_usd",
+                                                                    live_agent.DEFAULTS["model_budget_usd"])
+    if not cfg.get("llm_enabled", True) or isinstance(cap, bool) or not isinstance(cap, (int, float)) or not math.isfinite(cap) or cap < 0:
+        return jsonify(ok=False, error="AI replies are disabled or the existing model budget is unavailable"), 503
 
     analysis = None
     analysis_snippet = None
@@ -8460,12 +9004,13 @@ def api_llm_chat():
             analysis = {"ticker": ticker, "error": str(exc)}
 
     llm_cfg = _llm_cfg_for_calls(cfg)
-    reply = llm_trader.chat(
-        [{"role": "user", "content": message}],
-        ticker=ticker,
-        analysis=analysis,
-        cfg=llm_cfg,
-    )
+    with llm_trader.cost_scope("companion_chat", scope_cap=min(.25, cap), total_cap=cap):
+        reply = llm_trader.chat(
+            [{"role": "user", "content": message}],
+            ticker=ticker,
+            analysis=analysis,
+            cfg=llm_cfg,
+        )
     with _lock:
         append_journal(
             "llm_chat",
@@ -8477,6 +9022,9 @@ def api_llm_chat():
             },
         )
     citations = _screener_citations(analysis) if analysis else []
+    if str(reply or "").startswith("[error:"):
+        return jsonify(ok=False, error=reply, reply=reply, ticker=ticker, citations=citations,
+                       llm=_llm_public_status(cfg)), 503
     return jsonify(
         {
             "ok": True,
@@ -8494,6 +9042,8 @@ def api_llm_thesis():
     if _rate_limited("llm_thesis", 12):
         return jsonify({"ok": False, "error": "rate limit exceeded; try again shortly"}), 429
     body = request.get_json(force=True, silent=True) or {}
+    if not isinstance(body, dict) or not isinstance(body.get("ticker", ""), str):
+        return jsonify(ok=False, error="Ticker must be text"), 400
     ticker = (body.get("ticker") or "").strip().upper()
     if not ticker:
         return jsonify({"ok": False, "error": "ticker required"}), 400
@@ -8630,11 +9180,18 @@ def api_buzz():
     cfg = load_config()
     watchlist = list(cfg.get("watchlist") or DEFAULT_WATCHLIST)
     focus_liquid = str(cfg.get("watchlist_focus") or "liquid").lower() == "liquid"
-    # Network I/O outside _lock
+    # Serve cached evidence immediately; slow social providers run in one worker.
     try:
-        payload = buzz_sources.fetch_ticker_buzz(
-            watchlist, force=force, focus_liquid=focus_liquid
-        )
+        payload = buzz_sources.get_cached_buzz()
+        expected_key = buzz_sources._buzz_cache_key(watchlist, focus_liquid)
+        if payload and payload.get("cache_key") != expected_key:
+            payload = None
+        refreshing = False
+        if force or not payload or payload.get("stale"):
+            refreshing = buzz_sources.kick_background_refresh(watchlist, focus_liquid=focus_liquid)
+        payload = dict(payload or {"ok": True, "tickers": [], "top": [], "watchlist_hits": [],
+                                  "megathreads": [], "errors": [], "stale": True, "cached_at": None})
+        payload["refreshing"] = refreshing or buzz_sources._refresh_inflight
     except Exception as e:  # noqa: BLE001
         payload = {
             "ok": False,
@@ -8652,8 +9209,8 @@ def api_buzz():
     try:
         payload = dict(payload)
         payload["reddit_auth"] = buzz_sources.reddit_auth_status()
-        if not payload.get("auth_mode"):
-            payload["auth_mode"] = (payload.get("reddit_auth") or {}).get("mode") or "none"
+        payload["auth_mode"] = payload["reddit_auth"].get("mode") or "none"
+        payload["reddit_degraded"] = payload["reddit_auth"].get("state") in ("needs_credentials", "cooldown", "error")
     except Exception:
         payload = dict(payload)
         payload.setdefault("reddit_auth", {"configured": False, "mode": "none"})
@@ -8841,10 +9398,13 @@ def api_health():
         providers = {"error": str(exc)[:120], "configured": {}}
     return jsonify(
         {
-            "ok": not _CORRUPT_PATHS,
+            "ok": not _CORRUPT_PATHS and not getattr(_decision_ring, "_load_error", None),
             "app_id": "tomahawk-desk",
             "instance": {"source_root": str(APP_DIR.resolve()), "data_root": str(DATA_DIR.resolve())},
             "startup": _startup_status(),
+            "code": code_version.status(),
+            "recovery": worker_health(),
+            "pid": os.getpid(),
             "banner": BANNER,
             "port": DESK_PORT,
             "corrupt_files": corrupt_files_status(),
@@ -8857,6 +9417,126 @@ def api_health():
             "api_pack": providers.get("configured") or {},
         }
     )
+
+
+# True only in the process that serves the desk (set in __main__); the shutdown
+# endpoint must never stop a test runner or an importing tool.
+_SERVING = False
+
+
+def worker_health():
+    expected = bool(_SERVING)
+    rows = {"signal-scan": bool(_bg_thread and _bg_thread.is_alive())}
+    companion = globals().get("_research_companion")
+    if companion and not companion.stop.is_set():
+        rows.update({name: bool(companion._threads.get(name) and companion._threads[name].is_alive())
+                     for name in ("moss-daily-schedule", "moss-paper-workday", "moss-broker-read-only")})
+    if _bg_stop.is_set():
+        rows.pop("signal-scan", None)
+    import broker_ibkr
+    return {"expected": expected, "workers": rows, "broker_api": broker_ibkr.worker_snapshot(),
+            "missing": [name for name, alive in rows.items() if expected and not alive],
+            "memory_error": getattr(_decision_ring, "_load_error", None)}
+
+
+@app.post("/api/desk/recover")
+def api_desk_recover():
+    body = request.get_json(silent=True) or {}
+    if not _is_loopback_request():
+        return jsonify(ok=False, error="Recovery is local-only"), 403
+    if not _SERVING or not isinstance(body, dict) or body.get("expected_pid") != os.getpid():
+        return jsonify(ok=False, error="Recovery requires the current serving process"), 409
+    before = worker_health()
+    if _CORRUPT_PATHS or before["memory_error"]:
+        return jsonify(ok=False, error="Stored evidence needs recovery; no automatic reset performed"), 409
+    with _worker_start_lock:
+        if "signal-scan" in before["missing"]:
+            _start_scan_worker()
+        if any(name.startswith("moss-") for name in before["missing"]):
+            _research_companion.start()
+    after = worker_health()
+    repaired = [name for name in before["missing"] if name not in after["missing"]]
+    if repaired:
+        append_journal("workers_recovered", {"workers": repaired})
+    return jsonify(ok=not after["missing"], repaired=repaired, recovery=after)
+
+
+def _automatic_restart_error():
+    """No automatic process restart while a session or broker exposure needs supervision."""
+    if load_config().get("session_active"):
+        return "Active trading session; update restart deferred"
+    if _CORRUPT_PATHS or getattr(_decision_ring, "_load_error", None):
+        return "Stored evidence needs recovery; restart cannot repair it"
+    if _live_agent.cycle_lock.locked():
+        return "Agent cycle in progress; restart deferred"
+    if _broker_is_configured():
+        try:
+            book = _broker_book_cached()
+            import broker_router
+            orders = broker_router.get_open_orders()
+            if not isinstance(book, dict) or not book.get("ok") or book.get("risk_ready") is not True or not isinstance(book.get("positions"), list):
+                return "Broker state unavailable; automatic restart deferred"
+            if book["positions"] or not orders.get("ok") or not isinstance(orders.get("orders"), list) or orders["orders"]:
+                return "Broker positions or orders are present or unverified; automatic restart deferred"
+            # The dashboard's IBKR book is stocks only. Options, futures and
+            # foreign-currency holdings must not disappear from restart gates.
+            if broker_router.public_status().get("broker") == "ibkr":
+                exposure = broker_router.get_position_exposure()
+                if (not isinstance(exposure, dict) or exposure.get("ok") is not True
+                        or exposure.get("has_positions") is not False):
+                    return "Broker holdings across all asset types are present or unverified; automatic restart deferred"
+        except Exception:
+            return "Broker state unavailable; automatic restart deferred"
+    return None
+
+
+def _exit_desk_process(automatic=False) -> None:
+    """Stop the desk once no ledger write is in progress; the launcher restarts it."""
+    time.sleep(0.8)  # let the HTTP response reach the launcher
+    # _BROKER_SUBMIT_LOCK: no broker submission is in flight; _lock: no ledger write.
+    with _BROKER_SUBMIT_LOCK, _lock:
+        if automatic and _automatic_restart_error():
+            append_journal("app_stop_cancelled", {"reason": "Automatic restart conditions changed"})
+            return
+        pending = load_ledger().get("pending_broker_orders") or []
+        if pending:  # an order started after the request was accepted
+            append_journal("app_stop_cancelled", {"reason": "broker order unresolved", "pending": len(pending)})
+            return
+        # os._exit bypasses atexit. Close the existing API owner explicitly;
+        # never kill it during an active operation or let it reconnect behind us.
+        import broker_ibkr
+        if not broker_ibkr.disconnect_for_restart():
+            append_journal("app_stop_cancelled", {"reason": "Broker connection cleanup did not finish; desk left running"})
+            return
+        append_journal("app_stop", {"reason": "restart_requested", "pid": os.getpid()})
+        release_instance_lock()
+        os._exit(0)
+
+
+@app.route("/api/desk/shutdown", methods=["POST"])
+def api_desk_shutdown():
+    """Stop this desk so the launcher can start updated code. Never while a broker order is unresolved."""
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict) or body.get("confirm") != "RESTART":
+        return jsonify(ok=False, error="Send confirm=RESTART to stop the desk for a restart"), 400
+    if not _is_loopback_request():
+        return jsonify(ok=False, error="Only this computer can restart the desk"), 403
+    if not _SERVING:
+        return jsonify(ok=False, error="This process is not the running desk server"), 409
+    automatic = body.get("automatic") is True
+    if automatic:
+        if body.get("expected_pid") != os.getpid():
+            return jsonify(ok=False, error="Process changed; check health again"), 409
+        error = _automatic_restart_error()
+        if error:
+            return jsonify(ok=False, error=error, deferred=True), 409
+    with _lock:
+        pending = load_ledger().get("pending_broker_orders") or []
+    if pending:
+        return jsonify(ok=False, error=f"{len(pending)} broker order(s) still unresolved; restart after reconciliation"), 409
+    target = (lambda: _exit_desk_process(automatic=True)) if automatic else _exit_desk_process
+    threading.Thread(target=target, name="desk-shutdown", daemon=True).start()
+    return jsonify(ok=True, stopping=True, pid=os.getpid())
 
 
 def recover_interrupted_approvals():
@@ -8886,14 +9566,26 @@ def recover_interrupted_approvals():
 
 import desk_workbench
 desk_workbench.register(app, __import__("sys").modules[__name__])
+import overnight_study
+overnight_study.register(app, __import__("sys").modules[__name__])
 import broker_controls
 broker_controls.register(app, __import__("sys").modules[__name__])
+import broker_safety
+broker_safety.register(app, __import__("sys").modules[__name__])
+import desk_maintenance
+desk_maintenance.register(app, __import__("sys").modules[__name__])
 import live_ticket
 live_ticket.register(app, __import__("sys").modules[__name__])
 import live_agent
 _live_agent = live_agent.register(app, __import__("sys").modules[__name__])
+import rule_history
+rule_history.register(app, __import__("sys").modules[__name__], _live_agent)
 import research_companion
 _research_companion = research_companion.register(app, __import__("sys").modules[__name__])
+import companion_chat
+_companion_chat = companion_chat.register(app, __import__("sys").modules[__name__], _research_companion)
+import public_context
+public_context.register(app, __import__("sys").modules[__name__], _research_companion.public_context)
 import options_desk
 _options_desk = options_desk.register(app, __import__("sys").modules[__name__])
 import market_catalog
@@ -8904,11 +9596,37 @@ import research_studio
 research_studio.register(app, __import__("sys").modules[__name__], _research_companion)
 import market_universe
 market_radar.configure_discovery(lambda: market_universe.radar_candidates(__import__("sys").modules[__name__]))
+import market_watch
+market_watch.register(app, __import__("sys").modules[__name__])
+market_events.configure(DATA_DIR)
+market_events.start_background()
+wsb_monitor.register(__import__("sys").modules[__name__])
+import desk_day
+desk_day.register(app, __import__("sys").modules[__name__])
+import desk_backups
+desk_backups.register(app, __import__("sys").modules[__name__])
+import fox_workspace
+fox_workspace.register(app, __import__("sys").modules[__name__])
+import trading_goals
+trading_goals.register(app, __import__("sys").modules[__name__])
+import company_check
+company_check.register(app, __import__("sys").modules[__name__])
+import strategy_scorecard
+strategy_scorecard.register(app, __import__("sys").modules[__name__])
+import watch_alerts
+watch_alerts.register(app, __import__("sys").modules[__name__])
+
+import fidelity_portfolio
+fidelity_portfolio.register(app, __import__("sys").modules[__name__])
+import live_switch
+live_switch.register(app, __import__("sys").modules[__name__])
 
 # Claim the instance before starting any background work.
 if __name__ == "__main__":
     acquire_instance_lock()
     atexit.register(release_instance_lock)
+    import error_reporting
+    error_reporting.init()  # no-op unless SENTRY_DSN is set; before background threads start
     recover_interrupted_approvals()
 
 # Start background on import / run (TOMAHAWK_NO_BG=1 skips — used by tests)
@@ -8923,7 +9641,9 @@ if __name__ == "__main__":
     load_ledger()
     load_signals()
     load_journal()
-    append_journal("app_start", {"banner": BANNER, "port": DESK_PORT, "host": DESK_HOST})
+    append_journal("app_start", {"banner": BANNER, "port": DESK_PORT, "host": DESK_HOST,
+                                 "code": code_version.mark_started()})
+    _SERVING = True
     if os.environ.get("TOMAHAWK_DEV_SERVER", "").lower() in ("1", "true", "yes"):
         app.run(host=DESK_HOST, port=DESK_PORT, debug=False, use_reloader=False, threaded=True)
     else:

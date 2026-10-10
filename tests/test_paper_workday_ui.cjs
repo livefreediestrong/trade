@@ -28,6 +28,10 @@ function harness(){
  const paused=view({settings,today:{},active:false});assert.equal(paused.state,'New entries paused');
  assert.match(view({settings,today:{},active:true,phase:'waiting_for_market'}).next,/Holidays/);
  assert.equal(view({settings,today:{},active:true,error:'bad data'}).state,'Needs attention');
+ const waiting=view({settings,today:{},active:true,phase:'waiting_for_next_cycle',next_at:'2026-09-25T15:05:00Z'});
+ assert.equal(waiting.state,'Waiting for next cycle');assert.match(waiting.next,/no earlier than.*Due exits/);
+ assert.equal(view({settings,today:{},active:true,busy:true,phase:'waiting_for_next_cycle',next_at:'2026-09-25T15:05:00Z'}).state,'Reviewing candidates');
+ assert.doesNotMatch(view({settings,today:{},active:true,phase:'waiting_for_next_cycle',next_at:'broken'}).next,/Invalid Date/);
  let h=harness();h.emit();assert.equal(h.nodes['paper-auto-review'].disabled,false);
  await h.click('paper-auto-review');assert.equal(h.posts().length,0);assert.equal(h.nodes['paper-auto-confirm'].hidden,false);assert.match(h.nodes['paper-auto-review-text'].textContent,/\$5.00/);
  h.advance(600000);await h.click('paper-auto-start');assert.equal(h.posts().length,1,'no rushed review deadline; fresh settings rechecked');

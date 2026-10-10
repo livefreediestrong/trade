@@ -4,45 +4,129 @@ The broker agent connects the existing market research/brain pipeline to the exi
 
 ## Operator workflow
 
+Staged research bridge: Practice and Research include **Review and arm live trading**. It shows the exact account kind, account suffix, current equity/P&L, saved limits, options settings and changing watchlist/radar scope before a typed REAL/PAPER confirmation. The one-use review expires in 90 seconds and changes to any saved settings invalidate it. Reference summaries now join existing news and past-setup context in Fox's shared model inputs. Opening research still leaves controls unchanged. See [research context and reviewed live activation](RESEARCH_LIVE_2026_09_26.md); held for maintenance, not installed.
+
+Staged statement review: [local option activity evidence](OPTION_ACTIVITY_2026_09_26.md) accepts a supported detailed IBKR CSV after preview and acknowledgement. Account/contract matches, duplicate rows, changed values and missing amounts remain explicit. The saved report is separate from trading state and does not clear a holdings discrepancy. Both real and broker-paper account views preserve the owner's running controls.
+
+Staged September 26: [automatic option exits and changed-holdings review](OPTIONS_LIFECYCLE_2026_09_26.md) add an explicit IBKR paper-account test. Exact owned contracts, cumulative fills and current bid/ask evidence drive premium/expiry closes. Possible assignment or external activity requires review; it never becomes a guessed fill. Practical limit buttons fill unsaved drafts only. The owner explicitly instructed **do not turn live trading off**; this update does not change running controls or add a blanket live-off policy. It remains held for maintenance and real broker qualification is outstanding.
+
+Staged addition: **Test broker-held stops · IBKR paper account only** defaults off and requires protective exits enabled. It records intent before submission and waits for broker confirmation. After a stop sells shares, further orders wait until executions, fees and holdings agree and the remaining stop is confirmed. Corrections require review; a successful check never turns trading on. [Stop accounting and restart safeguards](STOP_FILL_RECONCILIATION_2026_09_26.md) extend the [paper-stop lifecycle](PAPER_STOP_QUALIFICATION_2026_09_26.md). Actual broker-paper qualification and live use remain open. Ordinary live-account behavior remains app-managed.
+
+For a corrected paper-stop fill, **Broker correction review** compares the old and new shares, price and fees. Pause Fox and end the session before checking. A fresh, matching review can be acknowledged without enabling trading; missing holdings/protection/fee evidence remains blocked. See [the correction-review workflow and validation](STOP_CORRECTION_REVIEW_2026_09_26.md).
+
 1. Connect IB Gateway and verify the intended account in the desk's existing broker settings.
-2. Enter the permitted symbols and policy in **Moss · broker agent**. Choose Market or DAY limit, price-based maximum dollars per order, account daily loss stop, broker attempts/day, research attempts/day, recorded AI budget, confidence threshold, interval, and quote age.
+2. Open **Policy settings** in **Fox · broker agent**. Choose Market or DAY limit, price-based maximum dollars per order, account daily loss stop, broker attempts/day, research attempts/day, recorded AI budget, confidence threshold, interval, and quote age. Live orders follow the full evaluated equity watchlist and discovery universe; the saved symbol field is a budget-check preference, not an execution allow-list. The panel states that scope explicitly.
 3. **Check symbol budget** reads current quotes for up to the first eight symbols in your draft, two requests at a time. It shows price-only whole-share capacity and highlights symbols your amount cannot cover. Quotes must meet your draft age limit; expired results are marked unavailable. Fees, limit offsets, account cash and other risk limits may reduce capacity. Unchecked symbols are stated explicitly. This check neither saves nor submits anything. Then **Save policy**: saving selects the agent as the scheduled broker owner and leaves it paused. It does not change the current broker mode or submit an order. Any previous agent activation becomes invalid. Unsaved drafts survive status refreshes; concurrent policy edits produce a revision conflict.
 4. After qualification on the broker paper account, the operator can type **PAPER** for an IBKR paper account or **REAL** for the actual account and click **Start broker agent**. This explicitly enables `auto_live` and the main session for the exact confirmed account. The route verifies identity, saved revision, genuine equity/daily P&L, local unresolved orders and readable state. Every order has additional checks.
 5. **Pause agent** stops new decisions and submissions that have not committed. A broker submission already in progress may finish. Existing orders and positions remain at the broker; use the broker order review or Gateway to manage them. Main session Stop and mode changes also pause the agent. Resuming requires a new explicit agent start.
 
 An explicitly enabled policy persists across app restarts and waits for the next regular US stock-market session. The PC, app, Gateway and data providers must be available. The app does not wake a sleeping PC or bypass Gateway authentication. No Codex or Windows scheduled task is created.
 
+The monitoring panel distinguishes enabled configuration from current operation: **Connection needed**, **Waiting for market**, **Checking account**, **Reconciling order**, **Research paused**, or **Monitoring / Researching**. Status expires after 25 seconds. A saved account is labeled as saved, not as a fresh connection check. Start and Pause remain above the policy editor. Editing does not affect the running policy; saving still pauses the agent. The options editor preserves hidden parameters and the exact ordered strategy list rather than replacing them with defaults or expanding a spread subset.
+
+**Tracked stock positions** shows the quantity, entry, stop, target, optional hold deadline and latest observed exit-check result. A paused agent, disabled exit policy, disconnected broker, closed market, missing fresh quote or unverified position owner is stated explicitly. These are app-level checks, not resting broker orders or an exit-fill guarantee.
+
 ## Execution behavior
 
-- One rotating policy symbol is researched per interval, using the existing configured brain and screener. Empty/error checks consume a cycle. Research count and next eligible time are written before the work starts; restarting cannot repeat that interval or reset daily counters.
+- One rotating policy symbol is researched per interval, using the existing configured brain and screener. Only a PASS setup goes to the paid brain, since the agent can trade nothing else; a symbol that screens as WATCH or AVOID makes no model call, does not count against research attempts/day, and the next symbol is screened 30 seconds later (the status line gives the verdict and why). A data-provider error still consumes a full cycle. Research count and next eligible time are written before the work starts; restarting cannot repeat that interval or reset daily counters.
 - Buy/sell/hold is a research decision. The agent requires PASS, configured minimum confidence, fresh attributable in-session quotes, and no late/chasing entry or existing research/model block. Mock, synthetic, future-dated and stale data cannot authorize orders. Confidence is not a calibrated probability of profit.
 - Only listed US stocks/ETFs, whole shares, and the IBKR adapter are supported. Buy can open/add a long; sell can reduce held shares; buy against an existing short can cover it. The selected symbols may include holdings acquired elsewhere. It never intentionally opens a new short position.
 - Server policy computes quantity and price terms. DAY limits use the decision price plus the configured offset for buys or minus it for sells, rounded conservatively. Sizing uses the larger of the fresh mark and limit. Existing ATR, preset, position, loss and working-order limits can reduce quantity or block the order. Market orders may fill beyond the estimated amount; fees are not a guaranteed upper bound.
-- Research-directed sells are the only automatic exit decisions in this version. There is no automatic stop/target exit, close-time flattening, broker bracket, fractional execution or live options execution. A low budget may be unable to buy one whole share. An unfilled DAY limit remains monitored and can block subsequent submissions until resolved.
+- **Protective exits** (on by default; policy fields `protective_exits`, `breakeven_after_r`, `max_hold_min`, `flatten_before_close_min`). When an agent stock buy fills, the agent records the position with the research plan's stop and target distances, re-anchored to the actual fill price (0.8% of price and twice that when the plan has none). Each cycle, before new research, it reads broker holdings and a fresh, non-delayed IBKR quote. It sells only the shares it bought and still holds, when:
+  - the bid reaches the stop (`stop_loss`);
+  - the bid reaches the target (`take_profit`);
+  - the price has moved `breakeven_after_r` times the planned risk in favor, so the stop moves to the entry price, and the bid then falls back to entry (`breakeven_stop`);
+  - `max_hold_min` has passed;
+  - fewer than `flatten_before_close_min` minutes remain before the regular close (`end_of_day`).
+
+  Exit limits sit 25 bps below the bid, or 50 bps for stop and end-of-day exits (at least the policy offset). They go through the same gated order path as entries, as reducing orders. Exits are allowed for symbols outside the evaluated universe and count as broker attempts, but the daily attempt cap does not block them. One exit is sent per cycle, and no exit is sent while any broker order is unresolved or when the verified account differs from the policy's account.
+
+  Exits are checks the desk makes on each cycle. They are not resting broker orders or brackets, so they act only while the desk and Gateway run, and a gap can fill below the stop. Positions opened outside the agent are not intentionally adopted. Policies saved before this version get the defaults.
+
+  Newly tracked positions are bound to the originating broker/account/paper-or-real identity. Client-ID changes do not change ownership; account switches do. Old records without account evidence and records with execution corrections require review and cannot authorize an automatic exit or a new entry in the same symbol. They are retained rather than silently adopted or deleted. An observed external holdings reduction permanently lowers the tracked quantity, but activity between observations can still race.
+
+  Holdings must be a readable list with finite, unambiguous stock quantities. A malformed list, duplicate symbol, account change or changed activation preserves the tracked record and reports that holdings are unverified. The stock and option readers also reject a connection/account change during their read. An older observation cannot overwrite a newer tracked fill, and each protective exit is bound to the exact tracked position before submission; a later correction requires a fresh check.
+
+  The final IBKR stock-sale check also reserves shares for held short calls, working call sells and other working stock sells (including stops). A stock-only exit that would remove call cover is refused with a combined-position review message. Closing call buys do not release cover before filling. Adjusted/unknown call sizes and working spreads require review. The desk does not infer that other long options or portfolio margin make removing that cover safe, and it does not automatically buy back calls to release shares.
+
+  New agent signals retain their exit policy. Confirmed cumulative fills are synchronized from the existing ledger, including later fills after pending or partial responses and after an app restart. Each cumulative quantity is applied once; unconfirmed fills are not adopted. Earlier signals without that policy are not backfilled automatically. A quantity reduction or same-quantity price correction flags the position for review. This depends on retained signal/ledger evidence, not an unlimited broker-history import.
+
+  Adding shares does not lower a raised stop or extend an existing hold deadline. Exit checks validate the quote timestamp against the saved age policy even when the provider labels it fresh. Delayed, stale or unavailable quotes cannot create an exit decision.
+- **Scheduled events:** around a high-impact event (FOMC statement or press conference, the Fed Chair, CPI, the jobs report, a presidential address, or one you add), the agent does no research and opens nothing new, from `event_guard_before_min` before to `event_guard_after_min` after (15/15 by default). Pre-market releases pause the first minutes after the open instead. Protective exits and reducing orders continue. See [Today at the desk](MARKET_DAY.md).
+- **Earnings:** with the event pause on, the agent buys nothing in a stock that reports earnings today, or that reports before the next session while the policy holds positions overnight (protective exits off or `flatten_before_close_min` = 0). The date comes from the screener's earnings lookup; an unknown date does not block.
+- **One sector at a time:** `max_positions_per_sector` (default 2, 0 = off) stops a new buy when the agent already holds that many other names in the same sector, counting its tracked positions and its buys still waiting at the broker. Example: holding AAPL and MSFT (Technology), it skips NVDA until one is sold. Adding shares to a name it already holds is allowed. The sector comes from the screener's company profile; funds and stocks with no known sector are never blocked (owner decision, like the event and WSB guards).
+- **WSB crowding:** a buy idea on a ticker crowded in the WSB threads is halved by default (`wsb_crowding_action`: half, skip, note or off). WSB never starts or enlarges a trade, and stale or missing Reddit data applies no caution.
+- **Fox** in the sidebar is this agent: his bubble and the Today at the desk panel narrate its research, fills, exits and pauses from `data/live_agent.json` events, which now record side, fill shares and price, and the exit reason.
+- There is no broker bracket, fractional execution or live options exit management. A low budget may be unable to buy one whole share. An unfilled DAY limit remains monitored and can block subsequent submissions until resolved.
 - Every broker attempt, including sells/covers, rejected attempts and uncertain outcomes, consumes the agent's daily attempt budget before submission. This conservative count is separate from the desk's existing broker-fill count. Raising a limit changes the cap, not the count. Client-ID changes do not reset account counters.
-- Daily loss is measured on the broker account. Missing P&L blocks new risk; the existing narrowly verified reducing-order exception remains. The attempt cap can still block a reducing order, so it is not an exit guarantee. Reaching a stop blocks new risk; it does not flatten positions or cancel working orders.
+- Daily loss is measured on the broker account. Missing P&L blocks new risk; the existing narrowly verified reducing-order exception remains. Research-directed reducing orders use the normal attempt cap; protective exits bypass that cap while still counting attempts and enforcing all other execution checks. Reaching a loss stop does not itself flatten positions or cancel working orders.
 - Identity, mode, active session, policy revision and per-activation run ID are checked again before durable submission. Changing settings during research discards the result. Pausing/restarting cannot authorize an old activation's decision. The adapter verifies the qualified US instrument and cached position/working quantities immediately before submission. External broker activity can still race.
 - Unknown submissions and partial fills use the existing durable intent/reconciliation path. They never become simulated fills or trigger a new automatic retry. Historical execution corrections remain part of that path.
 
-The AI cost limit checks recorded whole-desk estimated cost before an agent research attempt. One attempt can call multiple models; this is not a guaranteed provider billing cap and does not govern other desk research features. Research-memory ranking and execution-quality review continue through the existing research and actual-trade journals; neither changes live capital limits automatically.
+The AI cost limit checks recorded cost plus persistent per-attempt reservations and unknown failed-call estimates. Main and Claude-shadow calls inherit the same live-agent cap; paper research is counted separately. Disconnected/unverified accounts and an already-reached model budget do not consume a research attempt or advance the symbol cursor. One attempt can call multiple models; this is not a guaranteed provider billing cap and does not govern other desk research features. Research-memory ranking and execution-quality review continue through the existing research and actual-trade journals; neither changes live capital limits automatically.
 
 ## Storage and API
 
 `config.json.live_agent` contains `{policy, revision, enabled, run_id}`. No new `.env` flag is needed; the existing verified IBKR settings still apply. The server alone creates policy revisions and activation IDs.
 
-`data/live_agent.json` retains per-account/day research and broker-attempt counters, consumed signal IDs, next-cycle time, rotation cursor and the latest 200 activity entries. Corrupt state blocks execution and is not silently replaced. Source recovery archives exclude both files and never rewind order state.
+`data/live_agent.json` retains per-account/day research and broker-attempt counters, consumed signal IDs, next-cycle time, rotation cursor, the latest 200 activity entries and `managed` account-bound positions (shares, entry, stop, target, planned risk per share, breakeven flag, optional hold deadline), plus `managed_fill_totals` for idempotent cumulative fills. Corrupt state blocks execution and is not silently replaced. Source recovery archives exclude both files and never rewind order state.
 
 - `GET /api/live-agent`: local read-only status, saved policy and latest 30 activity records.
 - `POST /api/live-agent/policy`: exact `{policy, revision}`; leaves the agent paused.
 - `POST /api/live-agent/start`: exact `{revision, identity, confirm}`; explicit operator activation.
 - `POST /api/live-agent/pause`: stop future agent work; does not cancel/flatten.
 
-The existing background worker reconciles broker orders before running the agent. When a policy exists, it owns scheduled live research even while paused; the legacy scanner cannot silently take over. Local Moss paper research remains independent. Manual stock tickets still use their own explicit order review in `live_manual` mode.
+The existing background worker reconciles broker orders before scheduling the agent. The agent claims its single-cycle lock before launching a worker, so slow model or data requests do not hold up subsequent reconciliation checks. An occupied cycle is never duplicated or replaced. Submission and reconciliation still share the existing broker lock; unresolved orders and changed settings are checked again before submission. When a policy exists, it owns scheduled live research even while paused; the legacy scanner cannot silently take over. Local Moss paper research remains independent. Manual stock tickets still use their own explicit order review in `live_manual` mode.
 
 ## Validation boundary
 
-Tests exercise the actual agent, risk gateway, durable reservations and order lifecycle using isolated files and intercepted broker transport; network connections are denied in the fixture. Scenarios include exact activation/account/revision, Market and DAY limit terms, sizing/holdings, pauses during slow work, restart cadence/counters, failed and empty cycles, uncertain submissions, partial fills, daily budgets, missing P&L, corrupt state and final IBKR position checks. Browser-controller tests exercise account confirmation, duplicate clicks, stale status, unsaved edits and uncertain activation responses.
+Tests exercise the actual agent, risk gateway, durable reservations and order lifecycle using isolated files and intercepted broker transport; network connections are denied in the fixture. Scenarios include exact activation/account/revision, protective exits (stop, breakeven, target, hold limit, close, stale quotes, changed account, positions sold elsewhere), Market and DAY limit terms, sizing/holdings, pauses during slow work, restart cadence/counters, failed and empty cycles, uncertain submissions, partial fills, daily budgets, missing P&L, corrupt state and final IBKR position checks. Browser-controller tests exercise account confirmation, duplicate clicks, stale status, unsaved edits and uncertain activation responses.
 
 These checks are software evidence, not completed broker-paper qualification, live execution proof or strategy profitability. The implementation pass does not activate the installed agent or send/cancel real orders.
 
 Broker reference: [IBKR TWS API documentation](https://www.interactivebrokers.com/docs/tws-api/doc/introduction). Order acceptance, execution reports and commissions are distinct evidence; the existing reconciliation path remains authoritative for fills.
+
+
+## Strategy review changes (2026-09-28)
+
+- **Commissions.** `_edge_after_costs` now includes per-order broker commissions at the real share
+  count (defaults: IBKR Pro Fixed, $0.005/share, $1.00 minimum, capped at 1% of trade value, plus
+  $0.02 sell regulatory fees; settings `commission_per_share_usd`, `commission_min_usd`,
+  `commission_max_pct`, `sell_regulatory_fee_usd`). Screening uses the live per-order limit to
+  estimate shares; `_final_agent_edge_error` re-checks at the final share count before any automatic
+  entry. A missing stop now blocks instead of skipping the check, and stops never round to $0.00.
+- **Breakeven** moves the stop to entry plus round-trip commissions (at most half the trigger move).
+- **Exits while paused.** Pausing Fox or ending the session stops new entries only; stock stop-loss,
+  target and end-of-day exits keep running for positions he opened. Live trading OFF (`mode` manual)
+  still stops every order. Paper option-lifecycle exits are unchanged.
+- **Stuck orders.** An unresolved order blocks exits only for the same stock.
+- **Evidence lock.** Automatic buys require `strategy_scorecard.promotion_status` to pass: at least
+  60 scored PASS buy calls in 90 days across 10 trading days and 10 stocks, with the lower end of a
+  95% range of daily averages above the round-trip commission (in bps) at the account's order size.
+  Research and exits continue while locked. Status: `entry_evidence` in `/api/live-agent`.
+- **Universe.** Fox researches and buys only symbols in the US-listed directory
+  (`data/market_universe.json`), never leveraged/inverse ETFs, and merges radar picks only when
+  radar is enabled.
+
+### Follow-up (2026-09-28, later)
+
+- **Buy window.** Automatic buys only happen 10:30-11:00 a.m. ET. The PASS rule reads first-hour volume, and the backtest only tested 10:30 entries. Outside the window Fox does no research or model spend; exits run all day.
+- **Settled cash.** On IBKR, an automatic buy plus working buys must fit in settled cash, so unsettled sale proceeds never cause a good-faith violation. If IBKR does not report settled cash, automatic buys wait.
+- **Scoreboard.** Wins and losses count each of today's buy/sell calls once (no duplicate outcome rows, no holds).
+- **Evidence check.** An unreadable track record now blocks the order instead of letting it through.
+- **Options.** No change: automatic option entries already require an IBKR paper account, and option size already uses the effective limits.
+
+### History test (2026-09-28)
+
+Real account page → "Does Fox's buy rule make money?". Replays the PASS rule on ~2 years of hourly bars
+for Fox's own stock list (`rule_history.py`, using `backtest.simulate_ticker`) and reports four lines:
+before costs, $0 commission (slippage only), at this account's costs, and random entry for comparison.
+
+- Automatic buys now need BOTH the live record (60 scored calls / 10 days) AND a passing history test:
+  at your costs, a day-clustered 95% lower bound above zero, 200+ trades, consistent walk-forward folds.
+  Missing or older than 30 days fails closed for buys.
+- While the latest history test FAILS, Fox does no research (phase `rule_failed`); exits keep running.
+  A missing test does not idle Fox.
+- First run on 2026-09-28 (212 stocks, Jan 2024 to Sep 2026, 8,223 rule trades): −3.1 bps a trade
+  before costs (random entry −0.6), −14 bps with $0 commission, about −259 bps at the $4.40 order
+  size with IBKR Fixed commissions. Positive in 11 of 30 later test periods before costs.

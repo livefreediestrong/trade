@@ -1,0 +1,134 @@
+{
+ "name": "v2_meanrev_st_reversal_monthly",
+ "trades": 6523,
+ "m_tests": 10,
+ "pass_rules": "Under fidelity_0_commission: (1) per-trade mean > 0 with a month-clustered one-sided lower bound > 0 at alpha = 0.05 / M (Bonferroni over M candidates); (2) mean per trade > 0 in the HOLDOUT (entries on/after 2023-01-01); (3) positive mean in >= 60% of calendar years with trades; (4) the 5-slot portfolio's Sharpe beats BOTH SPY buy-and-hold and the equal-weight buy-and-hold of the same universe over the same period.",
+ "median_hold_calendar_days": 30.0,
+ "trades_per_year": 663.5,
+ "gross_mean_bps": 244.5,
+ "fidelity_0_commission": {
+  "mean_bps": 234.5,
+  "win_rate": 0.504,
+  "lower_bound_bps": 23.1,
+  "months": 119,
+  "years_positive": "9/11",
+  "per_year_mean_bps": {
+   "2016": -22.1,
+   "2017": 50.0,
+   "2018": 85.2,
+   "2019": 450.4,
+   "2020": 506.6,
+   "2021": 193.0,
+   "2022": -284.8,
+   "2023": 391.1,
+   "2024": 418.2,
+   "2025": 221.2,
+   "2026": 361.6
+  },
+  "holdout_trades": 2823,
+  "holdout_mean_bps": 345.7,
+  "portfolio_5_slots": {
+   "start": "2016-11-01",
+   "end": "2026-09-28",
+   "cagr": 0.0621,
+   "sharpe": 0.477,
+   "max_drawdown": -0.8924,
+   "trades_taken": 595,
+   "slots": 5
+  }
+ },
+ "ibkr_110_account": {
+  "mean_bps": 34.5,
+  "win_rate": 0.413,
+  "lower_bound_bps": -176.9,
+  "months": 119,
+  "years_positive": "6/11",
+  "per_year_mean_bps": {
+   "2016": -222.1,
+   "2017": -150.0,
+   "2018": -114.8,
+   "2019": 250.4,
+   "2020": 306.6,
+   "2021": -7.0,
+   "2022": -484.8,
+   "2023": 191.1,
+   "2024": 218.2,
+   "2025": 21.2,
+   "2026": 161.6
+  },
+  "holdout_trades": 2823,
+  "holdout_mean_bps": 145.7,
+  "portfolio_5_slots": {
+   "start": "2016-11-01",
+   "end": "2026-09-28",
+   "cagr": -0.1659,
+   "sharpe": 0.204,
+   "max_drawdown": -0.9716,
+   "trades_taken": 595,
+   "slots": 5
+  }
+ },
+ "benchmarks": {
+  "spy_buy_hold": {
+   "start": "2016-11-01",
+   "end": "2026-09-28",
+   "cagr": 0.1571,
+   "sharpe": 0.903,
+   "max_drawdown": -0.3372
+  },
+  "equal_weight_buy_hold": {
+   "start": "2016-11-01",
+   "end": "2026-09-28",
+   "cagr": 0.2259,
+   "sharpe": 0.784,
+   "max_drawdown": -0.4445
+  }
+ },
+ "passed": false,
+ "reasons": [
+  "portfolio Sharpe 0.477 does not beat SPY 0.903 and equal-weight 0.784"
+ ],
+ "runtime_sec": 0.4,
+ "first_trades": [
+  {
+   "ticker": "DCOY",
+   "entry_date": "2016-11-01",
+   "entry_px": 4374000.0,
+   "exit_date": "2016-12-01",
+   "exit_px": 5535000.0,
+   "rank": -0.5874363327674024
+  },
+  {
+   "ticker": "SENS",
+   "entry_date": "2016-11-01",
+   "entry_px": 46.79999923706055,
+   "exit_date": "2016-12-01",
+   "exit_px": 57.400001525878906,
+   "rank": -0.40000000978127503
+  },
+  {
+   "ticker": "FCEL",
+   "entry_date": "2016-11-01",
+   "entry_px": 1206.0,
+   "exit_date": "2016-12-01",
+   "exit_px": 738.0,
+   "rank": -0.38191880372091747
+  },
+  {
+   "ticker": "SLS",
+   "entry_date": "2016-11-01",
+   "entry_px": 6600.0,
+   "exit_date": "2016-12-01",
+   "exit_px": 4560.0,
+   "rank": -0.34285714285714286
+  },
+  {
+   "ticker": "REEMF",
+   "entry_date": "2016-11-01",
+   "entry_px": 0.05000000074505806,
+   "exit_date": "2016-12-01",
+   "exit_px": 0.03999999910593033,
+   "rank": -0.2857142781116525
+  }
+ ]
+}

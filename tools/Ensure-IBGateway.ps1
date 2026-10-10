@@ -1,51 +1,26 @@
-# Requires: desk checkout. Never disables 2FA. Soft path preferred when port is up.
-param(
-  [string]$HostName = $(if ($env:IB_GATEWAY_HOST) { $env:IB_GATEWAY_HOST } else { '127.0.0.1' }),
-  [int]$Port = $(if ($env:IB_GATEWAY_PORT) { [int]$env:IB_GATEWAY_PORT } else { 4002 }),
-  [string]$Exe = $env:IB_GATEWAY_EXE
-)
-$ErrorActionPreference = 'Continue'
-function Test-Port([string]$Server, [int]$P) {
-  $socket = New-Object Net.Sockets.TcpClient
-  try {
-    $c = $socket.BeginConnect($Server, $P, $null, $null)
-    if (-not $c.AsyncWaitHandle.WaitOne(600)) { return $false }
-    $socket.EndConnect($c)
-    return $socket.Connected
-  } catch { return $false } finally { $socket.Dispose() }
-}
-if (Test-Port $HostName $Port) {
-  Write-Host "Gateway port ${HostName}:$Port is open. Prefer desk soft Refresh; 2FA not needed for API bounce."
-  exit 0
-}
-if (-not $Exe) {
-  $candidates = @()
-  foreach ($base in @('C:\Jts\ibgateway', (Join-Path $env:USERPROFILE 'Jts\ibgateway'))) {
-    if (Test-Path $base) {
-      $candidates += Get-ChildItem $base -Directory | ForEach-Object {
-        $p = Join-Path $_.FullName 'ibgateway.exe'
-        if (Test-Path $p) { Get-Item $p }
-      }
+# Compatibility entry point for old scheduled tasks. All unattended Gateway
+# decisions belong to the running desk: session, hours, process check and budget.
+# Never launches, kills, signs in, changes the API port or edits broker settings.
+param()
+$DeskRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $DeskRoot 'Start-Tomahawk.ps1')
+
+function Invoke-AutomaticGatewayCheck {
+    $port = [int](Get-LaunchSetting 'TOMAHAWK_PORT' '5056')
+    $url = "http://127.0.0.1:$port/"
+    $verified = Get-DeskHealth $url $port
+    if (-not $verified) {
+        return @{ ok = $false; launched = $false; note = 'The expected desk is unavailable. Open its normal shortcut; no Gateway was started.' }
     }
-  }
-  $Exe = ($candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName)
+    try {
+        return Invoke-RestMethod "${url}api/broker-ensure-gateway" -Method Post -ContentType 'application/json' `
+            -Body (@{ launch_if_down = $true; automatic = $true } | ConvertTo-Json -Compress) -TimeoutSec 30
+    } catch {
+        return @{ ok = $false; launched = $false; note = 'The desk could not complete its Gateway check. No separate launch was attempted.' }
+    }
 }
-if (-not $Exe -or -not (Test-Path -LiteralPath $Exe)) {
-  Write-Host "ibgateway.exe not found. Set IB_GATEWAY_EXE."
-  exit 2
+
+if ($MyInvocation.InvocationName -ne '.') {
+    $result = Invoke-AutomaticGatewayCheck
+    Write-Host $result.note
 }
-$running = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.Name -in @('ibgateway.exe', 'tws.exe') })
-if ($running.Count -gt 0) {
-  Write-Host "$($running[0].Name) is already running; complete sign-in or enable its API on port $Port. Not launching another copy."
-  exit 0
-}
-$stampPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'data\gateway_launch.json'
-try {
-  $stamp = Get-Content -LiteralPath $stampPath -Raw -ErrorAction Stop | ConvertFrom-Json
-  $age = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [double]$stamp.at
-  if ($age -ge 0 -and $age -lt 180) { Write-Host "Gateway launched ${age}s ago; waiting for sign-in."; exit 0 }
-} catch {}
-try { @{ at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); exe = $Exe; source = 'Ensure-IBGateway' } | ConvertTo-Json -Compress | Set-Content -LiteralPath $stampPath -Encoding ASCII } catch {}
-Write-Host "Port down — launching $Exe (full logout still needs human IB Key / 2FA)."
-Start-Process -FilePath $Exe -WorkingDirectory (Split-Path -Parent $Exe) -WindowStyle Normal | Out-Null
-exit 0

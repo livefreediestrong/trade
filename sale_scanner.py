@@ -10,6 +10,7 @@ import threading
 from typing import Callable
 
 import requests
+from desk_workbench import finite
 
 SCOPE = "US exchange-listed stocks and ETFs in the Nasdaq-traded directory. Excludes OTC, preferred shares, warrants, rights, units and debt securities. Provider history coverage is separate."
 
@@ -20,6 +21,7 @@ class SaleScanner:
         self.path, self.directory, self.fetch, self.session = Path(path), directory, fetch, session
         self.clock, self.pace = clock, max(0, pace)
         self.lock = threading.RLock()
+        self._local = threading.local()
         self.stop = threading.Event()
         self.worker: threading.Thread | None = None
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -37,20 +39,30 @@ class SaleScanner:
                 meta.update(state="paused", message="App restarted. Resume to continue the saved scan.")
                 self._save(db, meta)
 
+    def _connect(self):
+        db = sqlite3.connect(self.path, timeout=15)
+        db.row_factory = sqlite3.Row
+        try:
+            db.execute("PRAGMA journal_mode=WAL")
+            return db
+        except BaseException:
+            db.close()
+            raise
+
     @contextmanager
     def db(self):
         with self.lock:
-            db = sqlite3.connect(self.path, timeout=15)
-            db.row_factory = sqlite3.Row
+            retained = getattr(self._local, "connection", None)
+            db = retained if retained is not None else self._connect()
             try:
-                db.execute("PRAGMA journal_mode=WAL")
                 yield db
                 db.commit()
             except BaseException:
                 db.rollback()
                 raise
             finally:
-                db.close()
+                if retained is None:
+                    db.close()
 
     @staticmethod
     def _meta(db):
@@ -88,8 +100,11 @@ class SaleScanner:
                     meta.update(state="initializing", message="Refreshing the US listing directory.", retry_after=None)
                 self._save(db, meta)
             self.stop.clear()
-            self.worker = threading.Thread(target=self._run, args=(target, not resume), daemon=True, name="sale-research")
-            self.worker.start()
+            try:
+                self.worker = threading.Thread(target=self._run, args=(target, not resume), daemon=True, name="sale-research")
+                self.worker.start()
+            except Exception:
+                self._update(state="error", message="Could not start the scanner worker. Previous results retained; try again.")
             return self.snapshot()
 
     def pause(self):
@@ -100,6 +115,22 @@ class SaleScanner:
             return self.snapshot()
 
     def _run(self, target: str, initialize: bool):
+        # Only this worker thread reuses its connection. Each checkpoint still
+        # commits durably, and neither the lock nor a transaction spans fetches.
+        # Closing between every symbol forces a WAL checkpoint on Windows.
+        try:
+            db = self._connect()
+        except Exception:
+            self._update(state="paused", message="Scanner storage could not be opened. Saved progress retained; try again.", current_symbol=None)
+            return
+        self._local.connection = db
+        try:
+            self._scan(target, initialize)
+        finally:
+            self._local.connection = None
+            db.close()
+
+    def _scan(self, target: str, initialize: bool):
         try:
             if initialize:
                 directory = self.directory()
@@ -121,6 +152,10 @@ class SaleScanner:
                     return
                 with self.db() as db:
                     item = db.execute("SELECT * FROM scan_rows WHERE state='pending' ORDER BY ordinal LIMIT 1").fetchone()
+                    if item is not None:
+                        meta = self._meta(db)
+                        meta["current_symbol"] = item["symbol"]
+                        self._save(db, meta)
                 if item is None:
                     with self.db() as db:
                         failed = db.execute("SELECT count(*) FROM scan_rows WHERE state='provider_error'").fetchone()[0]
@@ -128,14 +163,26 @@ class SaleScanner:
                                  message="Pass finished with provider gaps. Resume to retry them." if failed else "Directory pass finished. See valid-history coverage and exclusions.")
                     return
                 symbol = item["symbol"]
-                self._update(current_symbol=symbol)
                 row, error, status, code = None, None, "valid", None
                 try:
                     row = self.fetch(symbol, now)
-                    if row["symbol"] != symbol or row["as_of"] != target:
+                    if not isinstance(row, dict) or row.get("symbol") != symbol or row.get("as_of") != target:
                         raise ValueError("History identity/session does not match the scan")
-                    # Ensure malformed numeric output cannot enter the ranking.
-                    json.dumps(row, allow_nan=False)
+                    row = dict(row)
+                    # JSON accepts strings/bools/objects, which SQLite can rank
+                    # above real numbers. Normalize before saving any result.
+                    for field in ("below_typical_pct", "avg_daily_dollar_volume",
+                                  "return_20_sessions_pct", "completed_session_relative_volume"):
+                        if row.get(field) is None and field != "below_typical_pct":
+                            continue
+                        value = finite(row.get(field))
+                        if value is None or (field in ("avg_daily_dollar_volume", "completed_session_relative_volume") and value < 0):
+                            raise ValueError("Invalid or missing history value: " + field)
+                        row[field] = value
+                    try:
+                        json.dumps(row, allow_nan=False)
+                    except (TypeError, ValueError):
+                        raise ValueError("History contains invalid values") from None
                     failures = 0
                 except ValueError as exc:
                     from research_studio import RetryableHistoryError
@@ -155,7 +202,11 @@ class SaleScanner:
                                (status, json.dumps(row, allow_nan=False) if status == "valid" else None, error,
                                 row["below_typical_pct"] if status == "valid" else None,
                                 row.get("avg_daily_dollar_volume") if status == "valid" else None, symbol))
-                self._update(updated_at=self.clock().isoformat())
+                    # Result and checkpoint commit together. Avoid reopening and
+                    # checkpointing the WAL for a second per-symbol metadata write.
+                    meta = self._meta(db)
+                    meta["updated_at"] = self.clock().isoformat()
+                    self._save(db, meta)
                 if code in (401, 403, 429) or failures >= 3:
                     self._update(state="paused", message="Provider limit or repeated outage. Saved progress; resume after cooldown.",
                                  retry_after=self.clock().timestamp()+300, current_symbol=None)
@@ -167,10 +218,10 @@ class SaleScanner:
             self._update(state="paused", message=str(exc)[:240] if isinstance(exc, ValueError) else "Scan interrupted; saved progress retained.", current_symbol=None)
 
     def snapshot(self, *, page: int = 1, kind: str = "all", query: str = "", minimum: float = 0,
-                 liquid: bool = False, issues: bool = False, lens: str = "pullbacks"):
-        if page < 1 or page > 10000 or kind not in ("all", "stock", "etf") or lens not in ("pullbacks", "momentum", "active", "all") or not 0 <= minimum <= 100 or len(query) > 80:
+                 liquid: bool = False, issues: bool = False, lens: str = "pullbacks", size: int = 40):
+        if page < 1 or page > 10000 or kind not in ("all", "stock", "etf") or lens not in ("pullbacks", "momentum", "active", "all") or not 0 <= minimum <= 100 or len(query) > 80 or size not in (10, 40):
             raise ValueError("Invalid scan filter")
-        size, args = 40, []
+        args = []
         where = "state IN ('excluded','provider_error')" if issues else "state='valid'"
         order = "discount DESC,symbol"
         if not issues and lens == "pullbacks":

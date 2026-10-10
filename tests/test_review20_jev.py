@@ -20,7 +20,8 @@ def response(monkeypatch, payload):
 
 @pytest.mark.parametrize("confidence", [True, False, "NaN", "Infinity", float("nan"), float("inf"), -0.1, 42, "0.9", None])
 def test_jev_invalid_confidence_holds(monkeypatch, confidence):
-    response(monkeypatch, {"answers": {"side": {"choice": "buy"}, "confidence": {"noul": confidence}}})
+    response(monkeypatch, {"answers": {"side": {"type": "choice", "choice": "buy", "confidence": confidence,
+                                              "probabilities": {"buy": .8, "sell": .1, "flat": .1}}}})
     out = llm.jev_trade_thesis({"ticker": "TEST"})
     assert out["error"] == "invalid_jev_schema" and out["side"] == "flat" and out["confidence"] == 0
 
@@ -34,9 +35,31 @@ def test_jev_missing_or_malformed_schema_holds(monkeypatch, payload):
 
 @pytest.mark.parametrize("confidence", [0, 0.5, 1])
 def test_jev_valid_confidence_preserved(monkeypatch, confidence):
-    response(monkeypatch, {"answers": {"side": {"choice": "buy"}, "confidence": {"noul": confidence}}})
+    response(monkeypatch, {"answers": {"side": {"type": "choice", "choice": "buy", "confidence": confidence,
+                                              "probabilities": {"buy": .8, "sell": .1, "flat": .1}}}})
     result = llm.jev_trade_thesis({"ticker": "TEST"})
     assert result["error"] is None and result["confidence"] == confidence
+
+
+@pytest.mark.parametrize("probabilities", [None, {}, {"buy": .8}, {"buy": True, "sell": 0, "flat": 0},
+    {"buy": .8, "sell": .8, "flat": .1}, {"buy": .1, "sell": .8, "flat": .1},
+    {"buy": float("nan"), "sell": .1, "flat": .1}])
+def test_jev_invalid_or_contradictory_distribution_holds(monkeypatch, probabilities):
+    response(monkeypatch, {"answers": {"side": {"type": "choice", "choice": "buy", "confidence": .9,
+                                               "probabilities": probabilities}}})
+    assert llm.jev_trade_thesis({"ticker": "TEST"})["error"] == "invalid_jev_schema"
+
+
+def test_jev_asks_one_direction_question_and_uses_its_own_confidence(monkeypatch):
+    calls = []
+    def post(*args, **kwargs):
+        calls.append(kwargs["json"])
+        return NS(status_code=200, json=lambda: {"answers": {"side": {"type": "choice", "choice": "flat",
+            "confidence": .6, "probabilities": {"buy": .1, "sell": .2, "flat": .7}}}, "usage": {"input_tokens": 50, "output_tokens": 30}})
+    monkeypatch.setattr(llm.requests, "post", post)
+    r = llm.jev_trade_thesis({"ticker": "TEST"})
+    assert r["side"] == "flat" and r["confidence"] == .6 and r["error"] is None
+    assert set(calls[0]["questions"]) == {"side"}
 
 
 @pytest.mark.parametrize("lane", ["thesis", "advisory"])

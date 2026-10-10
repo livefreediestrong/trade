@@ -17,7 +17,6 @@ Not included (stated in the report): the sector-money-flow check and the AI brai
 from __future__ import annotations
 
 import json
-import math
 import threading
 import time
 from pathlib import Path
@@ -65,8 +64,9 @@ def simulate_ticker(df60: pd.DataFrame, params: dict[str, Any]) -> list[dict[str
     stop_pct = p["stop_pct"] / 100.0
     tgt_pct = stop_pct * p["target_r"]
     cost_frac = (2 * p["slip_bps"] + 2 * p["fee_bps"]) / 10_000.0
+    by_day = {d: g for d, g in df.groupby("day", sort=False)}  # one pass, not a full scan per day
     for d in days:
-        bars = df[df["day"] == d].sort_index()
+        bars = by_day[d].sort_index()
         bars = bars[(bars["hhmm"] >= "09:30") & (bars["hhmm"] < "16:00")]
         if len(bars) < 3:
             continue
@@ -87,8 +87,7 @@ def simulate_ticker(df60: pd.DataFrame, params: dict[str, Any]) -> list[dict[str
             stop = entry_px * (1 - stop_pct)
             target = entry_px * (1 + tgt_pct)
             exit_px, why = float(bars.iloc[-1]["Close"]), "close"
-            for _, b in bars.iloc[1:].iterrows():
-                lo, hi = float(b["Low"]), float(b["High"])
+            for lo, hi in zip(bars["Low"].iloc[1:].astype(float), bars["High"].iloc[1:].astype(float)):
                 if lo <= stop:
                     exit_px, why = stop, "stop"
                     break
@@ -298,7 +297,12 @@ def start(
             with _lock:
                 _state["running"] = False
 
-    threading.Thread(target=worker, daemon=True, name="backtest").start()
+    try:
+        threading.Thread(target=worker, daemon=True, name="backtest").start()
+    except Exception:
+        with _lock:
+            _state.update(running=False, message="Could not start the test worker. Try again.")
+            return False, _state["message"]
     return True, "started"
 
 

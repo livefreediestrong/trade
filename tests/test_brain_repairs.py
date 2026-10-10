@@ -19,6 +19,7 @@ import session_track
 def isolated(tmp_path, monkeypatch):
     for name in ("CONFIG", "LEDGER", "SIGNALS", "JOURNAL", "LESSONS"):
         monkeypatch.setattr(desk, name + "_PATH", tmp_path / (name.lower() + ".json"))
+    monkeypatch.setattr(desk, "DATA_DIR", tmp_path)
     monkeypatch.setattr(desk, "_decision_ring", paper_loop.DecisionRing(tmp_path / "decisions.json"))
     monkeypatch.setattr(desk, "_QUOTE_SNAPSHOTS", {})
     monkeypatch.setattr(llm, "USAGE_PATH", tmp_path / "usage.json")
@@ -38,6 +39,40 @@ def thesis(**updates):
                risks=[], brain_mode="gemini", llm_model="gemini-fixture", error=None)
     out.update(updates)
     return out
+
+
+@pytest.mark.parametrize("field", ["brain_mode", "model"])
+@pytest.mark.parametrize("key", ["", "fixture-key-must-not-unlock"])
+def test_jev_selection_rejected_without_config_or_journal_changes(monkeypatch, field, key):
+    monkeypatch.setattr(llm, "typesafe_api_key", lambda: key)
+    cfg = copy.deepcopy(desk.DEFAULT_CONFIG)
+    cfg.update(brain_mode="gemini", llm_enabled=True)
+    desk.save_config(cfg)
+    before = desk.CONFIG_PATH.read_bytes()
+    response = desk.app.test_client().post("/api/config", base_url="http://127.0.0.1:5056",
+        json={field: " JEV ", "llm_enabled": False, "watchlist": ["CHANGED"]})
+    assert response.status_code == 409
+    assert response.get_json()["code"] == "brain_unavailable"
+    assert "repaired and verified" in response.get_json()["error"]
+    assert desk.CONFIG_PATH.read_bytes() == before
+    assert not desk.JOURNAL_PATH.exists()
+
+
+def test_saved_jev_holds_without_network_or_provider_fallback(monkeypatch):
+    monkeypatch.setattr(llm, "typesafe_api_key", lambda: "fixture-key-must-not-unlock")
+    monkeypatch.setattr(llm, "jev_trade_thesis", lambda *a, **kw: pytest.fail("JEV is locked"))
+    monkeypatch.setattr(llm, "trade_thesis_from_analysis", lambda *a, **kw: pytest.fail("No silent Gemini switch"))
+    out = llm.decide_trade_thesis(analysis(), {"brain_mode": "jev"})
+    assert out["side"] == "hold" and out["confidence"] == 0 and out["abstain"]
+    assert out["brain_mode"] == "jev" and "temporarily unavailable" in out["error"]
+    status = llm.status_public_extended({"brain_mode": "jev"})
+    assert status["configured"] is False and status["selection_error"]
+    assert "fixture-key" not in json.dumps(status)
+
+
+def test_other_brains_remain_selectable():
+    for mode in ("gemini", "mock", "claude"):
+        assert llm.brain_selection_error(mode) is None
 
 
 def test_claude_dispatch_and_status_are_truthful(monkeypatch):
@@ -65,6 +100,7 @@ def test_bad_audits_stay_unknown(monkeypatch):
     monkeypatch.setenv("ADVISORY_SOFT_SIZE", "1")
     assert llm._advisory_size_mult(scores, "UNKNOWN") == 0
     monkeypatch.setattr(llm, "shadow_auditor_enabled", lambda: True)
+    monkeypatch.setenv("SHADOW_AUDITOR", "gemini")
     monkeypatch.setattr(llm, "load_llm_config", lambda: {"configured": True, "api_key": "fixture"})
     monkeypatch.setattr(llm, "gemini_generate", lambda *a, **k: "{}")
     assert llm.shadow_audit_decision("buy", "higher")["coherent"] is None
@@ -84,6 +120,10 @@ def test_shared_research_records_inputs_and_outcome_for_all_paths(source, monkey
     assert row["source"] == source and row["shadow"]["method"] == row["advisory"]["method"] == "fixture"
     assert row["input_hash"] and row["requested_model"] and row["prompt_version"]
     assert "research_evidence" in seen[0] and row["execution_attempted"] is False
+    references = seen[0]["companion_context"]["reference_library"]
+    assert references["kind"] == "reference_knowledge_not_trading_evidence" and 0 < len(references["sources"]) <= 3
+    assert row["inputs"]["companion_context"]["reference_library"] == references
+    assert "companion_context" not in original
     original["quote"]["price"] = 500
     assert row["inputs"]["quote"]["price"] == 100
     assert not desk.load_ledger().get("broker_fills")

@@ -38,7 +38,7 @@ def status(desk):
     raw = load(desk)
     return {"count":len(raw.get("symbols",[])),"updated_at":raw.get("updated_at"),"error":raw.get("error"),
             "source":URL,"scope":"US-listed stocks and ETFs from the Nasdaq-traded directory; excludes test issues, warrants, rights, units, preferred shares and notes.",
-            "cadence":"One focus candidate plus a bounded rotating batch per Moss cycle (configurable 2–8 total). Discovery does not certify liquidity, data availability or trading permission."}
+            "cadence":"One focus candidate plus a bounded rotating batch per research cycle (configurable 2â€“8 total). Discovery does not certify liquidity, data availability or trading permission."}
 
 
 def refresh(desk):

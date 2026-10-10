@@ -13,3 +13,12 @@ assert.match(descriptions.long_put.join(' '),/different from short-selling/);
 assert.match(descriptions.call_credit.join(' '),/lower-strike call.*higher-strike call/);
 assert.match(descriptions.put_credit.join(' '),/higher-strike put.*lower-strike put/);
 console.log('Guidance: missing/stale/closed/non-manual/broker-paper status and call/put/open/close distinctions passed.');
+const fs=require('node:fs'),vm=require('node:vm'),handlers={};let prevented=0,focused=0;
+const target={tagName:'SECTION',parentElement:null,scrollIntoView(){},setAttribute(){},focus(){focused++;},closest(){return null;}};
+vm.runInNewContext(fs.readFileSync('static/desk_guidance.js','utf8'),{
+ document:{hidden:true,getElementById:id=>id==='local'?target:null,querySelectorAll:()=>[],addEventListener:(k,f)=>handlers[k]=f},
+ window:{addEventListener(){},dispatchEvent(){}},matchMedia:()=>({matches:true}),clearTimeout(){},CustomEvent:class{},
+});
+const click=id=>handlers.click({target:{closest:()=>({dataset:{guideJump:id}})},preventDefault(){prevented++;}});
+click('desk-health');assert.equal(prevented,0,'cross-page links retain normal browser navigation');
+click('local');assert.equal(prevented,1);assert.equal(focused,1,'same-page guidance still focuses its section');

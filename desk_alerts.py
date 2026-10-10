@@ -11,7 +11,6 @@ No secrets invented. Missing keys → channel skipped cleanly.
 """
 from __future__ import annotations
 
-import json
 import os
 import threading
 import time
@@ -103,7 +102,7 @@ def _post_webhook(event: dict[str, Any]) -> dict[str, Any]:
     body = {
         "content": content,
         "text": content,
-        "username": "TomahawkDesk",
+        "username": "nadzeel",
         "embeds": [
             {
                 "title": event.get("kind"),
@@ -130,7 +129,7 @@ def _twilio_stub_send(event: dict[str, Any]) -> dict[str, Any]:
     token = (os.environ.get("TWILIO_AUTH_TOKEN") or "").strip()
     from_n = (os.environ.get("TWILIO_FROM_NUMBER") or "").strip()
     to_n = (os.environ.get("TWILIO_TO_NUMBER") or "").strip()
-    body = f"[Tomahawk] {event.get('kind')}: {event.get('message')}"
+    body = f"[nadzeel] {event.get('kind')}: {event.get('message')}"
     url = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
     try:
         r = requests.post(
@@ -166,7 +165,8 @@ def emit(
         "level": level,
         "detail": detail or {},
         "ts": datetime.now(timezone.utc).isoformat(),
-        "browser_notification": kind in ("waiting_enqueue", "goal_hit", "kill", "session_loss", "max_loss", "bleed"),
+        "browser_notification": kind in ("waiting_enqueue", "goal_hit", "kill", "session_loss", "max_loss", "bleed",
+                                         "watch_move", "watch_earnings", "watch_news"),
     }
     channels: dict[str, Any] = {"queue": True}
     channels["webhook"] = _post_webhook(event)

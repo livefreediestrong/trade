@@ -1,0 +1,21 @@
+{# Appearance never changes accounts, orders, or saved form values. #}
+<script>
+try {
+ // v2 makes Simple the default view; v1 only carries the theme choices over.
+ const r=document.documentElement, s=localStorage, v2=s.getItem('desk_appearance_v2');
+ const p=JSON.parse(v2||s.getItem('desk_appearance_v1')||'{}');
+ r.dataset.skin=['plain','desert'].includes(p.skin)?p.skin:p.skin==null?'desert':'plain';
+ r.dataset.detail=v2&&['focused','full'].includes(p.detail)?p.detail:'focused';
+ r.dataset.portraits=p.portraits===false?'off':'on';
+} catch (_) { document.documentElement.dataset.skin='plain'; document.documentElement.dataset.detail='focused'; }
+</script>
+<link rel="stylesheet" href="/static/theme_desert.css?v=experience-20260926-1" />
+<link rel="stylesheet" href="/static/desk_themes.css?v=simple-view-20260928-1" />
+<link rel="stylesheet" href="/static/companion_chat.css?v=experience-20260926-1" />
+<script defer src="/static/desk_experience.js?v=simple-view-20260928-1"></script>
+<script defer src="/static/companion_chat.js?v=experience-20260926-1"></script>
+<script defer src="/static/weekly_review.js?v=experience-20260926-1"></script>
+<script defer src="/static/desk_brief.js?v=account-funds-20260927-1"></script>
+<script defer src="/static/desk_connections.js?v=experience-20260926-1"></script>
+<script defer src="/static/desk_maintenance.js?v=maintenance-20260926-4"></script>
+<script defer src="/static/broker_safety.js?v=commitments-20260927-1"></script>

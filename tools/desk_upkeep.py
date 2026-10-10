@@ -1,4 +1,4 @@
-"""Tomahawk desk auto upkeep. Stdlib only; run with the desk's .venv python.
+"""Tomahawk desk auto upkeep. Run with the desk's .venv python.
 
     python tools/desk_upkeep.py watchdog   # every few minutes
     python tools/desk_upkeep.py daily      # once a day after the close
@@ -6,13 +6,17 @@
 
 Hard rules (owner decision): upkeep never blocks or changes live trading.
 It never edits config, orders, positions, sessions or broker settings, never
-stops or restarts a running desk, and never logs Gateway out. The watchdog
-only (re)runs the normal launcher when the desk is unreachable or the broker
-socket is down, which reuses a healthy desk and never submits orders.
+logs Gateway out. Dead schedulers can be recovered in place. An updated running
+desk restarts only through its guarded endpoint while inactive and broker-flat.
+The watchdog runs the normal launcher (without opening Gateway) when the desk
+is unreachable or has completed a guarded stop. When the broker socket is down it asks the running desk, as an
+automatic caller, whether Gateway should be reopened; inactive sessions are
+held by that policy. It never submits orders.
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -20,10 +24,13 @@ import subprocess
 import sys
 import time
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+import code_version
 PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 LAUNCHER = ROOT / "Start-Tomahawk.ps1"
 ARCHIVE = ROOT / "_archive"
@@ -36,14 +43,9 @@ def _env(name: str, default: str) -> str:
     value = os.environ.get(name)
     if value is not None:
         return value
-    env = ROOT / ".env"
-    if env.exists():
-        for line in env.read_text(encoding="utf-8", errors="replace").splitlines():
-            key, sep, raw = line.partition("=")
-            if sep and key.strip() == name:
-                raw = raw.split(" #", 1)[0].strip().strip("'\"")
-                return raw or default
-    return default
+    # Use the same parser as the app: last duplicate wins, quoted # stays data.
+    from dotenv import dotenv_values
+    return dotenv_values(ROOT / ".env").get(name) or default
 
 
 PORT = int(_env("TOMAHAWK_PORT", "5056") or 5056)
@@ -75,7 +77,8 @@ def log(message: str) -> None:
 
 def _load(name: str) -> dict:
     try:
-        return json.loads((UPKEEP / name).read_text(encoding="utf-8"))
+        value = json.loads((UPKEEP / name).read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
     except (OSError, ValueError):
         return {}
 
@@ -91,15 +94,32 @@ def health(timeout: float = 10.0) -> dict | None:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/health", timeout=timeout) as resp:
             data = json.load(resp)
-        return data if isinstance(data, dict) and data.get("app_id") == "tomahawk-desk" else None
+        return data if matching_instance(data) else None
     except Exception:
         return None
 
 
+def matching_instance(data) -> bool:
+    """Never maintain a different checkout or data directory on the same port."""
+    if not isinstance(data, dict) or data.get("app_id") != "tomahawk-desk" or data.get("port") != PORT:
+        return False
+    instance = data.get("instance") or {}
+    try:
+        source, storage = Path(instance["source_root"]), Path(instance["data_root"])
+        return (source.is_absolute() and storage.is_absolute()
+                and source.resolve() == ROOT.resolve() and storage.resolve() == DATA.resolve())
+    except (TypeError, KeyError, ValueError, OSError):
+        return False
+
+
 def run_launcher(reason: str) -> dict:
-    """Normal launcher, headless. Reuses a healthy desk; never places orders."""
+    """Normal launcher, headless, desk only. Reuses a healthy desk; never places orders.
+
+    -NoBroker: Gateway launches are decided by the desk's automatic-launch
+    policy (ensure_gateway), never by an unattended launcher run.
+    """
     cmd = ["powershell.exe", "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
-           "-File", str(LAUNCHER), "-NoBrowser", "-NoDialogs"]
+           "-File", str(LAUNCHER), "-NoBrowser", "-NoDialogs", "-NoBroker"]
     log(f"watchdog: running launcher ({reason})")
     try:
         done = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=240,
@@ -109,9 +129,29 @@ def run_launcher(reason: str) -> dict:
         return {"exit": None, "error": f"{type(exc).__name__}: {exc}"[:300]}
 
 
+def ensure_gateway_via_desk(timeout: float = 30.0) -> dict:
+    """Ask the running desk to apply its automatic Gateway policy."""
+    body = json.dumps({"launch_if_down": True, "automatic": True}).encode()
+    req = urllib.request.Request(f"http://127.0.0.1:{PORT}/api/broker-ensure-gateway", data=body,
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.load(resp)
+    except Exception as exc:  # reported, never fatal
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+    if not isinstance(data, dict):
+        return {"ok": False, "error": "unexpected response"}
+    return {k: data.get(k) for k in ("ok", "launched", "port_open", "automatic_launch_held", "note")}
+
+
 def watchdog() -> dict:
     state = _load("watchdog.json")
-    last_launch = float(state.get("last_launch_ts") or 0)
+    try:
+        last_launch = float(state.get("last_launch_ts") or 0)
+        if not math.isfinite(last_launch) or last_launch > time.time():
+            last_launch = time.time()
+    except (ValueError, TypeError):
+        last_launch = time.time()
     result = {"at": now().isoformat(), "action": "none"}
     h = health()
     if h is None:
@@ -129,14 +169,37 @@ def watchdog() -> dict:
         broker = h.get("broker") or {}
         result["desk"] = "ok"
         result["broker"] = {k: broker.get(k) for k in ("status", "connected", "connected_label")}
+        recovery = h.get("recovery") or {}
+        if recovery.get("expected") and recovery.get("missing") and not h.get("corrupt_files"):
+            result["action"] = "recover_workers"
+            result["recovery"] = request_recovery("/api/desk/recover", {"expected_pid": h.get("pid")})
+        # A code update is the only reason to restart a reachable process.
+        # Errors from providers, Reddit or Daily P&L never cause restart loops.
+        instance = h.get("instance") or {}
+        same_source = str(instance.get("source_root") or "").casefold() == str(ROOT.resolve()).casefold()
+        if same_source and (h.get("code") or {}).get("stale") and cooldown_ok:
+            state["last_launch_ts"] = time.time()  # include refused attempts in cooldown
+            restart = request_recovery("/api/desk/shutdown", {"confirm": "RESTART", "automatic": True, "expected_pid": h.get("pid")})
+            result["restart"] = restart
+            result["action"] = "restart_deferred"
+            if restart.get("ok") and restart.get("stopping"):
+                for _ in range(20):
+                    time.sleep(1)
+                    current = health(timeout=2)
+                    if current is None:
+                        result["action"], result["launcher"] = "restart_updated_desk", run_launcher("guarded update restart")
+                        break
+                    if current.get("pid") != h.get("pid"):
+                        result["action"] = "restart_already_completed"
+                        break
+            state["last"] = result
+            _save("watchdog.json", state)
+            return result
         if broker.get("configured") and not broker.get("connected"):
-            # Launcher reuses the running desk and only opens Gateway if its
-            # API port is down; Gateway sign-in / 2FA stays with the owner.
-            if cooldown_ok:
-                result["action"], result["launcher"] = "ensure_gateway", run_launcher("broker disconnected")
-                state["last_launch_ts"] = time.time()
-            else:
-                result["action"] = "cooldown"
+            # The desk decides: during an active live session it relaunches only
+            # a Gateway that signed in and then went away; a login window closed
+            # before sign-in stays closed. Sign-in / 2FA stays with the owner.
+            result["action"], result["gateway"] = "ensure_gateway", ensure_gateway_via_desk()
     state["last"] = result
     _save("watchdog.json", state)
     if result["action"] != "none":
@@ -265,14 +328,36 @@ def run_tests() -> dict:
         env.pop(key, None)
     try:
         done = subprocess.run([str(PYTHON), "-m", "pytest", "-q", "--no-header", "-p", "no:cacheprovider", "-rf",
-                               "--tb=no", "tests"], cwd=ROOT, env=env, capture_output=True, text=True, timeout=900,
+                               "--tb=short", "--color=no", "tests"], cwd=ROOT, env=env, capture_output=True, text=True, timeout=900,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "summary": "test suite timed out (900s)"}
-    lines = [l for l in done.stdout.splitlines() if l.strip()]
+    except subprocess.TimeoutExpired as exc:
+        result = {"ok": False, "summary": "test suite timed out (900s)", "exit_code": None}
+        stdout, stderr = exc.stdout or "", exc.stderr or ""
+    except OSError as exc:
+        return {"ok": False, "summary": f"Test runner could not start ({type(exc).__name__})", "exit_code": None}
+    else:
+        result = {"ok": done.returncode == 0, "exit_code": done.returncode}
+        stdout, stderr = done.stdout or "", done.stderr or ""
+    if isinstance(stdout, bytes): stdout = stdout.decode("utf-8", errors="replace")
+    if isinstance(stderr, bytes): stderr = stderr.decode("utf-8", errors="replace")
+    lines = [l for l in stdout.splitlines() if l.strip()]
     summary = next((l for l in reversed(lines) if " passed" in l or " failed" in l), lines[-1] if lines else "")
     failed = [l[7:] for l in lines if l.startswith("FAILED ")][:20]
-    return {"ok": done.returncode == 0, "summary": summary.strip("= "), "failed": failed}
+    result.setdefault("summary", summary.strip("= ") or "Test runner returned no summary; inspect the local details")
+    result["failed"] = failed
+    # Keep bounded details locally. The read-only API exposes the relative
+    # filename and result, never traceback contents or local environment data.
+    output = stdout + ("\n--- stderr ---\n" + stderr if stderr else "")
+    result["output_truncated"] = len(output) > 200_000
+    name = "test-results/" + now().strftime("%Y%m%dT%H%M%S%f") + ".txt"
+    try:
+        path = UPKEEP / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(result["summary"] + "\n" + output[-200_000:], encoding="utf-8")
+        result["details_file"] = "upkeep/" + name
+    except OSError as exc:
+        result["details_error"] = f"Could not save test details ({type(exc).__name__})"
+    return result
 
 
 TASK_MARK = "<!-- auto-upkeep -->"
@@ -296,12 +381,48 @@ def update_tasks(problems: list[str]) -> None:
         pass
 
 
+def verified_backup() -> dict:
+    """The running app captures JSON under its own lock and uses SQLite online backup."""
+    if health() is None:
+        raise ValueError("The expected desk instance could not be verified; backup deferred")
+    req = urllib.request.Request(f"http://127.0.0.1:{PORT}/api/backups", data=b"{}",
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        result = json.load(resp)
+    if not result.get("ok"):
+        raise ValueError(result.get("error") or "Backup verification failed")
+    return result
+
+
+def request_recovery(path: str, body: dict) -> dict:
+    req = urllib.request.Request(f"http://127.0.0.1:{PORT}{path}", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            result = json.load(response)
+        return result if isinstance(result, dict) else {"ok": False, "error": "Invalid recovery response"}
+    except urllib.error.HTTPError as exc:
+        try:
+            result = json.load(exc)
+            return {"ok": False, "error": result.get("error", f"HTTP {exc.code}"), "deferred": True}
+        except (ValueError, AttributeError):
+            return {"ok": False, "error": f"Recovery HTTP {exc.code}"}
+    except Exception as exc:
+        return {"ok": False, "error": f"Recovery unavailable ({type(exc).__name__})"}
+
+
 def daily(with_tests: bool = True) -> dict:
     started = time.time()
     report = {"at": now().isoformat(), "rules": "never touches config, orders, sessions or broker"}
-    steps = [("archived", archive_root_clutter), ("pruned", prune_archive), ("logs", rotate_logs),
-             ("caches_removed", clean_caches), ("sqlite", sqlite_maintenance), ("data_usage_mb", data_usage)]
+    # Preserve recovery evidence before housekeeping. Filename/age alone does
+    # not prove an _archive item is disposable; no unattended recursive cleanup.
+    steps = [("backup", verified_backup), ("logs", rotate_logs),
+             ("sqlite", sqlite_maintenance), ("data_usage_mb", data_usage)]
+    report["cleanup"] = {"skipped": "Source files, archives and caches are retained for manual review"}
     for name, fn in steps:
+        if name in ("logs", "sqlite") and report.get("backup", {}).get("ok") is not True:
+            report[name] = {"skipped": "A verified backup is required before housekeeping"}
+            continue
         try:
             report[name] = fn()
         except Exception as exc:
@@ -311,8 +432,35 @@ def daily(with_tests: bool = True) -> dict:
         "ok": h.get("ok"), "broker": (h.get("broker") or {}).get("connected_label"),
         "connected": (h.get("broker") or {}).get("connected"), "corrupt_files": h.get("corrupt_files"),
         "automation": (h.get("loop") or {}).get("automation_health")}
-    report["tests"] = run_tests() if with_tests else {"skipped": "--no-tests"}
+    # StartWhenAvailable can run yesterday's daily task during today's market.
+    # Do not spend production CPU on a full suite while the session is open or
+    # its state is unknown. Test changed builds after close; retain the receipt.
+    previous = _load("last_tests.json")
+    code = (h or {}).get("code") or {}
+    version = code.get("serving", code.get("started"))
+    suite_version = code_version.test_fingerprint(ROOT)
+    if not with_tests:
+        report["tests"] = {"skipped": "--no-tests"}
+    elif (not h or h.get("ok") is not True or (h.get("code") or {}).get("stale") is not False
+          or (h.get("loop") or {}).get("rth_ok") is not False
+          or (h.get("loop") or {}).get("decision_in_flight") is not False
+          or (h.get("loop") or {}).get("pending_intents") != 0):
+        report["tests"] = {"skipped": "Full tests deferred until the desk is healthy, loaded and outside market hours with no decision or unresolved order in flight"}
+    elif (previous.get("ok") is True and version and previous.get("code") == version
+          and previous.get("test_code") == suite_version):
+        report["tests"] = {"skipped": "This build already passed the upkeep test suite", "last_passed_at": previous.get("at"), "code": version}
+    else:
+        report["tests"] = {**run_tests(), "code": version, "test_code": suite_version, "at": now().isoformat()}
+        # A concurrent edit must not turn a test run into a pass for other code.
+        if code_version.fingerprint(ROOT) != version or code_version.test_fingerprint(ROOT) != suite_version:
+            report["tests"]["ok"] = False
+            report["tests"]["summary"] = "Files changed during testing; run the full suite again on the saved version"
+            report["tests"]["changed_during_run"] = True
+        _save("last_tests.json", report["tests"])
     problems = []
+    for name, _ in steps:
+        if isinstance(report.get(name), dict) and report[name].get("error"):
+            problems.append(f"{name}: {report[name]['error']}")
     if h is None:
         problems.append("desk unreachable at the daily check")
     elif h.get("corrupt_files"):
@@ -320,13 +468,15 @@ def daily(with_tests: bool = True) -> dict:
     if report["tests"].get("ok") is False:
         problems.append("tests: " + str(report["tests"].get("summary")))
     for name, row in (report.get("sqlite") or {}).items():
+        if isinstance(row, dict) and row.get("error"):
+            problems.append(f"{name}: {row['error']}")
         if isinstance(row, dict) and row.get("quick_check") not in (None, "ok"):
             problems.append(f"{name} integrity: {row['quick_check']}")
     report["problems"] = problems
     report["seconds"] = round(time.time() - started, 1)
     _save("last_daily.json", report)
     update_tasks(problems)
-    log(f"daily: archived={len(report.get('archived') or [])} pruned={len(report.get('pruned') or [])} "
+    log(f"daily: backup={report.get('backup', {}).get('ok', False)} "
         f"tests={report['tests'].get('summary', report['tests'].get('skipped'))} problems={len(problems)}")
     return report
 

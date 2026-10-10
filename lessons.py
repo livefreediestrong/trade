@@ -9,27 +9,47 @@ stops repeating setups that keep losing.
 from __future__ import annotations
 
 import json
+import copy
+import math
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-MAX_LESSONS = 1000
-_lock = threading.Lock()
+MAX_LESSONS = 5000
+_lock = threading.RLock()
+_read_cache = {}
 
 
 def _read(path: Path) -> list[dict[str, Any]]:
+    """Cache unchanged evidence, but never turn unreadable memory into an empty book."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-        return data if isinstance(data, list) else []
-    except (OSError, ValueError):
+        stat = path.stat()
+    except FileNotFoundError:
         return []
+    key, signature = str(path.resolve()), (stat.st_mtime_ns, stat.st_size)
+    with _lock:
+        cached = _read_cache.get(key)
+        if cached and cached[0] == signature:
+            return copy.deepcopy(cached[1])
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError) as exc:
+            raise ValueError("Lesson memory is unreadable; preserved for recovery") from exc
+        if not isinstance(data, list) or any(not isinstance(row, dict) for row in data):
+            raise ValueError("Lesson memory has an invalid structure; preserved for recovery")
+        _read_cache[key] = (signature, data[:MAX_LESSONS])
+        while len(_read_cache) > 8:
+            del _read_cache[next(iter(_read_cache))]
+        return copy.deepcopy(data[:MAX_LESSONS])
 
 
 def _write(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(rows[:MAX_LESSONS], indent=1), encoding="utf-8")
+    tmp.write_text(json.dumps(rows[:MAX_LESSONS], indent=1, allow_nan=False), encoding="utf-8")
     tmp.replace(path)
+    _read_cache.pop(str(path.resolve()), None)
 
 
 def setup_key(verdict: Any, lateness: Any) -> str:
@@ -69,7 +89,7 @@ def lesson_text(ev: dict[str, Any]) -> str:
 
 def record_outcome(path: Path, ev: dict[str, Any]) -> dict[str, Any] | None:
     """Store one lesson for a newly scored decision (idempotent per decision id)."""
-    if not ev or not ev.get("outcome"):
+    if not isinstance(ev, dict) or not ev.get("outcome") or not ev.get("id"):
         return None
     row = {
         "id": str(ev.get("id") or ""),
@@ -86,13 +106,23 @@ def record_outcome(path: Path, ev: dict[str, Any]) -> dict[str, Any] | None:
     }
     for key in ("requested_model", "llm_model", "prompt_version", "horizon_min", "scoring_version",
                 "mock", "routed", "net_outcome", "shadow_claude_net_outcome", "outcome_executable_move_bps",
-                "shadow_claude_executable_move_bps", "outcome_cost_bps", "outcome_status", "input_hash"):
+                "shadow_claude_executable_move_bps", "outcome_cost_bps", "outcome_status", "input_hash", "workspace"):
         row[key] = ev.get(key)
+    for key, value in row.items():
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("Non-finite lesson evidence cannot be saved")
     row["shadow_claude_model"] = (ev.get("shadow_claude") or {}).get("model")
     with _lock:
         rows = _read(path)
-        if row["id"] and any(r.get("id") == row["id"] for r in rows):
-            return None
+        prior = next((r for r in rows if r.get("id") == row["id"]), None)
+        if prior:
+            if all(prior.get(key) == value for key, value in row.items()):
+                return None
+            row["revision"] = int(prior.get("revision") or 1) + 1
+            row["corrected_at"] = datetime.now(timezone.utc).isoformat()
+            row["prior_versions"] = ([{k: prior.get(k) for k in ("ts", "outcome", "net_outcome", "outcome_executable_move_bps", "input_hash", "scoring_version", "revision")}]
+                                     + list(prior.get("prior_versions") or []))[:3]
+            rows = [r for r in rows if r.get("id") != row["id"]]
         rows.insert(0, row)
         _write(path, rows)
     return row
@@ -126,7 +156,9 @@ def track_record(path: Path, *, ticker: str, verdict: Any, lateness: Any, scope:
         moves = []
         for row in samples:
             try:
-                moves.append(float(row.get("outcome_executable_move_bps") if scope else row.get("move_bps")))
+                value = float(row.get("outcome_executable_move_bps") if scope else row.get("move_bps"))
+                if math.isfinite(value):
+                    moves.append(value)
             except (TypeError, ValueError):
                 continue
         helped = sum(1 for r in samples if r.get("outcome") == "helped")
@@ -142,10 +174,14 @@ def track_record(path: Path, *, ticker: str, verdict: Any, lateness: Any, scope:
     confidence_bands: dict[str, dict[str, Any]] = {}
     for row in same_setup:
         try:
-            confidence = max(0.0, min(1.0, float(row.get("confidence"))))
+            confidence = float(row.get("confidence"))
+            if not math.isfinite(confidence):
+                continue
+            confidence = max(0.0, min(1.0, confidence))
         except (TypeError, ValueError):
             continue
-        band = f"{int(confidence * 10) * 10:02d}-{int(confidence * 10) * 10 + 9:02d}"
+        low = min(9, int(confidence * 10)) * 10
+        band = f"{low:02d}-{100 if low == 90 else low + 9:02d}"
         bucket = confidence_bands.setdefault(band, {"samples": 0, "helped": 0, "hurt": 0, "flat": 0})
         bucket["samples"] += 1
         outcome = row.get("outcome")
@@ -165,6 +201,12 @@ def track_record(path: Path, *, ticker: str, verdict: Any, lateness: Any, scope:
         "side_stats": side_stats,
         "confidence_bands": confidence_bands,
         "memory_depth": len(rows),
+        "evidence_rows": [dict({k: r.get(k) for k in (
+            "id", "revision", "ts", "ticker", "setup", "side", "llm_model", "prompt_version",
+            "horizon_min", "scoring_version", "outcome_status", "net_outcome",
+            "outcome_executable_move_bps", "outcome_cost_bps", "input_hash")},
+            recalled_for=[reason for reason, group in (("same setup", same_setup), ("same ticker", same_ticker)) if r in group])
+            for r in {r["id"]: r for r in same_setup + same_ticker if r.get("id")}.values()],
     }
 
 

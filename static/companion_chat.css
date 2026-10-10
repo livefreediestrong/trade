@@ -1,0 +1,11 @@
+#companion-chat{box-sizing:border-box;width:min(690px,calc(100vw - 24px));max-height:calc(100dvh - 24px);border:1px solid var(--border);border-radius:16px;padding:22px;background:var(--panel);color:var(--text);overflow-y:auto;font:400 14px/1.6 var(--sans,system-ui)}
+#companion-chat::backdrop{background:#0009}#companion-chat *{box-sizing:border-box}
+.chat-heading{display:flex;gap:12px;justify-content:space-between;align-items:center}.chat-heading h2{margin:0;font-size:24px}
+#companion-chat button,#companion-chat select{min-height:44px;font-size:13px}#companion-chat textarea,#companion-chat input,#companion-chat select{width:100%;font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--border);padding:8px;border-radius:8px}
+.chat-controls{display:grid;grid-template-columns:1fr 1.5fr .8fr;gap:10px}.chat-controls label{min-width:0}
+.chat-meta,#companion-chat small,.chat-intro{color:var(--muted)}.chat-buttons,.chat-suggestions{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+.chat-buttons a{align-self:center}.chat-library{padding:10px 0;border-block:1px solid var(--border)}.chat-library summary{min-height:44px;cursor:pointer;padding:10px 0}
+.chat-turns{max-height:45vh;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.chat-turn{margin:14px 0;padding:12px;background:var(--panel2);border-radius:10px;overflow-wrap:anywhere}.chat-turn p{white-space:pre-wrap;margin:8px 0}.chat-turn .chat-user{font-weight:650}.chat-turn details pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}.chat-turn h3{font:650 15px/1.5 var(--sans,system-ui)}
+#chat-memory-form{border-top:1px solid var(--border);padding-top:12px}#chat-memories article{border-bottom:1px solid var(--border);padding:10px 0;overflow-wrap:anywhere}#chat-memories p{white-space:pre-wrap}
+#chat-status{min-height:24px;color:var(--amber)}#chat-form textarea{resize:vertical;min-height:80px}
+@media(max-width:600px){#companion-chat{padding:14px}.chat-heading h2{font-size:20px}.chat-controls{grid-template-columns:1fr 1fr}.chat-controls label:last-child{grid-column:1/-1}.chat-turns{max-height:38vh}}

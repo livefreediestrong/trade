@@ -81,7 +81,8 @@ class EvidenceStore:
             raise ValueError("Evidence fingerprint mismatch")
         return result
 
-    def incidents(self, active):
+    def incidents(self, active, keep_prefixes=()):
+        """keep_prefixes: incident kinds not re-evaluated in this read stay as they are."""
         now = utc()
         with self.db() as db:
             for item in active:
@@ -91,7 +92,7 @@ class EvidenceStore:
                     payload=excluded.payload""", (item["id"], now, now, None, None, json.dumps(item)))
             ids = {i["id"] for i in active}
             for row in db.execute("SELECT id FROM incidents WHERE resolved_at IS NULL").fetchall():
-                if row["id"] not in ids:
+                if row["id"] not in ids and not row["id"].startswith(tuple(keep_prefixes)):
                     db.execute("UPDATE incidents SET resolved_at=? WHERE id=?", (now, row["id"]))
             rows = db.execute("SELECT * FROM incidents ORDER BY resolved_at IS NOT NULL,last_seen DESC LIMIT 80").fetchall()
         return [dict(r, payload=json.loads(r["payload"])) for r in rows]
@@ -181,7 +182,9 @@ def attention(book, paper, universe, traces):
     account = str(book.get("account_id") or "unverified")
     def add(key, title, effect, action, severity="blocking"):
         items.append({"id": key, "title": title, "effect": effect, "action": action, "severity": severity})
-    if not book.get("ok"):
+    if book.get("refreshing"):
+        pass  # Another request is reading the account; this is not evidence either way.
+    elif not book.get("ok"):
         add("broker:"+account, "Broker account data unavailable", "Account → positions / balance → new live risk blocked",
             "Check Gateway connection and account identity in Live trading.")
     elif finite(book.get("day_pnl_usd")) is None:
@@ -287,7 +290,8 @@ def register(app, desk, companion):
         paper = companion.paper.status()
         universe = market_universe.status(desk)
         traces = evidence.list("trace", 5)
-        incidents = evidence.incidents(attention(book, paper, universe, traces))
+        incidents = evidence.incidents(attention(book, paper, universe, traces),
+                                       keep_prefixes=("broker:", "pnl:", "risk:") if book.get("refreshing") else ())
         cfg = desk.load_config()
         return jsonify(ok=True, incidents=incidents, rules=rules(cfg, paper),
                        records=evidence.list(limit=100), traces=traces,

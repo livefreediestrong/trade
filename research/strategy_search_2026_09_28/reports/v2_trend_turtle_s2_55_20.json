@@ -1,0 +1,135 @@
+{
+ "name": "v2_trend_turtle_s2_55_20",
+ "trades": 5562,
+ "m_tests": 10,
+ "pass_rules": "Under fidelity_0_commission: (1) per-trade mean > 0 with a month-clustered one-sided lower bound > 0 at alpha = 0.05 / M (Bonferroni over M candidates); (2) mean per trade > 0 in the HOLDOUT (entries on/after 2023-01-01); (3) positive mean in >= 60% of calendar years with trades; (4) the 5-slot portfolio's Sharpe beats BOTH SPY buy-and-hold and the equal-weight buy-and-hold of the same universe over the same period.",
+ "median_hold_calendar_days": 28.0,
+ "trades_per_year": 570.7,
+ "gross_mean_bps": 364.3,
+ "fidelity_0_commission": {
+  "mean_bps": 354.3,
+  "win_rate": 0.353,
+  "lower_bound_bps": -103.8,
+  "months": 118,
+  "years_positive": "8/11",
+  "per_year_mean_bps": {
+   "2016": 495.8,
+   "2017": 281.3,
+   "2018": -90.3,
+   "2019": 77.3,
+   "2020": 1698.7,
+   "2021": -21.6,
+   "2022": -391.0,
+   "2023": 242.8,
+   "2024": 732.1,
+   "2025": 557.2,
+   "2026": 183.9
+  },
+  "holdout_trades": 2468,
+  "holdout_mean_bps": 451.2,
+  "portfolio_5_slots": {
+   "start": "2016-12-29",
+   "end": "2026-09-28",
+   "cagr": -0.0266,
+   "sharpe": 0.057,
+   "max_drawdown": -0.7237,
+   "trades_taken": 451,
+   "slots": 5
+  }
+ },
+ "ibkr_110_account": {
+  "mean_bps": 154.3,
+  "win_rate": 0.282,
+  "lower_bound_bps": -303.8,
+  "months": 118,
+  "years_positive": "6/11",
+  "per_year_mean_bps": {
+   "2016": 295.8,
+   "2017": 81.3,
+   "2018": -290.3,
+   "2019": -122.7,
+   "2020": 1498.7,
+   "2021": -221.6,
+   "2022": -591.0,
+   "2023": 42.8,
+   "2024": 532.1,
+   "2025": 357.2,
+   "2026": -16.1
+  },
+  "holdout_trades": 2468,
+  "holdout_mean_bps": 251.2,
+  "portfolio_5_slots": {
+   "start": "2016-12-29",
+   "end": "2026-09-28",
+   "cagr": -0.1649,
+   "sharpe": -0.437,
+   "max_drawdown": -0.8895,
+   "trades_taken": 450,
+   "slots": 5
+  }
+ },
+ "benchmarks": {
+  "spy_buy_hold": {
+   "start": "2016-12-29",
+   "end": "2026-09-28",
+   "cagr": 0.1519,
+   "sharpe": 0.874,
+   "max_drawdown": -0.3372
+  },
+  "equal_weight_buy_hold": {
+   "start": "2016-12-29",
+   "end": "2026-09-28",
+   "cagr": 0.2106,
+   "sharpe": 0.741,
+   "max_drawdown": -0.4478
+  }
+ },
+ "passed": false,
+ "reasons": [
+  "per-trade lower bound -103.8 bps is not above 0 (Bonferroni M=10)",
+  "portfolio Sharpe 0.057 does not beat SPY 0.874 and equal-weight 0.741"
+ ],
+ "runtime_sec": 0.4,
+ "first_trades": [
+  {
+   "ticker": "AMD",
+   "entry_date": "2016-12-29",
+   "entry_px": 11.239999771118164,
+   "exit_date": "2017-01-17",
+   "exit_px": 10.170000076293945,
+   "rank": -10.059143844736306
+  },
+  {
+   "ticker": "BIZD",
+   "entry_date": "2016-12-29",
+   "entry_px": 6.71426084165519,
+   "exit_date": "2017-05-04",
+   "exit_px": 7.189787143850378,
+   "rank": -4.580224709200583
+  },
+  {
+   "ticker": "BP",
+   "entry_date": "2016-12-29",
+   "entry_px": 21.69689624959342,
+   "exit_date": "2017-01-23",
+   "exit_px": 21.1818167712559,
+   "rank": -5.880511244915345
+  },
+  {
+   "ticker": "DE",
+   "entry_date": "2016-12-29",
+   "entry_px": 89.4016643755918,
+   "exit_date": "2017-03-27",
+   "exit_px": 93.18591330909945,
+   "rank": -12.802755032456519
+  },
+  {
+   "ticker": "JPM",
+   "entry_date": "2016-12-29",
+   "entry_px": 67.05704229676586,
+   "exit_date": "2017-01-17",
+   "exit_px": 65.20593105299511,
+   "rank": -15.711516078678924
+  }
+ ]
+}

@@ -11,14 +11,14 @@
   if(broker.paper_mode!==false||book.paper_mode!==false)blocks.push('A real-money account has not been verified.');
   if(book.risk_ready!==true||!finite(book.day_pnl_usd))blocks.push('Daily P&L or account risk data is missing. New live risk is blocked.');
   if(state?.loop?.rth_ok!==true||state?.loop?.outside_rth===true)blocks.push('Regular-market trading is closed or unverified.');
-  const agent=cfg.live_agent,ks=agent?{armed:true,max_daily_loss_usd:agent.policy?.max_daily_loss_usd,max_trades_per_day:agent.policy?.max_orders_per_day,max_position_size_usd:agent.policy?.max_order_usd}:cfg.kill_switch||{},limitsOn=ks.armed===true;
+  const agent=state?.config?.live_agent||cfg.live_agent,effective=state?.live_risk_limits,limitsOn=effective?.verified===true&&age<=25000;
   if(!settings)blocks.push('Configured broker limits have not been loaded.');
-  else if(!limitsOn||![ks.max_daily_loss_usd,ks.max_trades_per_day,ks.max_position_size_usd].every(n=>finite(n)&&n>0))blocks.push('All three explicit broker loss, count and size limits are not enabled.');
-  if(agent&&!agent.enabled)blocks.push('Moss broker agent is paused. Its saved policy does not authorize orders.');
-  const title=agent?agent.enabled&&automatic&&session?'Moss agent enabled':'Moss agent paused':automatic?(session?'Automatic mode · session active':'Automatic mode · session stopped'):'Manual activation required';
+  else if(!limitsOn)blocks.push('Effective account limits await current verified account data.');
+  if(agent&&!agent.enabled)blocks.push('Fox (the broker agent) is paused. Its saved policy does not authorize orders.');
+  const title=agent?agent.enabled&&automatic&&session?'Fox agent enabled':'Fox agent paused':automatic?(session?'Automatic mode · session active':'Automatic mode · session stopped'):'Manual activation required';
   return {title,mode:mode==='live_manual'?'Approve each live order':automatic?'Automatic broker orders':mode||'Unknown',session:session?'Session active':'Session stopped',
    broker:broker.connected===true&&book.ok===true?(book.paper_mode===false?'Live account connected':'Broker paper / unverified'):'Disconnected / unverified',
-   pnl:'Daily P&L '+money(book.day_pnl_usd),limits:settings?`${limitsOn?'Enabled':'Disabled · saved'}: ${money(ks.max_position_size_usd)} / position · ${money(ks.max_daily_loss_usd)} daily loss · ${ks.max_trades_per_day??'?'} trades`:'Configured limits unavailable',
+   pnl:'Daily P&L '+money(book.day_pnl_usd),limits:limitsOn?`Effective: ${money(effective.max_order_usd)} / stock position or option maximum loss · ${money(effective.max_daily_loss_usd)} daily-loss entry stop · ${effective.max_orders_per_day} agent attempts`:'Effective limits unavailable',
    blocks,next:blocks.length?'Resolve the displayed checks before considering activation.':automatic?'Selected mode can submit eligible orders while its session is active. Per-order checks still apply.':'Current account/session checks passed. Broker-paper qualification and your manual activation are separate.'};
  }
  if(typeof module==='object'&&module.exports){module.exports={liveView};return;}

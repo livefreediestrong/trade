@@ -12,7 +12,6 @@ Endpoints used (public):
 from __future__ import annotations
 
 import os
-import re
 import threading
 import time
 from pathlib import Path
@@ -25,6 +24,7 @@ SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 
 _lock = threading.RLock()
 _ticker_map: dict[str, str] = {}
+_ticker_titles: dict[str, str] = {}
 _ticker_at = 0.0
 _TICKER_TTL = 86400.0
 _cache: dict[str, Any] = {}
@@ -100,12 +100,13 @@ def _get_json(url: str, timeout: int = 15) -> Any | None:
 
 
 def _ensure_ticker_map() -> dict[str, str]:
-    global _ticker_map, _ticker_at
+    global _ticker_map, _ticker_titles, _ticker_at
     with _lock:
         if _ticker_map and (time.time() - _ticker_at) < _TICKER_TTL:
             return dict(_ticker_map)
     data = _get_json(TICKERS_URL)
     mapping: dict[str, str] = {}
+    titles: dict[str, str] = {}
     if isinstance(data, dict):
         for _k, row in data.items():
             if not isinstance(row, dict):
@@ -114,8 +115,10 @@ def _ensure_ticker_map() -> dict[str, str]:
             cik = row.get("cik_str")
             if tick and cik is not None:
                 mapping[tick] = str(int(cik)).zfill(10)
+                titles[tick] = str(row.get("title") or "").strip()
     with _lock:
         _ticker_map = mapping
+        _ticker_titles = titles
         _ticker_at = time.time()
     return dict(mapping)
 
@@ -125,6 +128,15 @@ def cik_for_ticker(symbol: str) -> Optional[str]:
     if not sym:
         return None
     return _ensure_ticker_map().get(sym)
+
+
+def company_title(symbol: str) -> str:
+    """Registered company name for a ticker, e.g. 'LOCKHEED MARTIN CORP' ('' if unknown)."""
+    sym = (symbol or "").strip().upper()
+    if not sym or not _ensure_ticker_map().get(sym):
+        return ""
+    with _lock:
+        return _ticker_titles.get(sym, "")
 
 
 def recent_filings(symbol: str, *, limit: int = 8) -> dict[str, Any]:

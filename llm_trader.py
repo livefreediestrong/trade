@@ -11,6 +11,9 @@ import json
 import math
 import os
 import re
+import copy
+import random
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -38,7 +41,7 @@ except Exception:
     _fallback_load_env()
 
 DEFAULT_MODEL = "gemini-3.6-flash"
-PROMPT_VERSION = "thesis-v2-evidence"
+PROMPT_VERSION = "thesis-v3-context"
 THESIS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -218,6 +221,25 @@ def _read_usage() -> dict:
         data = json.loads(USAGE_PATH.read_text(encoding="utf-8"))
         if not isinstance(data, dict) or not isinstance(data.get("days"), dict):
             raise ValueError("invalid usage ledger")
+        for day in data["days"].values():
+            if not isinstance(day, dict) or not isinstance(day.get("providers"), dict):
+                raise ValueError("invalid usage day")
+            if not isinstance(day.get("scopes", {}), dict) or not isinstance(day.get("reservations", {}), dict):
+                raise ValueError("invalid usage collections")
+            for subtotal in [day, *day.get("scopes", {}).values()]:
+                if not isinstance(subtotal, dict):
+                    raise ValueError("invalid usage subtotal")
+                cost, count = subtotal.get("model_usd"), subtotal.get("calls")
+                if (isinstance(cost, bool) or not isinstance(cost, (int, float)) or not math.isfinite(cost) or cost < 0
+                        or isinstance(count, bool) or not isinstance(count, int) or count < 0):
+                    raise ValueError("invalid usage totals")
+            for row in day.get("reservations", {}).values():
+                if (not isinstance(row, dict) or row.get("status") not in ("pending", "unknown", "settled")
+                        or not isinstance(row.get("scope"), str) or not row["scope"]):
+                    raise ValueError("invalid reservation")
+                estimate = row.get("estimate_usd")
+                if isinstance(estimate, bool) or not isinstance(estimate, (int, float)) or not math.isfinite(estimate) or estimate <= 0:
+                    raise ValueError("invalid reservation estimate")
     except FileNotFoundError:
         data = {"tracking_since": _time.time(), "days": {}}
     except (OSError, ValueError) as exc:
@@ -280,7 +302,50 @@ def gemini_budget_status() -> dict:
     return _GEMINI_BUDGET.status()
 
 
-def gemini_generate(
+_NO_THINKING_LEVEL: set[str] = set()
+
+
+def gemini_thinking_level(model: str) -> str | None:
+    """GEMINI_THINKING_LEVEL for JSON research calls (default low; "default" or empty
+    leaves the model's own setting). Only Gemini 3 models take a thinking level."""
+    raw = os.environ.get("GEMINI_THINKING_LEVEL")
+    level = ("low" if raw is None else raw).strip().lower()
+    if level in ("", "default", "off") or model in _NO_THINKING_LEVEL:
+        return None
+    if level not in ("minimal", "low", "medium", "high") or not str(model).startswith("gemini-3"):
+        return None
+    return level
+
+
+def gemini_generate(prompt: str, **kwargs) -> str:
+    """Expose the latest transport result, without confusing historical signals with health."""
+    cfg = kwargs.get("cfg") or load_llm_config()
+    model = cfg.get("model") or DEFAULT_MODEL
+    try:
+        answer = _gemini_generate(prompt, **kwargs)
+    except Exception as exc:
+        with _BRAIN_HEALTH_LOCK:
+            _BRAIN_HEALTH[model] = {"ok": False, "at": _time.time(),
+                                    "error": redact_secrets(str(exc), cfg.get("api_key") or "")[:300]}
+        raise
+    with _BRAIN_HEALTH_LOCK:
+        _BRAIN_HEALTH[model] = {"ok": True, "at": _time.time(), "error": None}
+    return answer
+
+
+_BRAIN_HEALTH_LOCK = _threading.Lock()
+_BRAIN_HEALTH: dict[str, dict] = {}
+
+
+def brain_health(model):
+    with _BRAIN_HEALTH_LOCK:
+        row = dict(_BRAIN_HEALTH.get(model) or {})
+    age = max(0, _time.time() - row["at"]) if row else None
+    return {**row, "age_sec": age, "state": "unobserved" if not row else
+            "stale" if age > 900 else "healthy" if row["ok"] else "unavailable"}
+
+
+def _gemini_generate(
     prompt: str,
     *,
     system: Optional[str] = None,
@@ -288,6 +353,8 @@ def gemini_generate(
     cfg: Optional[dict] = None,
     timeout_sec: float = 45,
     response_schema: Optional[dict] = None,
+    max_output_tokens: Optional[int] = None,
+    bounded_reasoning: bool = False,
 ) -> str:
     """Call Gemini generateContent REST. Raises RuntimeError on hard failures."""
     cfg = cfg or load_llm_config()
@@ -297,7 +364,6 @@ def gemini_generate(
 
     _CALL_COST.last = 0.0
     _CALL_COST.last_model = None
-    _GEMINI_BUDGET.acquire()
 
     model = cfg.get("model") or DEFAULT_MODEL
     url = f"{GEMINI_API_BASE}/{model}:generateContent"
@@ -312,63 +378,98 @@ def gemini_generate(
         }
         if response_schema is not None:
             body["generationConfig"]["responseJsonSchema"] = response_schema
+        level = gemini_thinking_level(model)
+        if level:
+            # Short structured answers: thinking tokens are billed as output.
+            body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": level}
     else:
         body["generationConfig"] = {"temperature": 0.5}
+        if bounded_reasoning:
+            level = gemini_thinking_level(model)
+            if level:
+                body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": level}
+
+    if max_output_tokens is not None:
+        if isinstance(max_output_tokens, bool) or not isinstance(max_output_tokens, int) or not 1 <= max_output_tokens <= 8192:
+            raise ValueError("invalid_max_output_tokens")
+        body["generationConfig"]["maxOutputTokens"] = max_output_tokens
 
     try:
         timeout = float(timeout_sec) if timeout_sec is not None else 45.0
-        if timeout <= 0:
+        if not math.isfinite(timeout) or timeout <= 0:
             timeout = 45.0
     except (TypeError, ValueError):
         timeout = 45.0
 
-    try:
-        # Key goes in a header, never the URL: requests' error text includes the URL,
-        # and that text flows into signals/journal/UI.
-        r = requests.post(
-            url,
-            json=body,
-            headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
-            timeout=timeout,
-        )
-    except requests.Timeout as exc:
-        raise RuntimeError("llm_timeout") from exc
-    except requests.RequestException as exc:
-        raise RuntimeError(f"gemini_request_failed: {redact_secrets(str(exc), api_key)}") from exc
-
-    if r.status_code != 200:
-        # Do not include request URL (has key) or full body secrets
-        detail = ""
+    deadline = _time.monotonic() + timeout
+    estimate = estimate_gemini_cost(model=model, input_tokens=len(prompt.encode()) + len((system or "").encode()),
+                                   output_tokens=max_output_tokens or 8192)
+    for attempt in range(3):
+        remaining = deadline - _time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("llm_timeout")
+        _GEMINI_BUDGET.acquire()  # Every HTTP attempt consumes the persistent budget.
+        reservation = reserve_model_attempt(estimate, model=model)
+        try:
+            r = requests.post(url, json=copy.deepcopy(body),
+                              headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+                              timeout=remaining)
+        except requests.Timeout as exc:
+            settle_model_attempt(reservation)
+            raise RuntimeError("llm_timeout") from exc
+        except requests.RequestException as exc:
+            settle_model_attempt(reservation)
+            raise RuntimeError(f"gemini_request_failed: {redact_secrets(str(exc), api_key)}") from exc
+        if r.status_code == 200:
+            break
+        settle_model_attempt(reservation)  # No usage receipt: retain an unknown estimate, including retries.
         try:
             err = r.json()
             detail = (err.get("error") or {}).get("message") or str(err)[:200]
         except Exception:
             detail = (r.text or "")[:200]
-        raise RuntimeError(f"gemini_http_{r.status_code}: {redact_secrets(detail, api_key)}")
+        error = f"gemini_http_{r.status_code}: {redact_secrets(str(detail), api_key)}"
+        thinking = body["generationConfig"].get("thinkingConfig")
+        if attempt < 2 and r.status_code == 400 and thinking and "think" in str(detail).lower():
+            _NO_THINKING_LEVEL.add(model)
+            body["generationConfig"].pop("thinkingConfig")
+            continue  # Same deadline, no recursive timeout reset.
+        if attempt >= 2 or r.status_code not in (408, 429, 500, 502, 503, 504):
+            raise RuntimeError(error)
+        delay = (2 ** attempt) + random.uniform(0, .25)
+        try:
+            retry_after = float((getattr(r, "headers", {}) or {}).get("Retry-After", 0))
+            if math.isfinite(retry_after):
+                delay = max(delay, retry_after)
+        except (TypeError, ValueError):
+            pass
+        if delay + 1 >= deadline - _time.monotonic():
+            raise RuntimeError(error)
+        _time.sleep(delay)
 
     try:
         data = r.json()
     except Exception as exc:
-        _note_call_cost(estimate_gemini_cost(model=model), "gemini_bad_json")
+        settle_model_attempt(reservation)
         raise RuntimeError("gemini_bad_json") from exc
 
-    usage = data.get("usageMetadata") or {}
-    _note_call_cost(
-        estimate_gemini_cost(
-            model=model,
-            input_tokens=usage.get("promptTokenCount"),
-            output_tokens=(usage.get("candidatesTokenCount") or 0) + (usage.get("thoughtsTokenCount") or 0)
-            if usage else None,
-        ),
-        "gemini", model=data.get("modelVersion") or model,
-    )
+    usage = data.get("usageMetadata") if isinstance(data, dict) else None
+    known = isinstance(usage, dict) and "promptTokenCount" in usage and all(
+        isinstance(usage.get(k, 0), int) and not isinstance(usage.get(k, 0), bool) and usage.get(k, 0) >= 0
+        for k in ("promptTokenCount", "candidatesTokenCount", "thoughtsTokenCount"))
+    cost = estimate_gemini_cost(model=model, input_tokens=usage["promptTokenCount"],
+                               output_tokens=usage.get("candidatesTokenCount", 0) + usage.get("thoughtsTokenCount", 0)) if known else None
+    settle_model_attempt(reservation, cost)
+    _CALL_COST.last = cost if cost is not None else estimate
+    if not isinstance(data, dict):
+        raise RuntimeError("gemini_bad_json")
 
     _CALL_COST.last_model = data.get("modelVersion") or model
     candidates = data.get("candidates") or []
     if not candidates:
         # blocked / empty
         feedback = data.get("promptFeedback") or {}
-        raise RuntimeError(f"gemini_empty_candidates: {feedback}")
+        raise RuntimeError(f"gemini_empty_candidates: {redact_secrets(str(feedback), api_key)}")
 
     candidate = candidates[0] or {}
     if candidate.get("finishReason") != "STOP":
@@ -408,8 +509,17 @@ def _analysis_context_blob(analysis: dict) -> str:
         "companion_context",
     ]
     slim = {k: analysis.get(k) for k in keep_keys if k in analysis}
+    # The full recall receipt stays in the local decision record. The model
+    # receives the same numeric aggregates and a bounded set of examples, so
+    # growing memory cannot silently multiply the prompt size or model cost.
+    if isinstance(slim.get("learning_context"), dict):
+        memory = dict(slim["learning_context"])
+        rows = memory.get("evidence_rows") or []
+        memory["evidence_rows"] = rows[:12]
+        memory["retained_receipt_count"] = len(rows)
+        slim["learning_context"] = memory
     try:
-        return json.dumps(slim, default=str, indent=2)
+        return json.dumps(slim, default=str, separators=(",", ":"))  # compact: fewer input tokens
     except Exception:
         return str(slim)
 
@@ -597,10 +707,10 @@ def trade_thesis_from_analysis(
             "target_idea": "",
             "risks": [],
             "playbook_agree": False,
-            "notes": str(exc)[:300],
+            "notes": redact_secrets(str(exc), cfg.get("api_key") or "")[:300],
             "llm_model": model,
             "llm_raw": "",
-            "error": f"gemini_exception: {exc}"[:200],
+            "error": ("gemini_exception: " + redact_secrets(str(exc), cfg.get("api_key") or ""))[:200],
         }
 
     parsed = _extract_json_object(raw)
@@ -664,9 +774,9 @@ def chat(
     try:
         return gemini_generate(prompt, system=CHAT_SYSTEM, json_mode=False, cfg=cfg)
     except RuntimeError as exc:
-        return f"[error: {exc}]"
+        return f"[error: {redact_secrets(str(exc), cfg.get('api_key') or '')}]"
     except Exception as exc:  # noqa: BLE001
-        return f"[error: gemini_exception: {exc}]"
+        return f"[error: gemini_exception: {redact_secrets(str(exc), cfg.get('api_key') or '')}]"
 
 
 def status_public() -> dict[str, Any]:
@@ -685,6 +795,13 @@ def status_public() -> dict[str, Any]:
 TYPESAFE_API_URL = "https://api.typesafe.ai/v1/systemone"
 DEFAULT_HORIZON_MIN = 20
 VALID_BRAIN_MODES = ("gemini", "mock", "jev", "claude")
+# Temporary product lock: credentials alone do not establish a working integration.
+# Remove only with a repaired provider path and verified end-to-end response.
+JEV_UNAVAILABLE = "JEV is temporarily unavailable until its integration is repaired and verified. Use Gemini or another available brain."
+
+
+def brain_selection_error(mode: str) -> str | None:
+    return JEV_UNAVAILABLE if str(mode).strip().lower() == "jev" else None
 
 # Persisted estimates share the same atomic usage file as call reservations.
 _CALL_COST = _threading.local()
@@ -711,21 +828,106 @@ class cost_scope:
     desk-wide total, so paper Moss spending can never pause live research.
     """
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, *, scope_cap=None, total_cap=None) -> None:
         self.name, self.prev = str(name), None
+        self.limits = {"scope_cap": scope_cap, "total_cap": total_cap}
 
     def __enter__(self):
         self.prev = getattr(_COST_SCOPE, "name", None)
+        self.prev_limits = getattr(_COST_SCOPE, "limits", {})
         _COST_SCOPE.name = self.name
+        _COST_SCOPE.limits = self.limits
         return self
 
     def __exit__(self, *exc):
         _COST_SCOPE.name = self.prev
+        _COST_SCOPE.limits = self.prev_limits
         return False
 
 
 def current_cost_scope() -> str | None:
     return getattr(_COST_SCOPE, "name", None)
+
+
+# Identifies reservations made by this process; others can no longer settle.
+_PROCESS_ID = uuid.uuid4().hex
+
+
+def _committed_usage(data, day_key, scope=None):
+    day = data["days"][day_key]
+    base = day if scope is None else day.get("scopes", {}).get(scope, {})
+    spent = float(base.get("model_usd", 0))
+    reserved = unknown = 0.
+    for key, entry in data["days"].items():
+        for row in entry.get("reservations", {}).values():
+            if scope is not None and row["scope"] != scope:
+                continue
+            # This process's in-flight calls count on every day, including across
+            # midnight. A reservation left pending by an earlier process (restart
+            # or crash mid-call) can never settle: keep its estimate as an unknown
+            # charge on its dispatch day instead of on every future day.
+            if row["status"] == "pending" and row.get("process") == _PROCESS_ID:
+                reserved += float(row["estimate_usd"])
+            elif key == day_key and row["status"] in ("pending", "unknown"):
+                unknown += float(row["estimate_usd"])
+    if any(not math.isfinite(v) or v < 0 for v in (spent, reserved, unknown)):
+        raise RuntimeError("model_usage_unavailable")
+    return {"reserved_usd": round(reserved, 6), "unknown_cost_usd": round(unknown, 6),
+            "committed_usd": round(spent + reserved + unknown, 6)}
+
+
+def reserve_model_attempt(estimate, *, model):
+    """Atomically reserve each HTTP attempt across the desk's worker threads."""
+    amount = float(estimate)
+    if not math.isfinite(amount) or amount <= 0:
+        raise RuntimeError("model_cost_estimate_unavailable")
+    scope = current_cost_scope() or "desk"
+    limits = getattr(_COST_SCOPE, "limits", {})
+    with _USAGE_LOCK:
+        data = _read_usage()
+        day_key = _usage_day()
+        for key, group in (("scope_cap", scope), ("total_cap", None)):
+            cap = limits.get(key)
+            if cap is None:
+                continue
+            if isinstance(cap, bool) or not math.isfinite(float(cap)) or float(cap) < 0:
+                raise RuntimeError("model_budget_unavailable")
+            if _committed_usage(data, day_key, group)["committed_usd"] + amount > float(cap) + 1e-9:
+                raise RuntimeError("model_dollar_budget_exceeded")
+        ident = uuid.uuid4().hex
+        data["days"][day_key].setdefault("reservations", {})[ident] = {
+            "estimate_usd": amount, "scope": scope, "model": model,
+            "status": "pending", "started_at": _time.time(), "process": _PROCESS_ID}
+        _write_usage(data)
+        return day_key, ident
+
+
+def settle_model_attempt(reservation, cost=None):
+    """Settle once on the dispatch day; unknown failures retain estimated cost."""
+    with _USAGE_LOCK:
+        data = _read_usage()
+        day = data["days"][reservation[0]]
+        row = day["reservations"][reservation[1]]
+        if row["status"] != "pending":
+            raise RuntimeError("model_reservation_already_settled")
+        if cost is None:
+            row["status"] = "unknown"
+        else:
+            add = float(cost)
+            if not math.isfinite(add) or add < 0:
+                raise RuntimeError("model_cost_unavailable")
+            _add_model_cost(day, add, row["model"], row["scope"])
+            row.update(status="settled", cost_usd=add)
+        _write_usage(data)
+
+
+def _add_model_cost(day, add, model, scope):
+    day["model_usd"] = round(day["model_usd"] + add, 6)
+    day["calls"] += 1
+    for collection, key in (("models", model), ("scopes", scope)):
+        subtotal = day.setdefault(collection, {}).setdefault(key, {"model_usd": 0, "calls": 0})
+        subtotal["model_usd"] = round(subtotal["model_usd"] + add, 6)
+        subtotal["calls"] += 1
 
 
 def record_model_cost(usd: float, *, meta: Optional[dict] = None) -> float:
@@ -736,16 +938,9 @@ def record_model_cost(usd: float, *, meta: Optional[dict] = None) -> float:
     with _USAGE_LOCK:
         data = _read_usage()
         day = data["days"][_usage_day()]
-        day["model_usd"] = round(day["model_usd"] + add, 6)
-        day["calls"] += 1
         name = str((meta or {}).get("model") or (meta or {}).get("brain") or "unknown")
-        subtotal = day.setdefault("models", {}).setdefault(name, {"model_usd": 0, "calls": 0})
-        subtotal["model_usd"] = round(subtotal["model_usd"] + add, 6)
-        subtotal["calls"] += 1
         scope = str((meta or {}).get("scope") or current_cost_scope() or "desk")
-        scoped = day.setdefault("scopes", {}).setdefault(scope, {"model_usd": 0, "calls": 0})
-        scoped["model_usd"] = round(scoped["model_usd"] + add, 6)
-        scoped["calls"] += 1
+        _add_model_cost(day, add, name, scope)
         _write_usage(data)
         return day["model_usd"]
 
@@ -755,11 +950,13 @@ def model_cost_today() -> dict[str, Any]:
         try:
             data = _read_usage()
             day = data["days"][_usage_day()]
+            scopes = set(day.get("scopes", {})) | {r["scope"] for d in data["days"].values() for r in d.get("reservations", {}).values()}
             return {"day": _usage_day(), "model_usd": round(day["model_usd"], 4),
+                    **_committed_usage(data, _usage_day()),
                     "calls": day["calls"], "models": day.get("models", {}),
-                    "scopes": day.get("scopes", {}), "estimated": True,
+                    "scopes": {s: {**day.get("scopes", {}).get(s, {}), **_committed_usage(data, _usage_day(), s)} for s in scopes}, "estimated": True,
                     "persistent": True, "tracking_since": data["tracking_since"],
-                    "pricing_as_of": "2026-09-23", "scope": "Recorded responses since tracking began; excludes earlier usage, taxes and unknown failed-call charges."}
+                    "pricing_as_of": "2026-09-23", "scope": "Estimated response costs plus reserved and unknown attempt costs. Vendor invoices are authoritative; this is not a guaranteed billing ceiling."}
         except (RuntimeError, ValueError, KeyError, TypeError):
             return {"day": _usage_day(), "model_usd": None, "calls": None, "error": "model_usage_unavailable"}
 
@@ -850,6 +1047,14 @@ def typesafe_api_key() -> str:
 def shadow_auditor_enabled() -> bool:
     v = (os.environ.get("SHADOW_AUDITOR", "1") or "1").strip().lower()
     return v not in ("0", "false", "off", "no")
+
+
+def shadow_auditor_uses_model() -> bool:
+    """A second (paid) model call checks the thesis only when its answer can act:
+    SHADOW_GATE=1, or SHADOW_AUDITOR=gemini to record it anyway. Otherwise the
+    observe-only audit uses the free keyword check."""
+    v = (os.environ.get("SHADOW_AUDITOR", "1") or "1").strip().lower()
+    return v == "gemini" or shadow_gate_enabled()
 
 
 def shadow_gate_enabled() -> bool:
@@ -994,10 +1199,6 @@ def jev_trade_thesis(
                     "flat": "No clear directional edge — abstain",
                 },
             },
-            "confidence": {
-                "type": "noul",
-                "instructions": "How confident is the directional call? (0–1)",
-            },
         },
     }
     try:
@@ -1015,32 +1216,39 @@ def jev_trade_thesis(
             timeout=max(3.0, float(timeout_sec or 12)),
         )
     except requests.Timeout as exc:
-        return _empty_thesis("jev-latest", "llm_timeout", str(exc)[:200])
+        return _empty_thesis("jev-latest", "llm_timeout", redact_secrets(str(exc), key)[:200])
     except requests.RequestException as exc:
-        return _empty_thesis("jev-latest", f"jev_request_failed: {exc}"[:200])
+        return _empty_thesis("jev-latest", ("jev_request_failed: " + redact_secrets(str(exc), key))[:200])
 
     if r.status_code != 200:
-        detail = (r.text or "")[:200]
+        detail = redact_secrets(r.text or "", key)[:200]
         return _empty_thesis("jev-latest", f"jev_http_{r.status_code}: {detail}"[:200])
 
     try:
         data = r.json()
     except Exception as exc:
-        return _empty_thesis("jev-latest", f"jev_bad_json: {exc}"[:200])
+        return _empty_thesis("jev-latest", ("jev_bad_json: " + redact_secrets(str(exc), key))[:200])
 
     import math
     answers = data.get("answers") if isinstance(data, dict) else None
     side_ans = answers.get("side") if isinstance(answers, dict) else None
-    conf_ans = answers.get("confidence") if isinstance(answers, dict) else None
-    if not isinstance(side_ans, dict) or not isinstance(conf_ans, dict):
+    if not isinstance(side_ans, dict) or side_ans.get("type") != "choice":
         return _empty_thesis("jev-latest", "invalid_jev_schema")
     side = side_ans.get("choice")
-    conf = conf_ans.get("noul")
+    # TypeSafe supplies confidence on the Choice itself. Noul answers are
+    # probabilities of a yes/no question, not confidence in another answer.
+    conf = side_ans.get("confidence")
     if (not isinstance(side, str) or side not in ("buy", "sell", "flat")
             or isinstance(conf, bool) or not isinstance(conf, (int, float))
             or not math.isfinite(conf) or not 0 <= conf <= 1):
         return _empty_thesis("jev-latest", "invalid_jev_schema")
-    probs = side_ans.get("probabilities") if isinstance(side_ans.get("probabilities"), dict) else None
+    probs = side_ans.get("probabilities")
+    if (not isinstance(probs, dict) or set(probs) != {"buy", "sell", "flat"}
+            or any(isinstance(p, bool) or not isinstance(p, (int, float))
+                   or not math.isfinite(p) or not 0 <= p <= 1 for p in probs.values())
+            or not math.isclose(sum(probs.values()), 1.0, abs_tol=.001)
+            or probs[side] < max(probs.values()) - 1e-12):
+        return _empty_thesis("jev-latest", "invalid_jev_schema")
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
     cost = estimate_jev_cost(
         input_tokens=usage.get("input_tokens"),
@@ -1145,7 +1353,7 @@ def shadow_audit_decision(
         return h
 
     llm_cfg = load_llm_config()
-    if llm_cfg.get("configured") and llm_cfg.get("api_key"):
+    if llm_cfg.get("configured") and llm_cfg.get("api_key") and shadow_auditor_uses_model():
         ticker = ((analysis or {}).get("ticker") or "?").upper()
         prompt = (
             f"Side claimed: {s}\nThesis: {thesis}\nTicker: {ticker}\n"
@@ -1561,21 +1769,21 @@ def should_route_cheap(analysis: Optional[dict] = None, cfg: Optional[dict] = No
     """Cheap brain router: mock for junk tape instead of Gemini.
 
     Route when (rel_vol weak AND range extreme) OR verdict AVOID.
-    Never route to mock under live broker modes: mock research cannot
-    execute live (signal_execution_block), so routing would only burn
-    research quota and block auto_live orders.
+    Under live broker modes only AVOID routes: mock research cannot execute
+    live (signal_execution_block), and AVOID can never reach the broker either,
+    so paying for its thesis buys nothing. Tradeable verdicts keep the real brain.
     """
     if not brain_router_enabled():
         return False, "router_off"
     cfg = cfg or {}
-    desk_mode = str(cfg.get("mode") or "").strip().lower()
-    if desk_mode in ("auto_live", "live_manual"):
-        return False, "live_mode_no_mock"
     mode = resolve_brain_mode(cfg)
     if mode != "gemini":
         return False, f"mode_{mode}"
     analysis = analysis or {}
     verdict = str(analysis.get("verdict") or "").upper()
+    desk_mode = str(cfg.get("mode") or "").strip().lower()
+    if desk_mode in ("auto_live", "live_manual"):
+        return (True, "verdict_avoid") if verdict == "AVOID" else (False, "live_mode_no_mock")
     vol = analysis.get("volume") or {}
     entry = analysis.get("entry_quality") or {}
     try:
@@ -1627,7 +1835,9 @@ def decide_trade_thesis(
         return out
 
     if mode == "jev":
-        out = jev_trade_thesis(analysis, cfg, timeout_sec=timeout_sec)
+        error = brain_selection_error(mode)
+        out = (_empty_thesis("jev-latest", error) if error
+               else jev_trade_thesis(analysis, cfg, timeout_sec=timeout_sec))
         if out.get("error"):
             # Hard hold — no silent mock fills when jev is configured
             return {
@@ -1711,9 +1921,13 @@ def status_public_extended(cfg: Optional[dict] = None) -> dict[str, Any]:
         base["model"] = "mock-momentum"
     elif mode == "jev":
         base["provider"] = "jev"
-        base["configured"] = bool(typesafe_api_key())
+        base["selection_error"] = brain_selection_error(mode)
+        base["configured"] = bool(typesafe_api_key()) and not base["selection_error"]
         base["model"] = "jev-latest"
     elif mode == "claude":
         import claude_brain
         base.update(provider="claude", configured=claude_brain.is_configured(), model=claude_brain.model_name())
+    if mode == "gemini":
+        base["model"] = (cfg or {}).get("llm_model") or base["model"]
+        base["health"] = brain_health(base["model"])
     return base

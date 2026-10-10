@@ -139,6 +139,12 @@
       set("#execution-summary-session", cfg.paper_research_enabled ? "Paper research running" : "Paper research stopped");
       document.body.classList.remove("money-live");
       $("#chrome-paper")?.classList.remove("live-endpoint");
+    } else if (!brokerMode(cfg)) {
+      set("#chrome-paper", "LIVE TRADING OFF");
+      $("#chrome-paper")?.classList.remove("live-endpoint");
+      set("#execution-summary-mode", "Live trading OFF");
+      set("#execution-summary-session", "Broker submissions off");
+      set("#chrome-note", "Live trading OFF · local paper practice remains separate");
     }
     const scoped = workspaceView(data);
     const count = scoped.pending_count;
@@ -353,6 +359,10 @@
     return "advanced";
   }
   function syncStickyOffsets() {
+    const statusHeight = Math.ceil($("#execution-summary")?.getBoundingClientRect().height || 0);
+    const navigationHeight = Math.ceil($(".desk-topnav")?.getBoundingClientRect().height || 0);
+    document.documentElement.style.setProperty("--execution-summary-h", `${statusHeight}px`);
+    document.documentElement.style.setProperty("--desk-sticky-h", `${statusHeight + navigationHeight + 16}px`);
     const chrome = $("#paper-chrome");
     if (!chrome) return;
     const h = Math.ceil(chrome.getBoundingClientRect().height) || 36;
@@ -688,6 +698,7 @@
       }
     }
     document.body.classList.toggle("is-stale", stale);
+    syncOperatingStatus(state, stale || !lastDataAt);
     if (state) renderLiveTestReadiness(state);
     const b = $("#stale-banner");
     if (b) {
@@ -997,7 +1008,9 @@
         const responseAge = feed.api_response_age_seconds != null
           ? `Gateway responded ${Math.round(feed.api_response_age_seconds)}s ago`
           : "Gateway response not yet confirmed";
-        pnlFeed.textContent = `Daily P&L feed: ${status} · value updates on change · ${feed.callbacks} update(s) on this subscription · ${feed.retries} automatic retry(s) · ${valueAge} · ${responseAge}`;
+        const accountDownload = feed.account_download_completed === true && feed.status !== "ready"
+          ? " · Account download completed; Daily P&L is still missing" : "";
+        pnlFeed.textContent = `Daily P&L feed: ${status} · value updates on change · ${feed.callbacks} update(s) on this subscription · ${feed.retries} automatic retry(s) · ${valueAge} · ${responseAge}${accountDownload}`;
       } else {
         pnlFeed.textContent = feed
           ? `Daily P&L feed: ${feed.status === "waiting" ? "waiting for Gateway" : feed.status} · ${feed.callbacks} update(s) on this subscription · ${feed.retries} automatic retry(s)${feed.last_update_age_seconds != null ? ` · last update ${Math.round(feed.last_update_age_seconds)}s ago` : ` · waiting ${Math.round(feed.waiting_seconds)}s`}`
@@ -1463,10 +1476,17 @@
     if (startup) {
       const broker = data.broker || {};
       const book = data.broker_book;
-      startup.textContent = broker.paper_mode == null ? (broker.connection_error || data.startup?.message || "")
+      startup.textContent = broker.configured === false
+        ? "No broker is configured, so live trading is off. Paper practice still works."
+        : broker.connected === false && broker.connection_error ? `Broker not connected: ${broker.connection_error}`
+        : broker.paper_mode == null ? (broker.connection_error || data.startup?.message || "")
         : book?.ok === false ? `Broker account identified; account data unavailable: ${book.error || "check Gateway"}`
         : book?.risk_error ? `Broker account connected. ${book.risk_error}`
         : "Broker account identified. Each order still passes account and risk checks.";
+      // Updated code on disk that this running desk has not loaded yet.
+      if (data.startup?.code_stale && data.startup?.code_message) {
+        startup.textContent = `${data.startup.code_message} ${startup.textContent}`.trim();
+      }
       startup.hidden = !startup.textContent;
     }
   }
@@ -1675,13 +1695,22 @@
       const simpleUi = getUiMode() === "simple" || document.body.classList.contains("ui-simple");
       // Always keep quiet class — chill vibe; ok/warn are soft hints not neon
       llmEl.classList.add("quiet", "soft");
-      if (brain === "mock") {
+      if (!data.llm) {
+        llmEl.textContent = "Checking research model…";
+        llmEl.classList.remove("warn-pill", "ok-pill");
+        llmEl.title = "Waiting for model configuration status.";
+      } else if (brain === "mock") {
         llmEl.textContent = simpleUi ? "Mock" : "Mock brain";
         llmEl.classList.remove("warn-pill");
         llmEl.classList.add("ok-pill");
         llmEl.title = simpleUi ? "Brain (mock) — picks Hold, Buy, or Sell" : "Mock brain";
       } else if (brain === "jev") {
-        if (llm.configured || llm.jev_key_present) {
+        if (llm.selection_error) {
+          llmEl.textContent = "JEV unavailable";
+          llmEl.classList.add("warn-pill");
+          llmEl.classList.remove("ok-pill");
+          llmEl.title = llm.selection_error;
+        } else if (llm.configured) {
           llmEl.textContent = simpleUi ? "Jev" : "Jev on";
           llmEl.classList.remove("warn-pill");
           llmEl.classList.add("ok-pill");
@@ -1740,7 +1769,9 @@
       const ls = String(s.llm_side).toLowerCase();
       bits.push(`<span class="badge badge-llm" title="Brain lean (Buy/Sell/Hold) — research only">Brain ${escapeHtml(ls)}</span>`);
     }
-    if (s.llm_error) {
+    if (s.data_error || s.llm_error === 'stale_or_unverified_market_data') {
+      bits.push('<span class="badge badge-watch" title="Waiting for a fresh quote; no brain decision was requested">Waiting for market data</span>');
+    } else if (s.llm_error) {
       bits.push(`<span class="badge badge-avoid" title="${escapeHtml(s.llm_error)}">Brain error</span>`);
     }
     const rflags = s.research_flags || (s.research_flag ? [s.research_flag] : []);
@@ -2158,23 +2189,45 @@
   let refreshSeq = 0;
   let stateLiteGeneration = 0;
   let refreshInFlight = null;
+  let refreshLiteFields = null;
   async function refresh() {
     // Coalesce: overlapping polls used to let an older /api/state land after a newer one.
     if (refreshInFlight) return refreshInFlight;
     const mySeq = ++refreshSeq;
     const startedAtGeneration = stateLiteGeneration;
+    const touched = {top: new Set(), config: new Set(), ledger: new Set(), partialPositions: false};
+    refreshLiteFields = touched;
     refreshInFlight = (async () => {
       try {
         const data = await api("/api/state", { timeoutMs: fullStateSeen ? 12000 : 30000 });
         // A stream update received during this request may be newer than its
         // snapshot, including history omitted by the next compact delta.
-        if (mySeq !== refreshSeq || startedAtGeneration !== stateLiteGeneration) return;
+        if (mySeq !== refreshSeq) return;
+        if (startedAtGeneration !== stateLiteGeneration && state) {
+          // Keep the newer stream fields, but still accept full-only fields
+          // such as model status and watchlist. Otherwise a busy stream can
+          // starve the first full load indefinitely.
+          for (const key of touched.top) {
+            if (Object.prototype.hasOwnProperty.call(state, key)) data[key] = state[key];
+          }
+          for (const [key, fields] of [["config", touched.config], ["ledger", touched.ledger]]) {
+            data[key] = {...data[key]};
+            for (const field of fields) {
+              if (Object.prototype.hasOwnProperty.call(state[key] || {}, field)) data[key][field] = state[key][field];
+            }
+          }
+          if (touched.partialPositions && !touched.ledger.has("positions")) {
+            const updates = new Map((state.ledger?.positions || []).map(p => [p.ticker, p]));
+            data.ledger.positions = (data.ledger.positions || []).map(p => ({...p, ...updates.get(p.ticker)}));
+          }
+        }
         pollErrToasts = 0;
         noteFresh();
         render(data);
         warnCorruptFiles(data && data.corrupt_files);
       } finally {
         refreshInFlight = null;
+        refreshLiteFields = null;
       }
     })();
     try {
@@ -3501,7 +3554,7 @@
           ? `Paused | ${skipLabel[skip] || skip}`
           : "Idle";
       gateLoop.className = "gate " + (running ? "ok" : skip ? "warn" : "");
-      if(mossEnabled) gateLoop.textContent = mossActive ? `Moss paper · every ${cfg.moss_paper.interval_sec}s` : 'Moss paper paused';
+      if(mossEnabled) gateLoop.textContent = mossActive ? `Paper research · every ${cfg.moss_paper.interval_sec}s` : 'Paper research paused';
     }
 
     const lat = loop.latency || {};
@@ -3545,9 +3598,9 @@
       }
     }
     const posEl = $("#loop-pos");
-    if(mossEnabled && healthEl) healthEl.textContent = !mossActive ? 'Moss paused' : loop.rth_ok ? 'Moss scheduled' : 'Moss waiting for market';
+    if(mossEnabled && healthEl) healthEl.textContent = !mossActive ? 'Paper research paused' : loop.rth_ok ? 'Paper research scheduled' : 'Paper research waiting for market';
     const researchRules = $("#paper-research-rules");
-    if(researchRules) researchRules.textContent = mossEnabled ? 'Moss controls automatic paper entries. Mock or routed research, stale prices and unverified evidence are excluded. Stop paper research pauses new entries; fresh reducing exits can continue.' : 'Fresh directional mock research may simulate trades. Hold, invalid data and stale quotes remain blocked. Stopping new research does not close paper positions.';
+    if(researchRules) researchRules.textContent = mossEnabled ? 'Paper research controls automatic paper entries. Mock or routed research, stale prices and unverified evidence are excluded. Stop paper research pauses new entries; fresh reducing exits can continue.' : 'Fresh directional mock research may simulate trades. Hold, invalid data and stale quotes remain blocked. Stopping new research does not close paper positions.';
     if (posEl) {
       const positions = ledger.positions || [];
       if (!positions.length) posEl.textContent = "None";
@@ -4180,27 +4233,29 @@
     }
     const stale = buzz.stale ? " · may be outdated" : "";
     const fromCache = buzz.from_cache ? " · from cache" : "";
-    const authMode = buzz.auth_mode || (buzz.reddit_auth && buzz.reddit_auth.mode) || "";
+    const auth = buzz.reddit_auth || {};
+    const authMode = auth.mode || buzz.auth_mode || "";
     let authBit = "";
     if (authMode) {
       const am = String(authMode).toLowerCase();
-      if (am.includes("oauth")) authBit = " · Reddit login (OAuth)";
+      if (auth.message) authBit = ` · ${auth.message}`;
+      else if (am.includes("oauth")) authBit = " · Reddit login (OAuth)";
       else if (am.includes("public")) authBit = " · public feed (may be blocked)";
       else authBit = ` · ${authMode}`;
     }
     if (meta) {
-      meta.textContent = `Last refresh: ${when}${stale}${fromCache}${authBit}`;
+      meta.textContent = `Last refresh: ${when}${stale}${fromCache}${buzz.refreshing ? ' · refreshing in background' : ''}${authBit}`;
       meta.title = "When Reddit mention data was last refreshed (research only)";
     }
     if (errEl) {
-      const errs = buzz.errors || [];
+      const errs = auth.state === 'needs_credentials' ? [] : [...new Set(buzz.errors || [])];
       errEl.textContent = errs.length ? errs.slice(0, 4).join(" | ") : "";
     }
     const liveNote = $("#buzz-live-chat-note");
     const liveTicks = $("#buzz-live-chat-tickers");
     const live = buzz.live_chat || {};
     if (liveNote) {
-      liveNote.textContent = live.note || "Live Chat needs Reddit login - connect later.";
+      liveNote.textContent = live.note || "Community Live Chat is not connected by this reader.";
     }
     if (liveTicks) {
       const pasteRows = live.paste_tickers || [];
@@ -4235,7 +4290,7 @@
     }
     const rows = buzz.tickers || buzz.top || [];
     if (!rows.length) {
-      list.innerHTML = `<div class="empty">${buzz.stale ? "Buzz is warming up — check back shortly." : "No ticker mentions yet. Reddit may be blocking public feeds; a login helps when configured."}</div>`;
+      list.innerHTML = `<div class="empty">${escapeHtml(auth.state === 'needs_credentials' ? auth.message : buzz.refreshing ? "Refreshing source data in the background." : "No current ticker mentions from the connected sources.")}</div>`;
       return;
     }
     const hotCut = rows[0] && (rows[0].weighted_mentions || rows[0].mentions || 0);
@@ -4328,7 +4383,9 @@
     lastPendingCount = pendingCount;
     try { syncPhase(cfg.session_active !== undefined ? cfg : (state?.config || {}), pendingCount, data); } catch (_) {}
     // Background tab: show the waiting count in the browser tab itself.
-    document.title = pendingCount > 0 ? `(${pendingCount}) waiting · nadzeeɫ` : "nadzeeɫ";
+    // Keep the page name ("Real account · nadzeel"); only prefix the waiting count.
+    const baseTitle = (document.documentElement.dataset.baseTitle ??= document.title.replace(/^\(\d+\) waiting · /, ""));
+    document.title = pendingCount > 0 ? `(${pendingCount}) waiting · ${baseTitle}` : baseTitle;
     const hint = $("#opp-hint-simple");
     if (hint) {
       const m = cfg.mode || "manual";
@@ -4742,15 +4799,10 @@
     const symbols = strat.symbols && strat.symbols.length ? strat.symbols
       : (pol.symbols || []);
     const spyOnly = false; // live auto-orders track full evaluated equity universe
-    let maxOrder = practicalRail(
-      strat.max_order_usd != null ? Number(strat.max_order_usd)
-      : Number(pol.max_order_usd ?? ks.max_position_size_usd), "usd");
-    let maxLoss = practicalRail(
-      strat.max_daily_loss_usd != null ? Number(strat.max_daily_loss_usd)
-      : Number(pol.max_daily_loss_usd ?? ks.max_daily_loss_usd), "usd");
-    let maxOrd = practicalRail(
-      strat.max_orders_per_day != null ? Number(strat.max_orders_per_day)
-      : Number(pol.max_orders_per_day ?? ks.max_trades_per_day), "trades");
+    const rails = data.live_risk_limits;
+    let maxOrder = rails?.verified === true ? Number(rails.max_order_usd) : null;
+    let maxLoss = rails?.verified === true ? Number(rails.max_daily_loss_usd) : null;
+    let maxOrd = rails?.verified === true ? Number(rails.max_orders_per_day) : null;
     const used = strat.orders_used != null ? Number(strat.orders_used)
       : Number(data.broker_trades_today ?? 0);
     let left = maxOrd != null
@@ -4780,17 +4832,17 @@
     const uncappedTrades = !Number.isFinite(maxOrd) || maxOrd >= 1e5;
     flags.push({
       ok: true,
-      text: uncappedOrder ? "Max order uncapped (broker rules)" : `Max order ${fmtMoney(maxOrder)}`,
+      text: uncappedOrder ? "Order limit awaiting account data" : `Max order ${fmtMoney(maxOrder)}`,
     });
     flags.push({
       ok: true,
-      text: uncappedLoss ? "Daily loss uncapped (broker rules)" : `Daily loss cap ${fmtMoney(maxLoss)}`,
+      text: uncappedLoss ? "Loss limit awaiting account data" : `Daily loss cap ${fmtMoney(maxLoss)}`,
     });
     const ordersOk = left == null || uncappedTrades ? true : left > 0;
     flags.push({
       ok: ordersOk,
       text: uncappedTrades
-        ? `Orders ${Number.isFinite(used) ? used : 0} today · uncapped`
+        ? `Orders ${Number.isFinite(used) ? used : 0} today · awaiting account limits`
         : (Number.isFinite(maxOrd)
           ? `Orders ${Number.isFinite(used) ? used : 0}/${maxOrd} · ${left} left`
           : "Order cap unset"),
@@ -4827,13 +4879,35 @@
 
   
   /* BEGINNER_UX_PULSE */
+  function syncOperatingStatus(data, stale = false) {
+    const book = data?.broker_book || {}, cfg = data?.config || {};
+    const known = !stale && book.ok === true;
+    const riskKnown = known && book.risk_ready === true && typeof book.day_pnl_usd === "number" && Number.isFinite(book.day_pnl_usd);
+    const mode = cfg.mode, enabled = mode === "live_manual" || mode === "auto_live";
+    const summary = stale ? "Broker account status is stale. Refresh before reviewing a real order."
+      : !known ? "Broker account data unavailable. New risk requires fresh broker checks."
+      : !riskKnown ? "New risk blocked: " + (book.risk_error || "Daily P&L or account checks unavailable.")
+      : "Broker risk inputs available; every order still needs final checks.";
+    const positions = known && Array.isArray(book.positions) ? book.positions.length : null;
+    const exits = !enabled ? "Automatic exits OFF."
+      : mode !== "auto_live" || data?.strategy_status?.live_agent_enabled !== true || cfg.session_active !== true
+        ? "Fox's automatic exit supervision is not active."
+        : "Fox's exits need this app and Gateway; broker-native protection is not qualified.";
+    const exposure = (positions == null ? "Broker exposure unverified. " : positions + " broker position" + (positions === 1 ? ". " : "s. "))
+      + (stale ? "Exit supervision unverified." : exits);
+    for (const [id, text] of [["#operating-risk", summary], ["#operating-exposure", exposure]]) {
+      const el = $(id);
+      if (el && el.textContent !== text) el.textContent = text;
+    }
+  }
+
   function syncBeginnerPulse(data) {
     try {
       const book = (data && data.broker_book) || {};
       const dayPnl = book.day_pnl_usd;
       const pnlKnown = typeof dayPnl === "number" && Number.isFinite(dayPnl);
       const ready = book.ok && book.risk_ready === true && pnlKnown;
-      const readyWord = ready ? "Ready" : !book.ok ? "Not connected" : book.risk_ready === true ? "Almost — waiting on P&L" : "Not ready";
+      const readyWord = ready ? "Data available" : !book.ok ? "Not connected" : book.risk_ready === true ? "Almost — waiting on P&L" : "Not ready";
       const readyCls = ready ? "is-ready" : readyWord.indexOf("Almost") >= 0 ? "is-partial" : "is-blocked";
       const dot = $("#bx-ready-dot");
       if (dot) {
@@ -4850,9 +4924,11 @@
             ? "Daily P&L verified — order checks still apply"
             : "New risk stays blocked until day P&L is verified";
       }
+      // Say why a number is missing instead of a bare dash.
+      const missingMoney = !book.ok ? "Not connected" : "Waiting for broker";
       const pnlEl = $("#bx-day-pnl");
       if (pnlEl) {
-        pnlEl.textContent = pnlKnown ? (typeof fmtSigned === "function" ? fmtSigned(dayPnl) : String(dayPnl)) : "—";
+        pnlEl.textContent = pnlKnown ? (typeof fmtSigned === "function" ? fmtSigned(dayPnl) : String(dayPnl)) : missingMoney;
         pnlEl.classList.toggle("pos", pnlKnown && dayPnl >= 0);
         pnlEl.classList.toggle("neg", pnlKnown && dayPnl < 0);
       }
@@ -4860,10 +4936,10 @@
       if (pnlCard) pnlCard.classList.toggle("is-live", pnlKnown);
       const bp = book.buying_power;
       const bpEl = $("#bx-buying-power");
-      if (bpEl) bpEl.textContent = typeof bp === "number" && Number.isFinite(bp) ? fmtMoney(bp) : "—";
+      if (bpEl) bpEl.textContent = typeof bp === "number" && Number.isFinite(bp) ? fmtMoney(bp) : missingMoney;
       const eq = book.equity;
       const eqEl = $("#bx-equity");
-      if (eqEl) eqEl.textContent = typeof eq === "number" && Number.isFinite(eq) ? fmtMoney(eq) : "—";
+      if (eqEl) eqEl.textContent = typeof eq === "number" && Number.isFinite(eq) ? fmtMoney(eq) : missingMoney;
 
       const goalMini = $("#bx-goal-mini");
       const soft = Number(data?.config?.soft_daily_goal_usd ?? data?.config?.daily_target_usd ?? $("#live-soft-goal")?.value);
@@ -4890,6 +4966,7 @@
   }
 
   function renderRiskCockpit(data) {
+    syncOperatingStatus(data);
     syncBeginnerPulse(data);
     const grid = $("#risk-cockpit-grid");
     const book = data.broker_book || {};
@@ -4920,7 +4997,7 @@
     const permission = broker.paper_mode == null ? "Identity unverified" : "Order checks required";
     const accountState = !book.ok ? "Unavailable" : book.risk_error ? "Incomplete" : "Available";
     const ready = book.ok && book.risk_ready === true && typeof dayPnl === "number" && Number.isFinite(dayPnl);
-    const readyWord = ready ? "Ready" : !book.ok ? "Blocked" : book.risk_ready === true ? "Partial" : "Blocked";
+    const readyWord = ready ? "Data available" : !book.ok ? "Blocked" : book.risk_ready === true ? "Partial" : "Blocked";
     const readyCls = ready ? "is-ready" : readyWord === "Partial" ? "is-partial" : "is-blocked";
 
     const pnlKnown = typeof dayPnl === "number" && Number.isFinite(dayPnl);
@@ -4973,7 +5050,7 @@
           <span class="vp1-meter-sub">${rows.length} open position${rows.length === 1 ? "" : "s"}</span>
         </div>
         <div class="vp1-meter-tile" data-meter="ready">
-          <span class="vp1-meter-lbl">Ready status</span>
+          <span class="vp1-meter-lbl">Account data</span>
           <span class="vp1-meter-val" id="risk-promotion"><span class="vp1-ready-row"><span class="vp1-ready-dot ${readyCls} vp1-pulse" aria-hidden="true"></span><span>${escapeHtml(readyWord)}</span></span></span>
           <span class="vp1-meter-sub">${escapeHtml(accountState)} · account data</span>
         </div>`;
@@ -5040,7 +5117,7 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
       if (state) state.buzz = data;
       renderBuzzPanel(data);
       renderBuzzSimplePill({ buzz: data });
-      toast("Buzz refreshed");
+      toast(data.refreshing ? "Source refresh requested · running in background" : "Cached source data loaded");
     } catch (e) {
       toast(e.message || "Buzz refresh failed", true);
     }
@@ -5051,6 +5128,13 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
   });
   setUiMode(getUiMode());
   syncStickyOffsets();
+  if (typeof ResizeObserver === "function") {
+    const chromeSize = new ResizeObserver(syncStickyOffsets);
+    for (const selector of ["#execution-summary", ".desk-topnav"]) {
+      const element = $(selector);
+      if (element) chromeSize.observe(element);
+    }
+  }
   window.addEventListener("resize", () => {
     if (stickyResizeTimer) clearTimeout(stickyResizeTimer);
     stickyResizeTimer = setTimeout(syncStickyOffsets, 80);
@@ -5539,6 +5623,22 @@ $("#btn-buzz-refresh")?.addEventListener("click", async () => {
   function applyStateLite(lite) {
     if (!lite || lite.ok === false) return;
     stateLiteGeneration++;
+    if (refreshLiteFields) {
+      const touched = refreshLiteFields;
+      Object.keys(lite).filter(key => !["config", "ledger"].includes(key)).forEach(key => touched.top.add(key));
+      Object.keys(lite.config || {}).forEach(key => touched.config.add(key));
+      for (const key of ["session_active", "brain_mode", "heat_enabled", "radar_enabled", "slip_bps", "fee_bps"]) {
+        if (Object.prototype.hasOwnProperty.call(lite, key)) touched.config.add(key);
+      }
+      for (const ledger of [lite.broker_ledger, lite.paper_ledger]) {
+        Object.keys(ledger || {}).forEach(key => touched.ledger.add(key));
+      }
+      if (lite.open_position?.items) {
+        const truncated = lite.open_position.truncated || Number(lite.open_position.count) > lite.open_position.items.length;
+        if (truncated) touched.partialPositions = true;
+        else touched.ledger.add("positions");
+      }
+    }
     // Alerts: always attempt (id Set dedupes); do not depend on lite signature
     if (lite.alerts) consumeDeskAlerts(lite.alerts);
     const sig = liteSignature(lite);

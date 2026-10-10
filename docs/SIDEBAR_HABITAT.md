@@ -1,5 +1,7 @@
 # Dreamy desert companion perches
 
+Current expression graphics and speech behavior: [Calm, expressive companions](COMPANION_INTELLIGENCE.md), September 25, 2026. That update replaces the older full-body animation and appearance controls described below. Greek constellation charts were removed from the active UI in the Fox workspace release; the astronomy section below is historical.
+
 Updated September 24, 2026. Frontend/template presentation using the existing Flask/Jinja and vanilla JavaScript style.
 
 ## Accepted design

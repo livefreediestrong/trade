@@ -14,7 +14,6 @@ or None / empty list on failure. Never raises.
 """
 from __future__ import annotations
 
-import io
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path

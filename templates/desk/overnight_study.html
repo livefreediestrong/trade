@@ -1,0 +1,23 @@
+<section class="panel workbench-wide" id="overnight-study" aria-labelledby="overnight-title">
+  <h3 id="overnight-title">Overnight or daytime: what changed?</h3>
+  <p>Compare holding from the closing bell to the next opening bell, holding during the trading day, and simply buying and holding. This uses historical prices.</p>
+  <form id="overnight-form" class="overnight-form">
+    <label>Stock or fund symbols (up to 3)<input id="overnight-symbols" value="MU, NVDA, SPY" maxlength="35" autocomplete="off" required /></label>
+    <label>First day<input id="overnight-start" type="date" min="2025-01-10" required /></label>
+    <label>Last day<input id="overnight-end" type="date" min="2025-01-15" required /></label>
+    <label>Hypothetical amount (USD)<input id="overnight-capital" type="number" min="1" max="100000000" step="0.01" value="1000" required /></label>
+    <label>Cost each time you buy or sell (%)<input id="overnight-cost" type="number" min="0" max="1" step="0.01" value="0.05" required /></label>
+    <label>Share of amount invested (%)<input id="overnight-fill" type="number" min="1" max="100" step="1" value="100" required /></label>
+    <button type="submit" class="btn" id="overnight-run">Run and save comparison</button>
+  </form>
+  <p class="hint-line">The first overnight starts at the previous trading day's close. Costs combine assumed fees, spread and price slippage. Uninvested money earns nothing. All variants are kept, including poor or unavailable results; 40 comparisons fit in this archive.</p>
+  <p id="overnight-status" role="status" aria-live="polite">Loading saved comparisons…</p>
+  <label id="overnight-saved-label" hidden>Saved comparison<select id="overnight-saved"></select></label>
+  <div id="overnight-results"></div>
+  <details class="overnight-method"><summary>How to read this experiment</summary>
+    <p>“Reinvested” rolls each gain or loss into the next trade. “Same amount each trade” adds separate trade results using your original amount every time. Buy-and-hold makes one purchase and one sale over the same overall dates.</p>
+    <p>Historical prices include the provider's split and dividend adjustments. The opening prices are adjusted to the same basis for comparison; they are not executable order prices. The same fraction is invested on every trade. This does not simulate random missed fills, auction queues, whole shares, cash settlement, borrowing, taxes or earnings events.</p>
+    <p>The earlier/later split is a look back at already available history. A profitable result is an idea to test with future observations, not proof it will work. Changing Woman and Fox do not change live rules from this study.</p>
+    <p><a href="https://help.yahoo.com/kb/SLN28256.html" target="_blank" rel="noopener noreferrer">Yahoo's price-adjustment explanation</a> · <a href="https://www.nyse.com/markets/hours-calendars" target="_blank" rel="noopener noreferrer">US market sessions</a></p>
+  </details>
+</section>

@@ -29,6 +29,8 @@
 }
 .desk-live-subnav a:hover { border-color: var(--border); background: var(--panel); }
 .bx-flow { display: flex; flex-direction: column; gap: 14px; }
+/* .section-grid sets align-items:start for its grid; in the flex column that shrank every card to its content. */
+.section-grid.bx-flow { align-items: stretch; }
 .bx-card {
   border: 1px solid var(--border); border-radius: 14px; padding: 14px 16px;
   background: var(--bx-card); min-width: 0;
@@ -92,6 +94,8 @@
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--bx-sell) 18%, transparent), inset 0 -28px 40px -30px var(--bx-glow-dn);
 }
 .mt-tile.is-flash { animation: mt-flash .55s ease; }
+.mt-tile.is-na { opacity: .6; }
+.mt-tile.is-na .mt-chg { color: var(--muted, #9aa); }
 @keyframes mt-flash {
   0% { transform: scale(1); }
   40% { transform: scale(1.03); }

@@ -42,7 +42,7 @@ def configured_map() -> dict[str, bool]:
         "on",
     )
     return {
-        "polygon": _has("POLYGON_API_KEY"),
+        "polygon": _has("MASSIVE_API_KEY") or _has("POLYGON_API_KEY"),
         "fred": _has("FRED_API_KEY"),
         "finnhub": finnhub,
         "benzinga": _has("BENZINGA_API_KEY"),

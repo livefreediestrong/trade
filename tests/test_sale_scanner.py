@@ -27,7 +27,9 @@ def scanner(tmp_path, rows=None, fetch=history, clock=lambda: NOW, directory=Non
 
 
 def finish(scan):
-    scan.worker.join(5)
+    # This is a coverage/lifecycle check, not a disk-speed benchmark. Shared
+    # Windows CI/upkeep can delay durable commits without a worker defect.
+    scan.worker.join(30)
     assert not scan.worker.is_alive(), "Worker did not finish"
     return scan.snapshot()
 
@@ -45,6 +47,10 @@ def test_entire_directory_beyond_manual_cap_and_class_share_mapping(tmp_path):
     assert result["state"] == "complete" and result["coverage_pct"] == 100
     assert len(result["results"]) == 40
     assert len(scan.snapshot(page=3)["results"]) == 26
+    simple = scan.snapshot(size=10)  # Simple view: top 10
+    assert len(simple["results"]) == 10 and simple["page_size"] == 10
+    with pytest.raises(ValueError):
+        scan.snapshot(size=7)
     assert scan.snapshot(kind="etf")["matched"] == 53
     assert scan.snapshot(kind="stock", query="BRK-B")["matched"] == 1
     assert scan.snapshot(query="%")["matched"] == 0
@@ -146,6 +152,93 @@ def test_wrong_identity_stale_nonfinite_never_rank(tmp_path, patch):
     scan = scanner(tmp_path, fetch=lambda s, n: {**history(s, n), **patch})
     scan.start(); d = finish(scan)
     assert d["excluded"] == 1 and not d["results"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("below_typical_pct", None), ("below_typical_pct", True),
+    ("below_typical_pct", "unknown"), ("avg_daily_dollar_volume", -1),
+    ("avg_daily_dollar_volume", "unknown"), ("return_20_sessions_pct", {}),
+    ("completed_session_relative_volume", -1),
+])
+def test_malformed_ranking_values_excluded_without_stopping_pass(tmp_path, field, value):
+    def fetch(symbol, now):
+        row = history(symbol, now)
+        if symbol == "BAD": row[field] = value
+        return row
+    scan = scanner(tmp_path, [listing("BAD"), listing("GOOD")], fetch)
+    scan.start(); result = finish(scan)
+    assert result["state"] == "complete"
+    assert result["checked"] == 2 and result["excluded"] == 1
+    assert [r["symbol"] for r in result["results"]] == ["GOOD"]
+
+
+def test_missing_ranking_field_does_not_leave_symbol_pending(tmp_path):
+    def fetch(symbol, now):
+        row = history(symbol, now)
+        if symbol == "BAD": row.pop("below_typical_pct")
+        return row
+    scan = scanner(tmp_path, [listing("BAD"), listing("GOOD")], fetch)
+    scan.start(); result = finish(scan)
+    assert result["state"] == "complete" and result["excluded"] == 1
+    assert result["pending"] == 0 and result["valid"] == 1
+
+
+def test_numeric_strings_rank_as_numbers(tmp_path):
+    scan = scanner(tmp_path, fetch=lambda s, n: {**history(s, n), "below_typical_pct": "9.5"})
+    scan.start(); result = finish(scan)
+    assert result["results"][0]["below_typical_pct"] == 9.5
+
+
+def test_worker_reuses_its_connection_and_closes_after_pause(tmp_path, monkeypatch):
+    import sqlite3
+    import sale_scanner
+    opened = []
+    connect = sqlite3.connect
+    class TrackedConnection(sqlite3.Connection):
+        closed = False
+        def close(self):
+            super().close()
+            self.closed = True
+    def tracked(*args, **kwargs):
+        connection = connect(*args, **kwargs, factory=TrackedConnection)
+        if threading.current_thread().name == "sale-research": opened.append(connection)
+        return connection
+    monkeypatch.setattr(sale_scanner.sqlite3, "connect", tracked)
+    scan = scanner(tmp_path, [listing("A"), listing("B"), listing("C")])
+    def fetch(symbol, now):
+        # Committed progress must be visible to an independent connection
+        # while the provider request is running (no lock held around I/O).
+        with connect(scan.path) as db:
+            assert db.execute("SELECT count(*) FROM scan_rows WHERE state='valid'").fetchone()[0] == 0
+        scan.stop.set()
+        return history(symbol, now)
+    scan.fetch = fetch
+    scan.start(); result = finish(scan)
+    assert result["state"] == "paused" and result["checked"] == 1
+    assert len(opened) == 1
+    assert opened[0].closed
+    scan.fetch = history
+    scan.start(resume=True); assert finish(scan)["valid"] == 3
+    assert len(opened) == 2
+    assert all(connection.closed for connection in opened)
+
+
+def test_transient_worker_connection_failure_is_visible_and_preserves_results(tmp_path, monkeypatch):
+    import sqlite3
+    scan = scanner(tmp_path)
+    scan.start(); finish(scan)
+    connect = scan._connect
+    failed = []
+    def fail_once():
+        if threading.current_thread().name == "sale-research" and not failed:
+            failed.append(True)
+            raise sqlite3.OperationalError("database is locked")
+        return connect()
+    monkeypatch.setattr(scan, "_connect", fail_once)
+    scan.start(); result = finish(scan)
+    assert result["state"] == "paused" and result["valid"] == 1
+    assert "storage could not be opened" in result["message"]
+    scan.start(resume=True); assert finish(scan)["state"] == "complete"
 
 
 def test_refresh_failure_preserves_last_pass(tmp_path):

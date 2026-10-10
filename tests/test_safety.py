@@ -237,7 +237,8 @@ def test_signal_prune_keeps_pending():
 def broker_on(monkeypatch):
     import broker_alpaca
     from broker_fixtures import configure
-    cfg = dict(desk.load_config(), session_active=True, mode="auto_live", rth_only=False)
+    # Transport/fill accounting is independent of Fox authorization (covered by test_live_agent).
+    cfg = dict(desk.load_config(), session_active=True, mode="live_manual", rth_only=False)
     configure(monkeypatch, cfg)
     desk.save_config(cfg)
     monkeypatch.setattr(broker_alpaca, "get_open_orders", lambda: {"ok": True, "orders": []})
@@ -256,7 +257,7 @@ def _sig():
 
 
 def _cfg():
-    return dict(desk.load_config(), session_active=True, mode="auto_live")
+    return dict(desk.load_config(), session_active=True, mode="live_manual")
 
 
 def test_broker_reject_is_not_booked_as_paper(monkeypatch, broker_on):

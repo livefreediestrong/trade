@@ -1,6 +1,6 @@
 # Changing Woman's headline commentary
 
-Implemented September 24, 2026. This is a curated ten-source mix for the US desk,
+Implemented September 24, 2026. This is a curated twelve-source mix for the US desk,
 not a measured global ranking of news quality. No subscription or paid model call
 is created. Headlines, original links and dates are read from public publisher feeds;
 full articles remain at the publisher and may require a subscription.
@@ -17,6 +17,8 @@ full articles remain at the publisher and may require a subscription.
 | Bureau of Labor Statistics | Employment and CPI releases | https://www.bls.gov/feed/ |
 | Energy Information Administration | Official energy analysis | https://www.eia.gov/tools/rssfeeds/ |
 | Federal Trade Commission | Competition and consumer-protection releases | https://www.ftc.gov/stay-connected/rss |
+| Bureau of Economic Analysis | Official GDP and national accounts releases | https://www.bea.gov/news/schedule |
+| Census Bureau | Official economic indicators | https://www.census.gov/economic-indicators/ |
 
 Source feed URLs and allowed article domains live in `companion_news.SOURCES`.
 MarketWatch and WSJ share the Dow Jones ownership label. Yahoo's syndication is
@@ -24,7 +26,7 @@ explicit. This panel does not calculate independent confirmation or sentiment.
 
 ## Behavior
 
-- Refresh the eleven feeds representing ten sources every five minutes while the
+- Refresh the thirteen feeds representing twelve sources every five minutes while the
   app is running, with at most four concurrent requests. The GET endpoint returns
   immediately while the refresh runs in the background.
 - Parse RSS and Atom dates. Exclude missing/naive/future dates, unsupported XML,
@@ -57,7 +59,7 @@ from source recovery archives.
 
 ## Validation
 
-All ten source endpoints returned parsed items during live verification; the
+Historical September24 verification of the original ten sources (the current mix has twelve; see FIX_ALL_2026_09_25.md): all ten source endpoints returned parsed items during that verification; the
 deployed endpoint reported ten connected sources and 80 recent deduplicated
 headlines. Connectivity and publication cadence can change. RSS is not a
 guaranteed real-time institutional newswire.
@@ -68,3 +70,10 @@ and prior companion/workspace tests. Four JavaScript suites passed for quip tone
 read-only polling, delivery/deduplication, avatar behavior and Fox's existing cues.
 Browser validation observed a genuine current headline with Changing Woman's
 attributed quip, all ten source statuses, and Quiet desk hiding the bubble.
+
+## September 25 continuation
+
+Added BEA (GDP, income, spending and international accounts) and Census economic indicators (retail sales, durable goods, housing and trade). Both publisher endpoints were fetched and parsed on this PC. The initial ten-source validation above describes the earlier build. Feed checks preserve Retry-After delays across news-cache reloads; invalid-only feeds are unavailable, and a reused release URL with a new publication date gets a new story ID. BLS and SEC use the already configured contact user agents where available. No paid news service or new model call is required.
+
+- [BEA news and feed](https://www.bea.gov/news)
+- [Census official RSS directory](https://www.census.gov/about/contact-us/feeds.html)

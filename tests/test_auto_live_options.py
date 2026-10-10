@@ -7,6 +7,19 @@ import auto_live_options as alo
 import broker_ibkr as ibkr
 
 
+@pytest.mark.parametrize("value", ["false", 0, 1, None])
+@pytest.mark.parametrize("key", ["enabled", "allow_naked_short"])
+def test_flags_require_booleans(key, value):
+    with pytest.raises(ValueError):
+        alo.validate({key: value})
+
+
+@pytest.mark.parametrize("key", ["max_contracts", "dte_min", "dte_max", "max_quote_age_sec", "every_n_stock_cycles"])
+def test_integer_settings_cannot_silently_round(key):
+    with pytest.raises(ValueError):
+        alo.validate({key: 1.5})
+
+
 def test_option_notional_x100():
     assert order_terms.option_notional(1, 1.50) == 150.0
     assert order_terms.option_notional(2, 0.55) == 110.0

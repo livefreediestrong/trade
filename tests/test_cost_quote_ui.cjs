@@ -3,7 +3,7 @@ const source=fs.readFileSync('static/companion.js','utf8'),nodes={};
 function $(id){return nodes[id]??={value:'',textContent:'',innerHTML:'',listeners:{},addEventListener(k,f){this.listeners[k]=f}};}
 let quote,estimate;
 const context={$: $,val:id=>$(id).value,txt:(id,text)=>$(id).textContent=text,costRevision:0,money:n=>n==null?'Unknown':`$${n}`,esc:String,task:(_button,_target,fn)=>fn(),api:async path=>path.includes('/quote/')?{quote}:estimate};
-const start=source.indexOf("  $('cost-form').addEventListener('submit'"),end=source.indexOf("  $('cost-price').addEventListener('input'",start);assert(start>=0&&end>start);
+const start=source.indexOf("  $('cost-form')?.addEventListener('submit'"),end=source.indexOf("  $('cost-price')?.addEventListener('input'",start);assert(start>=0&&end>start);
 vm.runInNewContext(source.slice(start,end),context);
 (async()=>{
  $('cost-symbol').value='SPY';$('cost-price').value='600';$('cost-exit').value='610';

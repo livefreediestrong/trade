@@ -6,16 +6,20 @@ Never places orders itself — callers feed desk ingest / place_from_desk_order.
 from __future__ import annotations
 
 import copy
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal, ROUND_DOWN, ROUND_UP
+from datetime import datetime
+from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from order_terms import (
     canonical_bag_order,
     canonical_option_order,
-    option_notional,
+    option_max_loss,
     positive,
+    round_option_price,
 )
+
+_MARKET_TZ = ZoneInfo("America/New_York")
 from trade_planner import number
 
 STRATEGIES = {
@@ -40,9 +44,14 @@ DEFAULT_AUTO_OPTIONS = {
     "prefer_otm_pct": 0.5,  # % of underlying for mild OTM preference
     "spread_width_pct": 1.0,  # vertical width ~ this % of underlying
     "every_n_stock_cycles": 1,  # attempt option conversion each stock PASS
+    "automatic_exits": False,  # Explicit opt-in; IBKR paper only until qualified.
+    "exit_loss_pct": 25.0,
+    "exit_profit_pct": 50.0,
+    "exit_before_expiry_sessions": 1,
+    "exit_max_spread_pct": 20.0,
 }
 
-UI_LABEL = "Moss LIVE options | calls/puts | shorts gated | BAG verticals"
+UI_LABEL = "Automatic options · IBKR paper lifecycle test"
 
 
 def defaults() -> dict[str, Any]:
@@ -57,27 +66,32 @@ def validate(body) -> dict[str, Any]:
         raise ValueError("Unsupported auto_options fields: " + ", ".join(sorted(unknown)))
     out = defaults()
     out.update(body)
-    out["enabled"] = bool(out["enabled"])
-    out["allow_naked_short"] = bool(out["allow_naked_short"])
+    for key in ("enabled", "allow_naked_short", "automatic_exits"):
+        if not isinstance(out[key], bool):
+            raise ValueError(f"{key} must be true or false")
     strategies = out["strategies"]
     if not isinstance(strategies, list) or not strategies:
         raise ValueError("Choose at least one options strategy")
     cleaned = []
     for s in strategies:
-        if s not in STRATEGIES:
+        if not isinstance(s, str) or s not in STRATEGIES:
             raise ValueError(f"Unknown options strategy: {s}")
         if s not in cleaned:
             cleaned.append(s)
     out["strategies"] = cleaned
-    out["max_contracts"] = int(number(out["max_contracts"], "max_contracts", 1, 20))
-    out["dte_min"] = int(number(out["dte_min"], "dte_min", 0, 370))
-    out["dte_max"] = int(number(out["dte_max"], "dte_max", 1, 370))
+    for key, lo, hi in (("max_contracts", 1, 20), ("dte_min", 0, 370), ("dte_max", 1, 370),
+                        ("max_quote_age_sec", 1, 60), ("every_n_stock_cycles", 1, 50),
+                        ("exit_before_expiry_sessions", 1, 10)):
+        value = number(out[key], key, lo, hi)
+        if isinstance(out[key], bool) or value != int(value):
+            raise ValueError(f"{key} must be a whole number")
+        out[key] = int(value)
     if out["dte_min"] > out["dte_max"]:
         raise ValueError("dte_min cannot exceed dte_max")
-    out["max_quote_age_sec"] = int(number(out["max_quote_age_sec"], "max_quote_age_sec", 1, 60))
     out["prefer_otm_pct"] = float(number(out["prefer_otm_pct"], "prefer_otm_pct", 0, 20))
     out["spread_width_pct"] = float(number(out["spread_width_pct"], "spread_width_pct", 0.1, 20))
-    out["every_n_stock_cycles"] = int(number(out["every_n_stock_cycles"], "every_n_stock_cycles", 1, 50))
+    for key, hi in (("exit_loss_pct", 95), ("exit_profit_pct", 500), ("exit_max_spread_pct", 50)):
+        out[key] = float(number(out[key], key, 1, hi))
     return out
 
 
@@ -90,6 +104,21 @@ def get_config(cfg) -> dict[str, Any]:
         return validate(raw)
     except (ValueError, TypeError, KeyError):
         return defaults()
+
+
+def entry_block(cfg):
+    """Automatic entries must have a supported exit lifecycle, not just a toggle."""
+    opts = get_config(cfg)
+    if not opts["enabled"]:
+        return "Automatic options are not enabled"
+    identity = (cfg or {}).get("broker_identity") or {}
+    if identity.get("broker") != "ibkr" or not identity.get("account_id"):
+        return "Automatic options require a verified IBKR paper account"
+    if identity.get("paper_mode") is not True:
+        return "Automatic options entries await broker-paper exit and assignment qualification. Live stock trading remains available."
+    if not opts["automatic_exits"]:
+        return "Enable the IBKR paper options exit test before automatic options entries"
+    return None
 
 
 def intent_gate(
@@ -145,7 +174,8 @@ def risk_ready_error(book: dict | None) -> str | None:
 
 
 def pick_expiry(expirations: list[str], dte_min: int, dte_max: int, today=None) -> str | None:
-    today = today or datetime.now(timezone.utc).date()
+    # DTE counts calendar days from the US market date, not trading sessions.
+    today = today or datetime.now(_MARKET_TZ).date()
     best = None
     best_score = 10**9
     for raw in expirations or []:
@@ -250,7 +280,9 @@ def build_option_candidate(
         for cls in chain["classes"]:
             strikes.extend(cls.get("strikes") or [])
     strikes = [float(s) for s in strikes]
-    contracts = min(int(auto_cfg["max_contracts"]), max(1, int(signal.get("suggested_shares") or 1)))
+    # Stock share counts do not translate to contracts; start from the configured
+    # cap and let execution_terms_option size down to the max-loss budget.
+    contracts = int(auto_cfg["max_contracts"])
     # Cap short covered calls by shares.
     if strategy == "short_call" and not auto_cfg.get("allow_naked_short"):
         contracts = min(contracts, max(1, int(stock_shares // 100)))
@@ -303,9 +335,13 @@ def build_option_candidate(
 
 def execution_terms_option(signal, cfg, premium, execution_quote, max_order_usd: float):
     """Deterministic option/BAG terms for auto_live — never trusts model prices for limits."""
+    if signal.get("agent_option_position_id"):
+        from option_lifecycle import close_terms
+        return close_terms(signal, cfg)
     auto_cfg = get_config(cfg)
-    if not auto_cfg.get("enabled"):
-        raise ValueError("auto_options is not enabled on the live agent")
+    blocker = entry_block(cfg)
+    if blocker:
+        raise ValueError(blocker)
     # Advisory only (by owner decision this never blocks live ordering): the
     # conversion step already required risk_ready and the desk's broker risk
     # gate re-checks verified daily P&L before submission. Record the result so
@@ -325,15 +361,28 @@ def execution_terms_option(signal, cfg, premium, execution_quote, max_order_usd:
         offset = Decimal(str(policy.get("limit_offset_bps") or 5)) / 10000
         buying = signal.get("side") == "buy"
         limit = mark * (1 + offset if buying else 1 - offset)
-        quantum = Decimal(".01") if limit >= 1 else Decimal(".0001")
-        limit = limit.quantize(quantum, rounding=ROUND_DOWN if buying else ROUND_UP)
+        limit = round_option_price(limit, buying=buying, combo=asset == "BAG")
+        if limit <= 0:
+            raise ValueError("Option limit premium rounds below one tick")
         options["limit_price"] = float(limit)
-        bound = max(mark, limit)
+        # Size on the worse premium for the risk that is being taken: the most
+        # paid for a debit, the least received for a credit/short.
+        bound = max(mark, limit) if buying else min(mark, limit)
     budget = Decimal(str(max_order_usd if max_order_usd is not None else policy.get("max_order_usd") or 0))
-    affordable = int(budget / (bound * 100)) if bound > 0 else 0
+    # Budget the worst-case loss, not the premium: a credit spread risks
+    # (width - credit) and a short put risks (strike - premium) per share.
+    per_contract = Decimal(str(option_max_loss({
+        "contracts": 1, "asset_type": asset, "option_intent": signal.get("option_intent"),
+        "option_strategy": signal.get("option_strategy"), "right": signal.get("right"),
+        "strike": signal.get("strike"), "long_strike": signal.get("long_strike"),
+        "short_strike": signal.get("short_strike"), "covered": signal.get("covered"),
+    }, float(bound))))
+    affordable = int(budget / per_contract) if per_contract > 0 else 0
     contracts = min(contracts, max(0, affordable), int(auto_cfg["max_contracts"]))
+    if asset == "BAG":
+        contracts = min(contracts, 10)  # canonical_bag_order's per-ticket cap
     if contracts < 1:
-        raise ValueError("Option budget below one contract notional (premium x 100)")
+        raise ValueError(f"Option budget below one contract's maximum loss (${per_contract:.2f})")
     base = {
         "side": signal.get("side"),
         "suggested_shares": contracts,
@@ -372,15 +421,24 @@ def execution_terms_option(signal, cfg, premium, execution_quote, max_order_usd:
 
 def status_payload(cfg) -> dict[str, Any]:
     auto_cfg = get_config(cfg)
+    blocker = entry_block(cfg)
+    armed = (blocker is None and bool(((cfg or {}).get("live_agent") or {}).get("enabled"))
+             and cfg.get("mode") == "auto_live" and cfg.get("session_active") is True)
     return {
         "auto_options": auto_cfg,
         "label": UI_LABEL,
         "strategies": list(STRATEGIES),
-        "armed": bool(auto_cfg.get("enabled")) and bool(((cfg or {}).get("live_agent") or {}).get("enabled")),
+        "armed": armed, "entry_block": blocker, "requested": bool(auto_cfg["enabled"]),
+        "lifecycle": {"automatic_entries": armed, "automatic_exits": bool(auto_cfg["automatic_exits"]) and (cfg.get("broker_identity") or {}).get("paper_mode") is True,
+                      "automatic_exits_paper_only": True, "assignment_discrepancy_monitor": True,
+                      "assignment_recovery_qualified": False, "broker_native_protection_qualified": False},
         "notes": [
             "×100 notional via option_notional",
-            "risk_ready (verified day P&L) required for new auto options risk",
+            "risk_ready (verified day P&L) required to convert a stock idea; the desk broker gate re-checks it before submission",
+            "Credit spreads and short puts use loss estimates. Naked short-call sizing uses a strike-based floor, not a maximum: its loss is unbounded.",
+            "Delayed (non-live) option quotes block auto conversion",
             "Naked STO needs allow_naked_short; covered short calls need long shares",
-            "Assignment / early exercise not simulated",
+            "Paper automatic exits use confirmed quantities and current executable quotes; a limit order may not fill.",
+            "Unexpected option or stock holdings trigger a persistent review hold. Broker statements are needed to confirm assignment; the desk never invents a sale or automatically exercises options.",
         ],
     }

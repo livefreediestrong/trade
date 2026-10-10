@@ -1,0 +1,31 @@
+<section id="fidelity" class="company-check desk-module fidelity" aria-labelledby="fidelity-title">
+ <h2 id="fidelity-title">Fidelity portfolio</h2>
+ <p>The desk's reading on the stocks you hold at Fidelity: which ones look weak, which have a buy setup today, where a protective stop would sit, and how many shares fit your cash. <strong>Suggestions only.</strong> The desk never connects to Fidelity. You place any trade there yourself.</p>
+ <details id="fid-import" class="fid-import">
+  <summary>Add or update holdings</summary>
+  <p class="hint-line">In Fidelity, open <b>Positions</b> and choose <b>Download</b> (CSV), then paste the file here. Or type one holding per line: <code>META 1.39 718.99</code> (symbol, shares, average cost), and <code>CASH 4225.70</code> for cash.</p>
+  <form id="fid-import-form">
+   <label for="fid-text" class="sr-only">Positions CSV or typed holdings</label>
+   <textarea id="fid-text" rows="6" spellcheck="false" placeholder="META 1.39 718.99&#10;INTC 17.37 115.14&#10;CASH 4225.70"></textarea>
+   <div class="fid-row"><label class="btn ghost">Choose CSV file<input type="file" id="fid-file" accept=".csv,text/csv" hidden /></label>
+    <button type="submit" class="btn">Save holdings</button>
+    <button type="button" class="btn ghost" id="fid-clear">Remove all</button></div>
+  </form>
+ </details>
+ <details class="fid-import">
+  <summary>Sizing rules</summary>
+  <form id="fid-settings" class="compact-form">
+   <label title="Example: with 1% and a $7,000 account, a buy idea is sized so hitting its stop loses about $70.">Risk per trade · % of account<input id="fid-risk_pct" type="number" min="0.1" max="5" step="0.1" required /></label>
+   <label title="Example: with 20%, no single stock is suggested above 20% of the account.">Largest position · % of account<input id="fid-max_position_pct" type="number" min="1" max="100" step="1" required /></label>
+   <label title="Example: a stock that typically moves $3 a day gets a stop $6 below the price with 2.">Stop distance · × typical daily move<input id="fid-stop_atr" type="number" min="0.5" max="5" step="0.5" required /></label>
+   <div><button type="submit" class="btn">Save rules</button></div>
+  </form>
+ </details>
+ <div class="fid-row"><button type="button" class="btn" id="fid-run">Read my holdings</button>
+  <span id="fid-status" role="status" class="hint-line keep-visible">Reading saved holdings…</span></div>
+ <p id="fid-evidence" class="fid-evidence" hidden></p>
+ <div id="fid-summary" class="fid-summary" hidden></div>
+ <div id="fid-holdings" class="fid-cards"></div>
+ <h3 id="fid-ideas-title" hidden>Today's desk buy setups you don't hold</h3>
+ <div id="fid-ideas" class="fid-cards"></div>
+</section>

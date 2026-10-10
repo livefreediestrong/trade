@@ -1,6 +1,6 @@
 # Changing Woman companion
 
-Mode: built-in image generation/editing. Reference: `static/moss-portrait-atlas.png`, the previously created portrait-inspired character requested by the user. No original painting was downloaded in this task. The fox remains unchanged and is the default.
+Mode: built-in image generation/editing. Reference: `docs/assets/moss-portrait-atlas.png`, the previously created portrait-inspired character requested by the user. No original painting was downloaded in this task. The fox remains unchanged and is the default.
 
 Saved asset: `static/changing-woman-atlas.png`. Layout: 4 columns × 4 rows, observe / walk / read / rest. Transparent RGBA. CSS displays a single frame and moves the character only in an empty UI margin. The original image-generation outputs remain in the Codex generated-images folder.
 
