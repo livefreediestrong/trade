@@ -47,19 +47,31 @@
     const quote = latest.quote || {};
     const account = String(book.account_id || "");
     const quoteAge = quote.market_time ? Math.round((Date.now()-Date.parse(quote.market_time))/1000) : null;
+    const quoteFresh = !!(quote.fresh && quoteAge != null && quoteAge <= 120 && quoteAge >= -15);
     const rows = [
-      ["Account", account ? `…${account.slice(-4)} · ${book.paper_mode ? "BROKER PAPER" : "LIVE"}` : "Unverified"],
-      ["Broker data", book.ok ? "Account/positions available" : book.error || "Unavailable"],
-      ["Daily P&L", book.day_pnl_usd == null ? "Unavailable; new risk blocked" : `$${fmt(book.day_pnl_usd)}`],
-      ["P&L feed", diag.status || "Unavailable"],
-      ["Value update age", diag.last_update_age_seconds == null ? "Unavailable" : `${fmt(diag.last_update_age_seconds,0)}s`],
-      ["Gateway response age", diag.api_response_age_seconds == null ? "Unavailable" : `${fmt(diag.api_response_age_seconds,0)}s`],
-      ["Research quote", quote.source ? `${latest.ticker} · ${quote.source} · ${quote.market_time || "unknown time"} · age ${fmt(quoteAge,0)}s · ${quote.fresh && quoteAge != null && quoteAge <= 120 && quoteAge >= -15 ? "fresh" : "stale"}` : "No timestamped quote"],
-      ["Research/model block", latest.execution_block || latest.error || latest.brain_error || "No block recorded on the latest item"],
-      ["New risk check", book.risk_error || (book.risk_ready ? "Account check passed; order checks still apply" : "Not ready")]
+      ["Account", account ? `…${account.slice(-4)} · ${book.paper_mode ? "BROKER PAPER" : "LIVE"}` : "Unverified", account ? (book.paper_mode ? "ok" : "warn") : "bad"],
+      ["Broker data", book.ok ? "Account/positions available" : book.error || "Unavailable", book.ok ? "ok" : "bad"],
+      ["Daily P&L", book.day_pnl_usd == null ? "Unavailable; new risk blocked" : `$${fmt(book.day_pnl_usd)}`, book.day_pnl_usd == null ? "bad" : "ok"],
+      ["P&L feed", diag.status || "Unavailable", diag.status === "ready" ? "ok" : diag.status ? "warn" : "unknown"],
+      ["Value update age", diag.last_update_age_seconds == null ? "Unavailable" : `${fmt(diag.last_update_age_seconds,0)}s`, diag.last_update_age_seconds == null ? "unknown" : Number(diag.last_update_age_seconds) > 60 ? "warn" : "ok"],
+      ["Gateway response age", diag.api_response_age_seconds == null ? "Unavailable" : `${fmt(diag.api_response_age_seconds,0)}s`, diag.api_response_age_seconds == null ? "unknown" : Number(diag.api_response_age_seconds) > 60 ? "warn" : "ok"],
+      ["Research quote", quote.source ? `${latest.ticker} · ${quote.source} · ${quote.market_time || "unknown time"} · age ${fmt(quoteAge,0)}s · ${quoteFresh ? "fresh" : "stale"}` : "No timestamped quote", quote.source ? (quoteFresh ? "ok" : "warn") : "unknown"],
+      ["Research/model block", latest.execution_block || latest.error || latest.brain_error || "No block recorded on the latest item", latest.execution_block || latest.error || latest.brain_error ? "warn" : "ok"],
+      ["New risk check", book.risk_error || (book.risk_ready ? "Account check passed; order checks still apply" : "Not ready"), book.risk_error ? "bad" : book.risk_ready ? "ok" : "warn"]
     ];
-    const html = table(["Check", "Status"], rows);
-    text("health-overview", `${book.ok ? "Broker data available" : "Broker unavailable"} · daily P&L ${book.day_pnl_usd == null ? "unavailable" : "$"+fmt(book.day_pnl_usd)} · ${quote.fresh && quoteAge != null && quoteAge <= 120 && quoteAge >= -15 ? "research quote fresh" : "research quote stale/unavailable"}`);
+    const ico = {ok: "✓", warn: "!", bad: "✕", unknown: "·"};
+    const ageSec = diag.last_update_age_seconds != null ? Number(diag.last_update_age_seconds)
+      : (quoteAge != null ? Number(quoteAge) : null);
+    const freshnessPct = ageSec == null ? 0 : Math.max(0, Math.min(100, Math.round(100 - Math.min(ageSec, 120) / 120 * 100)));
+    const freshLabel = ageSec == null ? "Freshness unknown" : ageSec <= 25 ? `Current · ${Math.round(ageSec)}s ago` : `Stale · ${Math.round(ageSec)}s ago`;
+    const html = `<div class="health-grid">${rows.map(([k,v,tone]) =>
+      `<div class="health-cell"><span class="health-ico ${tone}" aria-hidden="true">${ico[tone]||"·"}</span><div><span class="health-k">${esc(k)}</span><span class="health-v">${esc(v)}</span></div></div>`
+    ).join("")}</div>
+    <div class="health-fresh-wrap" aria-label="Data freshness">
+      <div class="health-fresh-dial ${ageSec != null && ageSec > 25 ? "is-stale" : ""}" style="--fresh:${freshnessPct}" aria-hidden="true"></div>
+      <div class="health-fresh-copy"><strong>${esc(freshLabel)}</strong>Desk snapshot and feed ages for account checks.</div>
+    </div>`;
+    text("health-overview", `${book.ok ? "Broker data available" : "Broker unavailable"} · daily P&L ${book.day_pnl_usd == null ? "unavailable" : "$"+fmt(book.day_pnl_usd)} · ${quoteFresh ? "research quote fresh" : "research quote stale/unavailable"}`);
     if ($("health-summary") && $("health-summary").innerHTML !== html) $("health-summary").innerHTML = html;
   });
 

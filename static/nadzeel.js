@@ -6,7 +6,33 @@
   window.addEventListener('desk:state',e=>{const d=e.detail||{},b=d.broker_book||{},cfg=d.config||{};
     $('overview-account-label').textContent=b.paper_mode===true?'Broker paper account value':'Live account value';
     $('overview-equity').textContent=b.ok?money(b.equity):'Unavailable';
-    $('overview-pnl').textContent=b.ok&&typeof b.day_pnl_usd==='number'?`Daily P&L ${money(b.day_pnl_usd)}`:'Daily P&L unavailable · new live risk blocked';
+    {
+      const pnlEl=$('overview-pnl');
+      if(pnlEl){
+        const pnl=b.ok&&typeof b.day_pnl_usd==='number'&&Number.isFinite(b.day_pnl_usd)?b.day_pnl_usd:null;
+        const ks=cfg.kill_switch||cfg.live_agent?.policy||{};
+        const lossCap=Number(ks.max_daily_loss_usd??ks.max_daily_loss);
+        const lossKnown=Number.isFinite(lossCap)&&lossCap>0;
+        let signed='Unavailable';
+        let cls='is-unknown';
+        if(pnl!=null){
+          const abs=Math.abs(pnl).toLocaleString('en-US',{style:'currency',currency:'USD'});
+          signed=(pnl>0?'+':pnl<0?'−':'')+abs;
+          cls=pnl>0?'pos':pnl<0?'neg':'';
+        }
+        let meter='';
+        if(lossKnown){
+          const used=pnl==null?0:Math.max(0,Math.min(100,Math.round((Math.max(0,-pnl)/lossCap)*100)));
+          const fillCls=used>=85?'is-danger':used>=60?'is-warn':'';
+          const label=pnl==null
+            ?`Loss budget ${money(lossCap)} · day P&L unavailable`
+            :`Loss budget ${used}% of ${money(lossCap)} used`;
+          meter=`<div class="overview-loss-meter"><div class="overview-loss-track" aria-hidden="true"><div class="overview-loss-fill ${fillCls}" style="width:${used}%"></div></div><span class="overview-loss-label">${label}</span></div>`;
+        }
+        const note=pnl==null?'Daily P&L unavailable · new live risk blocked':'Daily P&L';
+        pnlEl.innerHTML=`<div class="overview-pnl-block"><span class="overview-pnl-signed ${cls}">${signed}</span><span class="muted">${note}</span>${meter}</div>`;
+      }
+    }
     $('overview-paper').textContent=money(d.ledger?.equity);
     $('overview-session').textContent=d.loop?.rth_ok===true?'Market open':d.loop?.rth_ok===false?'Market closed':'Hours unknown';
     const confirmed=Boolean(cfg.broker_identity);

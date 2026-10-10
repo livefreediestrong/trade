@@ -1,0 +1,442 @@
+/* Scoped live ticket redesign — prefix lt- / #live-stock-ticket */
+#live-stock-ticket.lt-ticket {
+  --lt-panel: #121a2b;
+  --lt-panel-2: #182235;
+  --lt-line: #2a3650;
+  --lt-text: #e8eefc;
+  --lt-muted: #93a0bd;
+  --lt-buy: #16a34a;
+  --lt-buy-soft: rgba(22, 163, 74, 0.16);
+  --lt-sell: #dc2626;
+  --lt-sell-soft: rgba(220, 38, 38, 0.16);
+  --lt-warn: #fbbf24;
+  --lt-focus: #60a5fa;
+  --lt-ok: #34d399;
+  --lt-bg: #0a101b;
+  --lt-buy-soft: rgba(22, 163, 74, 0.16);
+  --lt-sell-soft: rgba(220, 38, 38, 0.16);
+}
+
+#live-stock-ticket .lt-sr-only {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0,0,0,0);
+  white-space: nowrap; border: 0;
+}
+
+#live-stock-ticket .lt-mode {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  background: var(--lt-panel-2);
+  padding: 4px;
+  border-radius: 12px;
+  border: 1px solid var(--lt-line);
+  margin: 12px 0 14px;
+}
+#live-stock-ticket .lt-mode-btn {
+  border: 0;
+  background: transparent;
+  color: var(--lt-muted);
+  padding: 10px;
+  border-radius: 9px;
+  font-weight: 700;
+  cursor: pointer;
+}
+#live-stock-ticket .lt-mode-btn.is-active {
+  background: #243149;
+  color: var(--lt-text);
+}
+
+#live-stock-ticket .lt-card,
+#live-stock-ticket .lt-option-card {
+  background: linear-gradient(180deg, var(--lt-panel) 0%, #0e1624 100%);
+  border: 1px solid var(--lt-line);
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.28);
+}
+
+#live-stock-ticket .lt-field {
+  display: block;
+  font-size: 12px;
+  color: var(--lt-muted);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin: 0 0 8px;
+}
+
+#live-stock-ticket .lt-symbol-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+#live-stock-ticket #live-ticket-symbol {
+  width: min(160px, 100%);
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  color: var(--lt-text);
+  background: transparent;
+  border: 0;
+  outline: none;
+  padding: 0;
+}
+#live-stock-ticket #live-ticket-symbol:focus {
+  box-shadow: 0 2px 0 var(--lt-focus);
+}
+#live-stock-ticket .lt-price-block { text-align: right; }
+#live-stock-ticket .lt-price {
+  font-size: 28px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--lt-text);
+}
+#live-stock-ticket .lt-chg {
+  font-size: 13px;
+  color: var(--lt-muted);
+  margin-top: 2px;
+}
+
+#live-stock-ticket .lt-caps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 16px 0 18px;
+}
+#live-stock-ticket .lt-cap {
+  background: var(--lt-panel-2);
+  border: 1px solid var(--lt-line);
+  border-radius: 12px;
+  padding: 10px 8px;
+  text-align: center;
+}
+#live-stock-ticket .lt-cap-k {
+  font-size: 10px;
+  color: var(--lt-muted);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+#live-stock-ticket .lt-cap-v {
+  font-size: 14px;
+  font-weight: 700;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+  color: var(--lt-text);
+}
+
+#live-stock-ticket .lt-side {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+#live-stock-ticket .lt-side-btn {
+  appearance: none;
+  border: 2px solid transparent;
+  border-radius: 16px;
+  padding: 18px 12px;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  cursor: pointer;
+  transition: transform .08s ease, box-shadow .12s ease, background .12s;
+}
+#live-stock-ticket .lt-side-btn:active { transform: scale(.98); }
+#live-stock-ticket .lt-side-btn.lt-buy {
+  background: var(--lt-buy-soft);
+  color: #86efac;
+  border-color: #166534;
+}
+#live-stock-ticket .lt-side-btn.lt-sell {
+  background: var(--lt-sell-soft);
+  color: #fca5a5;
+  border-color: #7f1d1d;
+}
+#live-stock-ticket .lt-side-btn.lt-buy.is-active {
+  background: var(--lt-buy);
+  color: #fff;
+  border-color: #15803d;
+  box-shadow: 0 8px 24px rgba(22,163,74,.35);
+}
+#live-stock-ticket .lt-side-btn.lt-sell.is-active {
+  background: var(--lt-sell);
+  color: #fff;
+  border-color: #b91c1c;
+  box-shadow: 0 8px 24px rgba(220,38,38,.35);
+}
+
+#live-stock-ticket .lt-cover-btn {
+  width: 100%;
+  margin-bottom: 14px;
+  border: 1px solid var(--lt-line);
+  background: transparent;
+  color: var(--lt-muted);
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+#live-stock-ticket .lt-cover-btn.is-active {
+  color: #86efac;
+  border-color: #166534;
+  background: var(--lt-buy-soft);
+}
+
+#live-stock-ticket .lt-unit {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  background: var(--lt-panel-2);
+  padding: 4px;
+  border-radius: 12px;
+  border: 1px solid var(--lt-line);
+  margin-bottom: 10px;
+}
+#live-stock-ticket .lt-unit-btn {
+  border: 0;
+  background: transparent;
+  color: var(--lt-muted);
+  padding: 10px;
+  border-radius: 9px;
+  font-weight: 700;
+  cursor: pointer;
+}
+#live-stock-ticket .lt-unit-btn.is-active {
+  background: #243149;
+  color: var(--lt-text);
+}
+
+#live-stock-ticket .lt-amount {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--lt-bg);
+  border: 1px solid var(--lt-line);
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+}
+#live-stock-ticket .lt-prefix {
+  color: var(--lt-muted);
+  font-weight: 700;
+  font-size: 20px;
+}
+#live-stock-ticket .lt-amount input {
+  flex: 1;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--lt-text);
+  font-size: 28px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  width: 100%;
+}
+
+#live-stock-ticket .lt-presets {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+#live-stock-ticket .lt-preset {
+  flex: 1;
+  border: 1px solid var(--lt-line);
+  background: var(--lt-panel-2);
+  color: var(--lt-text);
+  border-radius: 10px;
+  padding: 10px 0;
+  font-weight: 700;
+  cursor: pointer;
+}
+#live-stock-ticket .lt-preset:hover { border-color: var(--lt-focus); }
+
+#live-stock-ticket .lt-type {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+#live-stock-ticket .lt-type-btn {
+  border: 1px solid var(--lt-line);
+  background: var(--lt-panel-2);
+  color: var(--lt-muted);
+  border-radius: 12px;
+  padding: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: left;
+}
+#live-stock-ticket .lt-type-btn small {
+  display: block;
+  font-weight: 500;
+  color: var(--lt-muted);
+  margin-top: 2px;
+  font-size: 11px;
+}
+#live-stock-ticket .lt-type-btn.is-active {
+  color: var(--lt-text);
+  border-color: var(--lt-focus);
+  background: #1a2740;
+}
+#live-stock-ticket .lt-limit-box { margin-bottom: 14px; }
+#live-stock-ticket .lt-limit-box[hidden] { display: none !important; }
+#live-stock-ticket .lt-help { margin: 0 0 12px; font-size: 12px; }
+
+#live-stock-ticket .lt-estimate {
+  background: var(--lt-bg);
+  border: 1px dashed var(--lt-line);
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+#live-stock-ticket .lt-est-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 4px 0;
+  color: var(--lt-muted);
+  font-size: 13px;
+}
+#live-stock-ticket .lt-est-row span:last-child {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--lt-text);
+}
+#live-stock-ticket .lt-est-warn {
+  color: var(--lt-warn);
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+#live-stock-ticket .lt-summary {
+  margin: 0 0 10px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--lt-text);
+}
+
+#live-stock-ticket .lt-review-btn {
+  width: 100%;
+  border: 0;
+  border-radius: 16px;
+  padding: 18px 16px;
+  font-size: 18px;
+  font-weight: 800;
+  cursor: pointer;
+  color: #fff;
+  background: linear-gradient(180deg, #22c55e, #15803d);
+}
+#live-stock-ticket .lt-review-btn.lt-buy-tone, #live-stock-ticket .lt-review-btn.lt-buy-tone {
+  background: linear-gradient(180deg, #22c55e, #15803d);
+}
+#live-stock-ticket .lt-review-btn.lt-sell-tone {
+  background: linear-gradient(180deg, #ef4444, #b91c1c);
+}
+#live-stock-ticket .lt-review-btn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+#live-stock-ticket .lt-fine {
+  margin-top: 10px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--lt-muted);
+}
+
+#live-stock-ticket .lt-option-banner {
+  background: #1f1215;
+  border: 1px solid #7f1d1d;
+  color: #fecaca;
+  border-radius: 12px;
+  padding: 12px;
+  margin: 0 0 14px;
+  font-size: 13px;
+}
+#live-stock-ticket .lt-option-banner a { color: #93c5fd; }
+#live-stock-ticket .lt-option-row { margin-bottom: 12px; }
+#live-stock-ticket .lt-opt-actions {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+#live-stock-ticket .lt-opt-act {
+  border: 1px solid var(--lt-line);
+  background: var(--lt-panel-2);
+  color: var(--lt-muted);
+  border-radius: 10px;
+  padding: 10px 0;
+  font-weight: 700;
+  cursor: pointer;
+}
+#live-stock-ticket .lt-opt-act.is-active {
+  color: var(--lt-text);
+  border-color: var(--lt-focus);
+  background: #1a2740;
+}
+#live-stock-ticket .lt-option-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+#live-stock-ticket .lt-opt-input {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  background: var(--lt-bg);
+  border: 1px solid var(--lt-line);
+  border-radius: 10px;
+  color: var(--lt-text);
+  padding: 10px;
+}
+
+#live-stock-ticket .lt-review {
+  margin-top: 16px;
+  background: var(--lt-panel);
+  border: 1px solid var(--lt-line);
+  border-radius: 16px;
+  padding: 16px;
+}
+#live-stock-ticket .lt-review-dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  margin: 0 0 12px;
+}
+#live-stock-ticket .lt-review-dl dt {
+  color: var(--lt-muted);
+  font-size: 12px;
+}
+#live-stock-ticket .lt-review-dl dd {
+  margin: 0;
+  font-weight: 600;
+}
+#live-stock-ticket .lt-ack-row {
+  display: grid;
+  gap: 8px;
+}
+#live-stock-ticket #live-ticket-ack {
+  background: var(--lt-bg);
+  border: 1px solid var(--lt-line);
+  border-radius: 10px;
+  color: var(--lt-text);
+  padding: 12px;
+  font-size: 16px;
+  text-transform: uppercase;
+}
+#live-stock-ticket .lt-ack-actions {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr;
+  gap: 8px;
+}
+
+@media (max-width: 520px) {
+  #live-stock-ticket .lt-caps { grid-template-columns: 1fr; }
+  #live-stock-ticket .lt-option-grid { grid-template-columns: 1fr; }
+  #live-stock-ticket .lt-ack-actions { grid-template-columns: 1fr; }
+}

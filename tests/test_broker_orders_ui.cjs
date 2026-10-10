@@ -17,9 +17,14 @@ function render(pending, fills) {
 const order = {order_id:'1',broker:{order:{shares:10}},signal:{id:'s1',ticker:'TEST',side:'buy'}};
 const fill = {order_id:'1',ticker:'TEST',shares:4,price:100,confirmed:true};
 let html = render([order],[fill]);
-assert.equal((html.match(/<tr>/g)||[]).length,2); // header plus one order, no duplicate fill
-assert(html.includes('<td>10</td><td>4</td><td>6</td><td>$100</td>'));
+assert(html.includes('bo-list') && html.includes('bo-row'));
+assert.equal((html.match(/bo-row/g)||[]).length, 1); // one order row, no duplicate fill
+assert(html.includes('4 / 10') || (html.includes('>4<') && html.includes('10')));
+assert(html.includes('left 6') || html.includes('6'));
+assert(html.includes('$100'));
 assert(html.includes('Partial fill · remainder tracked') && html.includes('data-cancel-review="s1"'));
+assert(html.includes('bo-side-badge buy') && html.includes('BUY'));
+assert(html.includes('bo-fill-bar'));
 html = render([order],[{...fill,shares:10}]);
 assert(html.includes('Filled · awaiting terminal confirmation'));
 html = render([],[{...fill,confirmed:false,broker_reconciled:true}]);

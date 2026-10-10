@@ -130,7 +130,13 @@
     }
     const scoped = workspaceView(data);
     const count = scoped.pending_count;
-    set("#execution-summary-pending", count ? `${count} idea${count === 1 ? "" : "s"} need review` : "No actionable ideas");
+    const pendingEl = $("#execution-summary-pending");
+    if (pendingEl) {
+      const label = count ? `${count} idea${count === 1 ? "" : "s"} need review` : "No actionable ideas";
+      pendingEl.classList.add("vp1-pending-chip");
+      pendingEl.classList.toggle("has-pending", !!count);
+      pendingEl.innerHTML = `<span class="vp1-status-dot ${count ? "is-warn" : "is-off"}" aria-hidden="true"></span><span>${label}</span>`;
+    }
     set("#signal-queue-hint", paper ? "Paper ideas only. Review opens a preview; final confirmation simulates a trade. Auto approval is controlled above." : "Live ideas only. Review trade opens the broker order review. Research-only ideas cannot be submitted.");
     renderBrokerOrders(data);
     renderRiskCockpit(data);
@@ -198,9 +204,41 @@
       remaining: fill.broker_reconciled === true ? 0 : "Unconfirmed",
       label: fill.broker_fill_state === "voided" ? "Execution reversed" : fill.confirmed !== true ? "Fill unverified" :
         fill.broker_reconciled !== true ? "Fill · awaiting reconciliation" : fill.broker_fill_state === "partially_filled" ? "Partial fill · remainder closed" : "Filled"})));
-    el.innerHTML = rows.length ? `<table><thead><tr><th>Time</th><th>Stock</th><th>Side</th><th>Requested</th><th>Filled</th><th>Remaining</th><th>Fill price</th><th>Status</th></tr></thead><tbody>${rows.map(row =>
-      `<tr><td>${escapeHtml(shortTs(row.ts || row.filled_at || row.created_at))}</td><td>${escapeHtml(row.ticker || row.symbol || "—")}</td><td>${escapeHtml(row.side || "—")}</td><td>${escapeHtml(String(row.requested ?? "—"))}</td><td>${escapeHtml(String(row.filled))}</td><td>${escapeHtml(String(row.remaining))}</td><td>${row.price == null ? "Unconfirmed" : fmtMoney(row.price)}</td><td>${escapeHtml(row.label)}${row.cancelId && !String(row.order_id).startsWith("intent:") ? ` <button type="button" class="btn ghost" data-cancel-review="${escapeHtml(row.cancelId)}">Review cancellation</button>` : ""}</td></tr>`).join("")}</tbody></table>`
-      : '<div class="empty">No broker orders recorded by this desk.</div>';
+    if (!rows.length) {
+      el.innerHTML = '<div class="empty">No broker orders recorded by this desk.</div>';
+      return;
+    }
+    el.innerHTML = `<div class="bo-list" role="list">${rows.map(row => {
+      const sideRaw = String(row.side || "").toLowerCase();
+      const sideBuy = sideRaw === "buy" || sideRaw === "long" || sideRaw === "cover";
+      const sideSell = sideRaw === "sell" || sideRaw === "short";
+      const sideCls = sideBuy ? "buy" : sideSell ? "sell" : "";
+      const sideLabel = sideBuy ? "BUY" : sideSell ? "SELL" : (row.side ? String(row.side).toUpperCase() : "—");
+      const reqN = Number(row.requested);
+      const fillN = Number(row.filled);
+      const hasProgress = Number.isFinite(reqN) && reqN > 0 && Number.isFinite(fillN);
+      const pct = hasProgress ? Math.max(0, Math.min(100, Math.round((fillN / reqN) * 100))) : 0;
+      const fillCls = !hasProgress ? "" : pct >= 100 ? "is-full" : pct > 0 ? "is-partial" : "";
+      const label = String(row.label || "");
+      const pillCls = /partial|unverified|awaiting|working/i.test(label) ? ( /filled/i.test(label) && !/partial/i.test(label) ? "is-filled" : /unverified|reversed/i.test(label) ? "is-warn" : "is-working") : /filled/i.test(label) ? "is-filled" : "is-working";
+      const cancel = row.cancelId && !String(row.order_id).startsWith("intent:")
+        ? ` <button type="button" class="btn ghost" data-cancel-review="${escapeHtml(row.cancelId)}">Review cancellation</button>`
+        : "";
+      const fillTxt = `${escapeHtml(String(row.filled))} / ${escapeHtml(String(row.requested ?? "—"))}`;
+      const remTxt = `left ${escapeHtml(String(row.remaining))}`;
+      const priceTxt = row.price == null ? "Unconfirmed" : fmtMoney(row.price);
+      return `<div class="bo-row" role="listitem">
+        <span class="bo-time">${escapeHtml(shortTs(row.ts || row.filled_at || row.created_at))}</span>
+        <span class="bo-ticker">${escapeHtml(row.ticker || row.symbol || "—")}</span>
+        <span class="bo-side-badge ${sideCls}" title="${escapeHtml(sideLabel)}">${escapeHtml(sideLabel)}</span>
+        <div class="bo-fill-wrap">
+          <div class="bo-fill-meta"><span>${fillTxt}</span><span>${remTxt}</span><span>${priceTxt}</span></div>
+          <div class="bo-fill-track" role="presentation" aria-hidden="true"><div class="bo-fill-bar ${fillCls}" style="width:${pct}%"></div></div>
+        </div>
+        <span class="bo-status-pill ${pillCls}">${escapeHtml(row.label)}</span>
+        <div class="bo-actions">${cancel}</div>
+      </div>`;
+    }).join("")}</div>`;
   }
 
   async function updatePaperResearch(patch) {
@@ -911,9 +949,16 @@
     }
     panel.classList.toggle("is-live", book.paper_mode === false);
     const balances = $("#broker-book-balances");
-    if (balances) balances.textContent = book.ok
-      ? `Equity ${fmtMoney(book.equity)} · Cash ${fmtMoney(book.cash)} · Buying power ${fmtMoney(book.buying_power)}`
-      : "Account balances unavailable";
+    if (balances) {
+      if (book.ok) {
+        const chip = (k, v) => `<div class="bb-chip"><span class="bb-chip-k">${k}</span><span class="bb-chip-v">${v}</span></div>`;
+        balances.className = "bb-balance-strip";
+        balances.innerHTML = chip("Equity", fmtMoney(book.equity)) + chip("Cash", fmtMoney(book.cash)) + chip("Buying power", fmtMoney(book.buying_power));
+      } else {
+        balances.className = "muted";
+        balances.textContent = "Account balances unavailable";
+      }
+    }
     const pnlDetail = $("#broker-book-pnl-detail");
     if (pnlDetail) {
       const pnl = book.ok && book.account_window_pnl;
@@ -965,15 +1010,39 @@
       return;
     }
     const rows = book.positions || [];
-    list.innerHTML = rows.length
-      ? rows.map((p) => `
-          <div class="bb-row">
-            <strong>${escapeHtml(p.ticker)}</strong>
-            <span>${escapeHtml(String(p.shares))} shares${p.side === "short" ? " (short)" : ""} @ ${fmtMoney(p.avg_price)}</span>
-            <span>${p.last != null ? `last ${fmtMoney(p.last)} · ` : ""}<span class="money ${Number(p.open_pnl_usd) >= 0 ? "pos" : "neg"}">${p.open_pnl_usd != null ? fmtSigned(p.open_pnl_usd) : "P&L unavailable"}</span></span>
-            ${data.config?.mode === "live_manual" && provider === "IBKR" && Number(p.shares) >= 1 ? `<button type="button" class="btn ghost" data-live-position="${escapeHtml(p.ticker)}" data-side="${escapeHtml(p.side)}" data-shares="${escapeHtml(String(p.shares))}">Prepare ${p.side === "short" ? "cover" : "sell"} ticket</button>` : ""}
-          </div>`).join("")
-      : `<div class="empty">No positions at the broker.</div>`;
+    if (!rows.length) {
+      list.innerHTML = `<div class="empty">No positions at the broker.</div>`;
+      return;
+    }
+    const absPnls = rows.map(p => Math.abs(Number(p.open_pnl_usd))).filter(n => Number.isFinite(n));
+    const maxAbs = absPnls.length ? Math.max(...absPnls, 1) : 1;
+    list.innerHTML = rows.map((p) => {
+      const sideRaw = String(p.side || "").toLowerCase();
+      const isShort = sideRaw === "short" || Number(p.shares) < 0;
+      const sideCls = isShort ? "short" : "long";
+      const sideLabel = isShort ? "SHORT" : "LONG";
+      const pnlN = Number(p.open_pnl_usd);
+      const pnlKnown = p.open_pnl_usd != null && Number.isFinite(pnlN);
+      const pnlCls = !pnlKnown ? "is-unknown" : pnlN >= 0 ? "pos" : "neg";
+      const pnlTxt = pnlKnown ? fmtSigned(pnlN) : "Unavailable";
+      const mag = pnlKnown ? Math.max(4, Math.round((Math.abs(pnlN) / maxAbs) * 100)) : 0;
+      const sellBtn = data.config?.mode === "live_manual" && provider === "IBKR" && Number(p.shares) >= 1
+        ? `<button type="button" class="btn ghost" data-live-position="${escapeHtml(p.ticker)}" data-side="${escapeHtml(p.side)}" data-shares="${escapeHtml(String(p.shares))}">Prepare ${isShort ? "cover" : "sell"} ticket</button>`
+        : "";
+      return `<div class="bb-card bb-side-${sideCls}" data-side="${sideCls}">
+        <div class="bb-rail" aria-hidden="true"></div>
+        <div class="bb-body">
+          <div class="bb-top">
+            <strong class="bb-ticker">${escapeHtml(p.ticker)}</strong>
+            <span class="bb-side-chip ${sideCls}" title="${sideLabel}">${sideLabel}</span>
+            <span class="bb-meta">${escapeHtml(String(p.shares))} shares @ ${fmtMoney(p.avg_price)}${p.last != null ? ` · last ${fmtMoney(p.last)}` : ""}</span>
+          </div>
+          <div class="bb-pnl money ${pnlCls}" aria-label="Open P and L">${pnlTxt}</div>
+          <div class="bb-mag" role="presentation" aria-hidden="true"><div class="bb-mag-fill" style="width:${mag}%"></div></div>
+          ${sellBtn}
+        </div>
+      </div>`;
+    }).join("");
   }
 
   // ---- Light / dark theme (saved choice wins; otherwise follow the computer)
@@ -1676,13 +1745,19 @@
             ? `<div class="sig-meta">Filled ${s.fill.shares}@${s.fill.price} (${escapeHtml(s.fill.source || "")})</div>`
             : "";
 
+    const sideRaw = String(s.side || "").toLowerCase();
+    const sideChipCls = sideRaw === "long" ? "buy" : sideRaw === "short" ? "sell" : sideRaw;
+    const sideChipLabel = sideRaw === "buy" || sideRaw === "long" ? "BUY"
+      : sideRaw === "sell" || sideRaw === "short" ? "SELL"
+      : sideRaw === "hold" ? "HOLD"
+      : String(s.side || "—").toUpperCase();
     return `<article class="signal-card ${escapeHtml(s.side)}">
       <div class="sig-head">
         <span class="sig-ticker">${escapeHtml(s.ticker)}</span>
-        <span class="sig-side ${escapeHtml(s.side)}">${escapeHtml(s.side)}</span>
+        <span class="sig-side sig-side-chip ${escapeHtml(sideChipCls)}" title="${escapeHtml(sideChipLabel)}">${escapeHtml(sideChipLabel)}</span>
       </div>
       ${signalBadges(s)}
-      <div class="conf-bar"><div class="conf-fill" style="width:${confPct}%"></div></div>
+      <div class="conf-bar" aria-label="Confidence ${confPct}%"><div class="conf-fill" style="width:${confPct}%"></div></div>
       <div class="sig-meta">
         <span>${Math.round((s.confidence || 0) * 100)}% ${s.side === "hold" ? "hold confidence" : "research confidence"}</span>
         <span>${fmtMoney(s.signal_price)}</span>
@@ -4467,9 +4542,16 @@
       const whyLine = simple && canAct
         ? `<span class="opp-why-line muted">Approve places it with ${escapeHtml(moneyNoun())} · Skip passes (5 s to undo)</span>`
         : "";
+      const confN = Number(o.confidence);
+      const confPct = Number.isFinite(confN) ? Math.max(0, Math.min(100, Math.round(confN * 100))) : null;
+      const sideChipLabel = sideCls === "buy" || sideRaw === "long" || sideRaw === "buy" ? "BUY"
+        : sideCls === "sell" || sideRaw === "short" || sideRaw === "sell" ? "SELL"
+        : String(sideLabel || "—").toUpperCase();
+      const confHtml = confPct == null ? "" : `<span class="opp-conf-micro" title="Confidence ${confPct}%"><span class="opp-conf-track" aria-hidden="true"><span class="opp-conf-fill" style="width:${confPct}%"></span></span><span class="opp-conf-pct">${confPct}%</span></span>`;
       return `<div class="opp-row ${simple ? "opp-simple" : ""} ${churnCls} ${moveCls} ${focusCls} ${muteCls}" data-ticker="${escapeHtml(t)}">
         <span class="ticker">${escapeHtml(o.ticker)}</span>
-        <span class="sig-side ${escapeHtml(sideCls || "")}">${escapeHtml(sideLabel)}</span>
+        <span class="sig-side opp-side-chip ${escapeHtml(sideCls || "")}" title="${escapeHtml(sideChipLabel)}">${escapeHtml(sideChipLabel)}</span>
+        ${confHtml}
         ${verdictHtml}
         <span class="thesis"${thesisAttr}>${escapeHtml(thesisShown)}</span>
         ${whyLine}
@@ -4490,16 +4572,86 @@
   }
 
   function renderRiskCockpit(data) {
+    const grid = $("#risk-cockpit-grid");
     const book = data.broker_book || {};
     const broker = data.broker || {};
-    const set = (id, value) => { const el = $(id); if (el) el.textContent = value; };
-    set("#risk-trade-allowed", broker.paper_mode == null ? "Identity unverified" : "Order checks required");
+    const cfg = data.config || {};
+    const ks = cfg.kill_switch || cfg.live_agent?.policy || {};
+    const dayPnl = book.day_pnl_usd;
+    const lossCap = Number(ks.max_daily_loss_usd ?? ks.max_daily_loss ?? $("#ks-loss")?.value);
+    const maxTrades = Number(ks.max_trades_per_day ?? ks.max_orders_per_day ?? $("#ks-trades")?.value);
+    const used = Number(data?.loop?.session_totals?.intents ?? data?.broker_trades_today ?? data?.daily?.trades ?? 0);
     const rows = book.positions || [];
     const priced = book.ok && rows.every(position => Number.isFinite(Number(position.last)) && position.last != null);
-    set("#risk-exposure", priced ? fmtMoney(rows.reduce((sum,position) => sum + Math.abs(Number(position.shares) * Number(position.last)), 0)) : "Unknown");
-    set("#risk-slippage", book.day_pnl_usd == null ? "Unavailable" : fmtMoney(book.day_pnl_usd));
-    set("#risk-promotion", !book.ok ? "Unavailable" : book.risk_error ? "Incomplete" : "Available");
-    set("#risk-quality-note", book.error || book.risk_error || "Each live order separately verifies the account, positions, working orders, fresh price and limits before submission.");
+    const exposure = priced ? rows.reduce((sum, position) => sum + Math.abs(Number(position.shares) * Number(position.last)), 0) : null;
+    const permission = broker.paper_mode == null ? "Identity unverified" : "Order checks required";
+    const accountState = !book.ok ? "Unavailable" : book.risk_error ? "Incomplete" : "Available";
+    const ready = book.ok && book.risk_ready === true && typeof dayPnl === "number" && Number.isFinite(dayPnl);
+    const readyWord = ready ? "Ready" : !book.ok ? "Blocked" : book.risk_ready === true ? "Partial" : "Blocked";
+    const readyCls = ready ? "is-ready" : readyWord === "Partial" ? "is-partial" : "is-blocked";
+
+    const pnlKnown = typeof dayPnl === "number" && Number.isFinite(dayPnl);
+    const lossKnown = Number.isFinite(lossCap) && lossCap > 0;
+    let lossUsedPct = 0;
+    let lossFillCls = "";
+    if (pnlKnown && lossKnown) {
+      const usedLoss = Math.max(0, -dayPnl);
+      lossUsedPct = Math.max(0, Math.min(100, Math.round((usedLoss / lossCap) * 100)));
+      if (lossUsedPct >= 85) lossFillCls = "is-danger";
+      else if (lossUsedPct >= 60) lossFillCls = "is-warn";
+    }
+    const tradesKnown = Number.isFinite(maxTrades) && maxTrades > 0;
+    const left = tradesKnown ? Math.max(0, maxTrades - (Number.isFinite(used) ? used : 0)) : null;
+    const tradePct = tradesKnown ? Math.max(0, Math.min(100, Math.round(((Number.isFinite(used) ? used : 0) / maxTrades) * 100))) : 0;
+    let tradeFillCls = "";
+    if (tradesKnown && tradePct >= 85) tradeFillCls = "is-danger";
+    else if (tradesKnown && tradePct >= 60) tradeFillCls = "is-warn";
+
+    const pnlTxt = pnlKnown ? fmtSigned(dayPnl) : "Unavailable";
+    const pnlCls = !pnlKnown ? "" : dayPnl >= 0 ? "pos" : "neg";
+    const lossSub = lossKnown
+      ? (pnlKnown ? `Loss budget used ${lossUsedPct}% of ${fmtMoney(lossCap)}` : `Cap ${fmtMoney(lossCap)} · day P&L unknown`)
+      : "Loss cap not set";
+    const tradeTxt = tradesKnown ? `${Number.isFinite(used) ? used : 0} / ${maxTrades}` : "Unavailable";
+    const tradeSub = tradesKnown ? `${left} trade${left === 1 ? "" : "s"} left today` : "Trade cap not set";
+    const expTxt = exposure == null ? "Unknown" : fmtMoney(exposure);
+    const note = book.error || book.risk_error || "Each live order separately verifies the account, positions, working orders, fresh price and limits before submission.";
+
+    if (grid) {
+      grid.classList.add("vp1-meter-grid");
+      grid.innerHTML = `
+        <div class="vp1-meter-tile" data-meter="day-pnl">
+          <span class="vp1-meter-lbl">Day P&amp;L vs loss cap</span>
+          <span class="vp1-meter-val ${pnlCls}" id="risk-slippage">${escapeHtml(pnlTxt)}</span>
+          <div class="vp1-meter-track" aria-hidden="true"><div class="vp1-meter-fill ${lossFillCls}" style="width:${lossKnown && pnlKnown ? lossUsedPct : 0}%"></div></div>
+          <span class="vp1-meter-sub">${escapeHtml(lossSub)}</span>
+        </div>
+        <div class="vp1-meter-tile" data-meter="trades">
+          <span class="vp1-meter-lbl">Trades used / left</span>
+          <span class="vp1-meter-val" id="risk-trade-allowed">${escapeHtml(tradeTxt)}</span>
+          <div class="vp1-meter-track" aria-hidden="true"><div class="vp1-meter-fill ${tradeFillCls}" style="width:${tradePct}%"></div></div>
+          <span class="vp1-meter-sub">${escapeHtml(tradeSub)} · ${escapeHtml(permission)}</span>
+        </div>
+        <div class="vp1-meter-tile" data-meter="exposure">
+          <span class="vp1-meter-lbl">Open exposure</span>
+          <span class="vp1-meter-val" id="risk-exposure">${escapeHtml(expTxt)}</span>
+          <div class="vp1-meter-track" aria-hidden="true"><div class="vp1-meter-fill" style="width:${exposure == null ? 0 : Math.min(100, 40)}%"></div></div>
+          <span class="vp1-meter-sub">${rows.length} open position${rows.length === 1 ? "" : "s"}</span>
+        </div>
+        <div class="vp1-meter-tile" data-meter="ready">
+          <span class="vp1-meter-lbl">Ready status</span>
+          <span class="vp1-meter-val" id="risk-promotion"><span class="vp1-ready-row"><span class="vp1-ready-dot ${readyCls} vp1-pulse" aria-hidden="true"></span><span>${escapeHtml(readyWord)}</span></span></span>
+          <span class="vp1-meter-sub">${escapeHtml(accountState)} · account data</span>
+        </div>`;
+    } else {
+      const set = (id, value) => { const el = $(id); if (el) el.textContent = value; };
+      set("#risk-trade-allowed", permission);
+      set("#risk-exposure", expTxt);
+      set("#risk-slippage", pnlTxt);
+      set("#risk-promotion", accountState);
+    }
+    const noteEl = $("#risk-quality-note");
+    if (noteEl) noteEl.textContent = note;
   }
 
   $("#btn-force-flatten")?.addEventListener("click", async () => {
